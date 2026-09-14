@@ -1,0 +1,6 @@
+{
+  "name": "Nảy Court",
+  "description": "Hệ thống quản lý và điều hành giải đấu Pickleball chuyên nghiệp: tạo giải, chia bảng, quản lý danh sách vận động viên và chấm điểm trực tiếp.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
