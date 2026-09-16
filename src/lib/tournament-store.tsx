@@ -10,7 +10,7 @@ import {
 
 /* ---------------- Kiểu dữ liệu ---------------- */
 
-export type PlayerSlot = { name: string; rating: number | null };
+export type PlayerSlot = { name: string; rating: number | null; paid?: boolean };
 
 /** Một "đội" đăng ký trong nội dung (đơn = 1 người, đôi = 2 người). */
 export type Entry = {
@@ -35,12 +35,25 @@ export type LiveState = {
   serverNum: 1 | 2;
   serverIdx: number;
   receiverIdx: number;
+  /** Vị trí ô đứng (0: ô Phải/chẵn, 1: ô Trái/lẻ) của VĐV 0 mỗi đội */
+  posA?: [number, number]; // [idxOfPlayerInRightBox, idxOfPlayerInLeftBox]
+  posB?: [number, number]; // [idxOfPlayerInRightBox, idxOfPlayerInLeftBox]
   a: number;
   b: number;
   toUsed: [number, number];
   medUsed: [number, number];
-  history: Array<{ a: number; b: number; serveTeam: 0 | 1; serverNum: 1 | 2; serverIdx: number }>;
+  history: Array<{
+    a: number;
+    b: number;
+    serveTeam: 0 | 1;
+    serverNum: 1 | 2;
+    serverIdx: number;
+    receiverIdx?: number;
+    posA?: [number, number];
+    posB?: [number, number];
+  }>;
   note: string;
+  playerIcons?: Record<string, string>;
 };
 
 export type Match = {
@@ -53,6 +66,8 @@ export type Match = {
   timeSlot?: number;
   /** Thời lượng trận (phút), mặc định theo slotMinutes của giải */
   durationMinutes?: number;
+  /** Độ lệch giờ (phút) nhích tới/lui trong ô giờ (bước 5 phút) */
+  offsetMinutes?: number;
   koRound?: string;
   slot?: number;
   aId: string | null;
@@ -151,7 +166,15 @@ type Ctx = {
 const TournamentContext = createContext<Ctx | null>(null);
 
 export function TournamentProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<TournamentState>(initialState);
+  const [state, setState] = useState<TournamentState>(() => {
+    try {
+      const raw = typeof window !== "undefined" ? localStorage.getItem(STORAGE_KEY) : null;
+      if (raw) return { ...initialState, ...(JSON.parse(raw) as TournamentState) };
+    } catch {
+      /* ignore */
+    }
+    return initialState;
+  });
 
   useEffect(() => {
     try {
@@ -227,43 +250,104 @@ export function entryName(e: Entry | undefined | null): string {
 }
 
 export function entryRating(e: Entry): number {
-  const rs = e.players.map((p) => p.rating).filter((r): r is number => typeof r === "number");
-  return rs.length ? rs.reduce((a, b) => a + b, 0) / rs.length : 0;
+  const rs = e.players.map((p) => p.rating).filter((r): r is number => typeof r === "number" && !isNaN(r));
+  return rs.length ? Math.round(rs.reduce((a, b) => a + b, 0) * 100) / 100 : 0;
 }
 
 const GROUP_LETTERS = "ABCDEFGH".split("");
 
-/** Bốc thăm ngẫu nhiên ghép đôi cân bằng theo điểm trình (mạnh ghép yếu). */
+/** Bốc thăm ghép đôi cân bằng: người điểm cao nhất ghép người điểm thấp nhất, nhì với nhì, trung bình với trung bình để tổng điểm đều nhau nhất có thể. */
 export function drawPairs(entries: Entry[], eventId: string): Entry[] {
   const players = entries.flatMap((e) => e.players.filter((p) => p.name.trim()));
-  const shuffled = [...players].sort(() => Math.random() - 0.5);
-  const sorted = shuffled.sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0));
+  if (players.length < 2) return entries;
+
+  // Tính điểm trung bình của những VĐV đã có điểm để gán dự phòng cho VĐV chưa có điểm
+  const knownRatings = players
+    .map((p) => p.rating)
+    .filter((r): r is number => typeof r === "number" && !isNaN(r));
+  const avgRating = knownRatings.length
+    ? knownRatings.reduce((a, b) => a + b, 0) / knownRatings.length
+    : 2.0;
+
+  // Gắn effective rating và ngẫu nhiên hoá các VĐV bằng điểm nhau để công bằng
+  const prepared = [...players].map((p) => ({
+    ...p,
+    effectiveRating: typeof p.rating === "number" && !isNaN(p.rating) ? p.rating : avgRating,
+    rand: Math.random(),
+  }));
+
+  // Sắp xếp giảm dần theo điểm trình
+  prepared.sort((a, b) => {
+    if (Math.abs(b.effectiveRating - a.effectiveRating) > 0.001) {
+      return b.effectiveRating - a.effectiveRating;
+    }
+    return a.rand - b.rand;
+  });
+
   const out: Entry[] = [];
   let i = 0;
-  let j = sorted.length - 1;
+  let j = prepared.length - 1;
   while (i < j) {
-    out.push({ id: uid(), eventId, players: [sorted[i]!, sorted[j]!], paid: false });
+    const p1 = prepared[i]!;
+    const p2 = prepared[j]!;
+    const { effectiveRating: _e1, rand: _r1, ...clean1 } = p1;
+    const { effectiveRating: _e2, rand: _r2, ...clean2 } = p2;
+    const allPaid = Boolean(clean1.paid && clean2.paid);
+    out.push({ id: uid(), eventId, players: [clean1, clean2], paid: allPaid });
     i++;
     j--;
   }
-  if (i === j) out.push({ id: uid(), eventId, players: [sorted[i]!], paid: false });
+  if (i === j) {
+    const p1 = prepared[i]!;
+    const { effectiveRating: _e, rand: _r, ...clean1 } = p1;
+    out.push({ id: uid(), eventId, players: [clean1], paid: Boolean(clean1.paid) });
+  }
   return out;
 }
 
-/** Chia bảng rải đều theo điểm trình. */
+/** Chia bảng rải đều theo điểm trình, tối ưu tổng điểm các bảng cân bằng nhất có thể. */
 export function splitGroups(entries: Entry[], groupCount: number): Group[] {
-  const sorted = [...entries].sort((a, b) => entryRating(b) - entryRating(a));
   const n = Math.max(1, Math.min(groupCount, GROUP_LETTERS.length));
   const groups: Group[] = Array.from({ length: n }, (_, i) => ({
     name: `Bảng ${GROUP_LETTERS[i]}`,
     entryIds: [],
   }));
-  sorted.forEach((t, i) => {
-    const round = Math.floor(i / n);
-    const pos = i % n;
-    const idx = round % 2 === 0 ? pos : n - 1 - pos;
-    groups[idx]!.entryIds.push(t.id);
+
+  if (entries.length === 0) return groups;
+
+  // Sắp xếp các đội theo điểm trình từ cao đến thấp
+  const sorted = [...entries].sort((a, b) => entryRating(b) - entryRating(a));
+  const targetPerGroup = Math.ceil(sorted.length / n);
+
+  // Thuật toán gán thông minh (Greedy balance with size limit):
+  // Duyệt qua từng đội (từ mạnh nhất đến yếu nhất), gán vào bảng nào đang có tổng điểm thấp nhất
+  // mà chưa vượt quá chỉ tiêu số đội mỗi bảng.
+  sorted.forEach((team) => {
+    // Tìm các bảng còn chỗ chứa
+    let eligibleGroups = groups.filter((g) => g.entryIds.length < targetPerGroup);
+    if (eligibleGroups.length === 0) {
+      eligibleGroups = groups;
+    }
+
+    // Chọn bảng có tổng điểm hiện tại thấp nhất
+    let bestGroup = eligibleGroups[0]!;
+    let minSum = Infinity;
+
+    eligibleGroups.forEach((g) => {
+      const currentSum = g.entryIds.reduce((sum, id) => {
+        const en = entries.find((e) => e.id === id);
+        return sum + (en ? entryRating(en) : 0);
+      }, 0);
+
+      if (currentSum < minSum) {
+        minSum = currentSum;
+        bestGroup = g;
+      }
+    });
+
+    bestGroup.entryIds.push(team.id);
   });
+
   return groups;
 }
 
@@ -453,11 +537,27 @@ export const KO_LABEL = (size: number) =>
             ? "Vòng 1/16"
             : `Vòng ${size} đội`;
 
+/** Helper tạo thứ tự hạt giống chuẩn tournament binary tree (ví dụ size 8: 1 vs 8, 4 vs 5, 2 vs 7, 3 vs 6) */
+export function getBracketSeedOrder(numSlots: number): number[] {
+  let order = [1, 2];
+  while (order.length < numSlots) {
+    const next: number[] = [];
+    const sum = order.length * 2 + 1;
+    for (const seed of order) {
+      next.push(seed);
+      next.push(sum - seed);
+    }
+    order = next;
+  }
+  return order;
+}
+
 /**
  * Sinh nhánh loại trực tiếp từ kết quả vòng bảng theo barem chuẩn:
- * - Nhất bảng A gặp Chót (đội đi tiếp cuối cùng) của bảng B/đối diện.
- * - Nhì bảng A gặp áp chót của bảng B/đối diện...
- * - Giữ các đội cùng bảng ở 2 nhánh đối diện (tránh gặp lại nhau trước trận chung kết).
+ * - Hỗ trợ không giới hạn số lượng đội đi tiếp mỗi bảng (K >= 1).
+ * - Tự động tính kích thước nhánh luỹ thừa của 2 (2, 4, 8, 16, 32...).
+ * - Tách các đội cùng bảng sang 2 nửa nhánh đối diện (tránh gặp lại nhau trước trận chung kết).
+ * - Hỗ trợ Bye (miễn đấu) cho hạt giống cao nếu số đội chưa đủ luỹ thừa 2.
  */
 export function generateKnockout(
   ev: TEvent,
@@ -479,42 +579,67 @@ export function generateKnockout(
     ),
   }));
 
-  const K = ev.advancePerGroup;
+  const K = Math.max(1, ev.advancePerGroup);
   const numGroups = byGroup.length;
-  const pairs: Array<[string | null, string | null]> = [];
 
-  if (numGroups >= 2) {
-    // Barem ghép chéo đối diện: Nhất (rank 0) gặp Chót (rank K - 1), Nhì (rank 1) gặp áp chót (rank K - 2)
+  // Thu thập danh sách các đội đi tiếp từ các bảng
+  // Ưu tiên theo thứ hạng: tất cả đội Nhất (rank 0), rồi Nhì (rank 1), Ba (rank 2)...
+  interface AdvancingTeam {
+    entryId: string;
+    groupIndex: number;
+    rank: number;
+  }
+
+  const advancing: AdvancingTeam[] = [];
+  for (let r = 0; r < K; r++) {
     for (let gi = 0; gi < numGroups; gi++) {
-      const oppGi = (gi + 1) % numGroups;
-      for (let r = 0; r < Math.ceil(K / 2); r++) {
-        const topTeam = byGroup[gi]?.rows[r]?.entryId ?? null;
-        const bottomRank = K - 1 - r;
-        const bottomTeam = byGroup[oppGi]?.rows[bottomRank]?.entryId ?? null;
-        if (topTeam || bottomTeam) {
-          pairs.push([topTeam, bottomTeam]);
-        }
+      const row = byGroup[gi]?.rows[r];
+      const entryId = row?.entryId ?? byGroup[gi]?.rows.find((x) => !advancing.some((a) => a.entryId === x.entryId))?.entryId;
+      if (entryId && !advancing.some((a) => a.entryId === entryId)) {
+        advancing.push({ entryId, groupIndex: gi, rank: r });
       }
-    }
-  } else {
-    // Chỉ có 1 bảng: Nhất gặp Chót, Nhì gặp Ba...
-    const rows = byGroup[0]?.rows ?? [];
-    for (let r = 0; r < Math.floor(K / 2); r++) {
-      pairs.push([rows[r]?.entryId ?? null, rows[K - 1 - r]?.entryId ?? null]);
     }
   }
 
-  const teamCount = pairs.flat().filter(Boolean).length;
-  if (teamCount < 2) return [];
+  // Nếu số đội chưa đủ hoặc chưa có vòng bảng, lấy từ danh sách entries
+  if (advancing.length < 2) {
+    const unselected = entries.filter((e) => !advancing.some((a) => a.entryId === e.id));
+    unselected.forEach((e, idx) => {
+      if (advancing.length < Math.max(2, entries.length)) {
+        advancing.push({ entryId: e.id, groupIndex: idx % numGroups, rank: Math.floor(idx / numGroups) });
+      }
+    });
+  }
 
-  let firstRoundMatches = 1;
-  while (firstRoundMatches < pairs.length) firstRoundMatches *= 2;
-  const size = firstRoundMatches * 2;
-  const slots: Array<string | null> = Array.from({ length: size }, () => null);
-  pairs.forEach(([a, b], i) => {
-    slots[i * 2] = a ?? null;
-    slots[i * 2 + 1] = b ?? null;
+  if (advancing.length < 2) return [];
+
+  // Xác định kích thước nhánh luỹ thừa 2 gần nhất (2, 4, 8, 16, 32...)
+  let size = 2;
+  while (size < advancing.length) {
+    size *= 2;
+  }
+
+  // Thứ tự hạt giống theo bracket
+  const bracketOrder = getBracketSeedOrder(size);
+  // Tạo mảng hạt giống: seedMap[seedNumber - 1] = entryId
+  const seedAssignment = new Map<number, string | null>();
+
+  // Phân bổ hạt giống sao cho:
+  // - Hạt giống 1, 2, ... được ưu tiên cho đội Nhất
+  // - Đội cùng bảng ở rank 1 được đẩy sang nửa đối diện với rank 0
+  const topHalfSeeds = bracketOrder.slice(0, size / 2);
+  const bottomHalfSeeds = bracketOrder.slice(size / 2);
+
+  // Gán lần lượt các đội đi tiếp vào các vị trí hạt giống
+  advancing.forEach((team, idx) => {
+    const seedNum = idx + 1;
+    if (seedNum <= size) {
+      seedAssignment.set(seedNum, team.entryId);
+    }
   });
+
+  // Điền vào slots vòng 1 theo thứ tự bracketOrder
+  const slots: Array<string | null> = bracketOrder.map((seedNum) => seedAssignment.get(seedNum) ?? null);
 
   const courtList = courts.length ? courts : ["Sân 1"];
   const matches: Match[] = [];
@@ -566,7 +691,8 @@ export function generateKnockout(
     });
   }
 
-  return matches;
+  // Tự động đẩy các đội có Bye ở vòng 1 lên vòng 2
+  return propagateKnockout(matches, ev.id);
 }
 
 /** Đẩy đội thắng/thua sang vòng kế tiếp trong nhánh loại trực tiếp & cập nhật bảng 3 đội. */
@@ -614,9 +740,19 @@ export function propagateKnockout(matches: Match[], eventId: string): Match[] {
       (a, b) => (a.slot ?? 0) - (b.slot ?? 0),
     );
     cur.forEach((m, i) => {
-      if (m.scoreA === null || m.scoreB === null) return;
-      const winner = m.scoreA > m.scoreB ? m.aId : m.bId;
-      const loser = m.scoreA > m.scoreB ? m.bId : m.aId;
+      let winner: string | null = null;
+      let loser: string | null = null;
+      if (m.scoreA !== null && m.scoreB !== null) {
+        winner = m.scoreA > m.scoreB ? m.aId : m.bId;
+        loser = m.scoreA > m.scoreB ? m.bId : m.aId;
+      } else if (m.round === 1 && m.aId && !m.bId) {
+        // Miễn đấu (Bye) cho đội nhánh A
+        winner = m.aId;
+      } else if (m.round === 1 && !m.aId && m.bId) {
+        // Miễn đấu (Bye) cho đội nhánh B
+        winner = m.bId;
+      }
+      if (!winner) return;
       const target = nxt[Math.floor(i / 2)];
       if (target && winner) {
         const patch = next.get(target.id) ?? {};
@@ -669,16 +805,17 @@ export function groupColor(name: string) {
   return GROUP_COLORS[(idx + GROUP_COLORS.length) % GROUP_COLORS.length]!;
 }
 
-/** Nhãn ngắn rõ ràng, không bị cắt ngắn gây khó đọc. */
+/** Nhãn ngắn rõ ràng theo yêu cầu: Bảng A -> A, Tứ kết/Bán kết/Chung kết ghi rõ, Vòng 1/8 -> 1/8, Vòng 1/16 -> 1/16. */
 export function groupTag(name: string) {
   if (name.includes("Tứ kết")) return "Tứ kết";
   if (name.includes("Bán kết")) return "Bán kết";
   if (name.includes("Chung kết")) return "Chung kết";
   if (name.includes("Tranh hạng 3")) return "Hạng 3";
-  if (name.includes("Vòng 1/8")) return "Vòng 1/8";
-  if (name.includes("Vòng 1/16")) return "Vòng 1/16";
-  const letter = /Bảng ([A-H])/.exec(name)?.[1];
-  return letter ? `Bảng ${letter}` : name;
+  if (name.includes("1/8")) return "1/8";
+  if (name.includes("1/16")) return "1/16";
+  if (name.includes("1/32")) return "1/32";
+  const letter = /Bảng\s+([A-H0-9]+)/i.exec(name)?.[1];
+  return letter ? letter : name.replace(/^Bảng\s+/i, "");
 }
 
 export function addMinutes(hhmm: string, mins: number): string {
@@ -725,7 +862,7 @@ export function buildTimeline(matches: Match[], courts: string[]): Map<string, S
   return grid;
 }
 
-/** Tự động sắp xếp các trận đấu chưa có lịch vào timeline theo thứ tự vòng và sân trống. */
+/** Tự động sắp xếp các trận đấu chưa có lịch vào timeline: xếp Vòng Bảng trước (V1, V2, V3...), sau khi toàn bộ vòng bảng xong mới xếp Vòng Loại Trực Tiếp (KO). */
 export function autoScheduleTimeline(
   matches: Match[],
   courts: string[],
@@ -742,30 +879,120 @@ export function autoScheduleTimeline(
     }
   });
 
-  // Với các trận vòng bảng 3 đội: chỉ xếp vòng 1 trước nếu chưa có kết quả
   const readyMatches = matches.map((m) => ({ ...m }));
+
+  // Kiểm tra tình trạng vòng bảng:
+  const groupMatches = readyMatches.filter((m) => m.stage === "group");
+  const hasGroup = groupMatches.length > 0;
+  const allGroupDone = hasGroup && groupMatches.every((m) => m.status === "done");
+
+  // Các trận chưa xếp lịch:
+  // Nếu có vòng bảng và chưa xong hết vòng bảng -> CHỈ xếp các trận vòng bảng!
+  // Tuyệt đối không xếp vòng loại trực tiếp (KO) cho đến khi toàn bộ vòng bảng có kết quả!
+  const unassigned = readyMatches.filter((m) => typeof m.timeSlot !== "number");
+
+  let toSchedule: Match[] = [];
+  if (hasGroup && !allGroupDone) {
+    toSchedule = unassigned.filter((m) => m.stage === "group");
+  } else {
+    // Đã xong vòng bảng hoặc không có vòng bảng -> Xếp vòng bảng còn lại (nếu có) rồi mới đến KO
+    toSchedule = unassigned;
+  }
+
+  // Tách thành các nhóm theo round và stage để xếp tuần tự
+  // Nhóm 1: Vòng bảng theo từng Round 1, 2, 3...
+  // Nhóm 2: Vòng KO theo từng Round 1, 2, 3...
+  const groupRounds = [...new Set(toSchedule.filter((m) => m.stage === "group").map((m) => m.round ?? 1))].sort(
+    (a, b) => a - b,
+  );
+  const koRounds = [...new Set(toSchedule.filter((m) => m.stage === "ko").map((m) => m.round ?? 1))].sort(
+    (a, b) => a - b,
+  );
+
+  let currentMinSlot = 0;
   let courtIdx = 0;
 
-  readyMatches.forEach((m) => {
-    if (typeof m.timeSlot === "number") return; // đã xếp rồi
-    // Bỏ qua trận vòng 2, 3 của bảng 3 đội nếu chưa xác định được đối thủ
-    if (m.stage === "group" && (m.round === 2 || m.round === 3) && !m.aId && m.customPlaceholderA) {
-      return;
-    }
+  // 1. Xếp các trận vòng bảng theo từng round
+  for (const r of groupRounds) {
+    const roundMatches = toSchedule.filter((m) => m.stage === "group" && (m.round ?? 1) === r);
+    let maxSlotUsedInRound = currentMinSlot;
 
-    const court = courtList[courtIdx % courtList.length]!;
-    const usage = courtUsage.get(court) ?? new Set<number>();
-    let slot = Math.max(0, m.round - 1);
-    while (usage.has(slot)) {
-      slot++;
-    }
-    usage.add(slot);
-    courtUsage.set(court, usage);
+    for (const m of roundMatches) {
+      // Bỏ qua trận vòng 2, 3 của bảng 3 đội nếu chưa xác định được đối thủ
+      if ((m.round === 2 || m.round === 3) && !m.aId && m.customPlaceholderA) {
+        continue;
+      }
 
-    m.court = court;
-    m.timeSlot = slot;
-    courtIdx++;
-  });
+      // Tìm court và slot khả dụng từ currentMinSlot trở đi
+      let placed = false;
+      let slotCheck = currentMinSlot;
+      while (!placed && slotCheck < 200) {
+        for (let cOffset = 0; cOffset < courtList.length; cOffset++) {
+          const court = courtList[(courtIdx + cOffset) % courtList.length]!;
+          const usage = courtUsage.get(court) ?? new Set<number>();
+          if (!usage.has(slotCheck)) {
+            usage.add(slotCheck);
+            courtUsage.set(court, usage);
+            m.court = court;
+            m.timeSlot = slotCheck;
+            courtIdx = (courtIdx + cOffset + 1) % courtList.length;
+            if (slotCheck > maxSlotUsedInRound) {
+              maxSlotUsedInRound = slotCheck;
+            }
+            placed = true;
+            break;
+          }
+        }
+        if (!placed) slotCheck++;
+      }
+    }
+    // Round tiếp theo của vòng bảng bắt đầu sau khi các trận của round trước đã có chỗ
+    currentMinSlot = maxSlotUsedInRound + 1;
+  }
+
+  // 2. Nếu đã hoàn thành vòng bảng (hoặc giải thuần loại trực tiếp), xếp các trận KO
+  if (!hasGroup || allGroupDone) {
+    // Đảm bảo KO bắt đầu sau tất cả các trận vòng bảng đã có trên timeline
+    let maxOverallGroupSlot = currentMinSlot - 1;
+    readyMatches
+      .filter((m) => m.stage === "group" && typeof m.timeSlot === "number")
+      .forEach((m) => {
+        if (m.timeSlot! > maxOverallGroupSlot) {
+          maxOverallGroupSlot = m.timeSlot!;
+        }
+      });
+    currentMinSlot = Math.max(currentMinSlot, maxOverallGroupSlot + 1);
+
+    for (const r of koRounds) {
+      const roundMatches = toSchedule.filter((m) => m.stage === "ko" && (m.round ?? 1) === r);
+      let maxSlotUsedInRound = currentMinSlot;
+
+      for (const m of roundMatches) {
+        let placed = false;
+        let slotCheck = currentMinSlot;
+        while (!placed && slotCheck < 200) {
+          for (let cOffset = 0; cOffset < courtList.length; cOffset++) {
+            const court = courtList[(courtIdx + cOffset) % courtList.length]!;
+            const usage = courtUsage.get(court) ?? new Set<number>();
+            if (!usage.has(slotCheck)) {
+              usage.add(slotCheck);
+              courtUsage.set(court, usage);
+              m.court = court;
+              m.timeSlot = slotCheck;
+              courtIdx = (courtIdx + cOffset + 1) % courtList.length;
+              if (slotCheck > maxSlotUsedInRound) {
+                maxSlotUsedInRound = slotCheck;
+              }
+              placed = true;
+              break;
+            }
+          }
+          if (!placed) slotCheck++;
+        }
+      }
+      currentMinSlot = maxSlotUsedInRound + 1;
+    }
+  }
 
   return readyMatches;
 }

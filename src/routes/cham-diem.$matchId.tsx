@@ -59,11 +59,12 @@ function Chip({
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
       className={
         active
-          ? "rounded-lg bg-court/15 px-4 py-3 text-sm font-semibold text-courtdeep ring-2 ring-court/60"
-          : "rounded-lg bg-white/80 px-4 py-3 text-sm font-semibold text-line/70 ring-1 ring-black/10"
+          ? "rounded-xl bg-emerald-50/90 px-4 py-3 text-sm font-bold text-emerald-900 ring-2 ring-emerald-500 border border-emerald-500 shadow-sm transition-all"
+          : "rounded-xl bg-card px-4 py-3 text-sm font-semibold text-line/80 ring-1 ring-line/20 hover:bg-card/80 transition-all"
       }
     >
       {children}
@@ -84,6 +85,12 @@ function LiveScoringPage() {
   const [tossing, setTossing] = useState(false);
   const [tossFlash, setTossFlash] = useState<0 | 1>(0);
   const [tossed, setTossed] = useState(match?.status === "live" && !!match.live);
+  const [selectedServerIdx, setSelectedServerIdx] = useState<number | null>(
+    match?.status === "live" && match?.live ? match.live.serverIdx : null
+  );
+  const [selectedReceiverIdx, setSelectedReceiverIdx] = useState<number | null>(
+    match?.status === "live" && match?.live ? match.live.receiverIdx : null
+  );
   const [timer, setTimer] = useState<{ label: string; left: number } | null>(null);
   const [noteOpen, setNoteOpen] = useState(false);
   const [changeover, setChangeover] = useState(false);
@@ -113,10 +120,32 @@ function LiveScoringPage() {
   const teamB = state.entries.find((e) => e.id === match.bId);
   const namesA = teamA?.players.map((p) => p.name || "VĐV") ?? ["Đội A"];
   const namesB = teamB?.players.map((p) => p.name || "VĐV") ?? ["Đội B"];
-  const live = match.live ?? defaultLive();
+  
+  const rawLive = match.live ?? defaultLive();
+  const live: LiveState = {
+    ...defaultLive(),
+    ...rawLive,
+    toUsed: Array.isArray(rawLive.toUsed) ? [rawLive.toUsed[0] ?? 0, rawLive.toUsed[1] ?? 0] : [0, 0],
+    medUsed: Array.isArray(rawLive.medUsed) ? [rawLive.medUsed[0] ?? 0, rawLive.medUsed[1] ?? 0] : [0, 0],
+    history: Array.isArray(rawLive.history) ? rawLive.history : [],
+    posA: Array.isArray(rawLive.posA) ? [rawLive.posA[0] ?? 0, rawLive.posA[1] ?? 1] : [0, 1],
+    posB: Array.isArray(rawLive.posB) ? [rawLive.posB[0] ?? 0, rawLive.posB[1] ?? 1] : [0, 1],
+    playerIcons: rawLive.playerIcons ?? {},
+  };
+
+  const doubles = namesA.length > 1;
+  const isSideout = live.scoring === "sideout";
+
+  const posA: [number, number] = live.posA ?? [0, 1];
+  const posB: [number, number] = live.posB ?? [0, 1];
 
   const setLive = (patch: Partial<LiveState>) =>
     updateMatch(match.id, { live: { ...live, ...patch } });
+
+  const setPlayerIcon = (playerName: string, icon: string) => {
+    const nextIcons = { ...(live.playerIcons || {}), [playerName]: icon };
+    setLive({ playerIcons: nextIcons });
+  };
 
   const finish = (m: Match, a: number, b: number) => {
     const patched = state.matches.map((x) =>
@@ -137,7 +166,22 @@ function LiveScoringPage() {
   /* ---------- Màn hình cài đặt ---------- */
   if (!started) {
     return (
-      <div className="mx-auto max-w-lg">
+      <div className="mx-auto max-w-lg p-4">
+        <div className="mb-4 flex items-center justify-between border-b border-line/10 pb-3">
+          <button
+            type="button"
+            onClick={() => {
+              if (match.status !== "live") {
+                updateMatch(match.id, { status: "live" });
+              }
+              setStarted(true);
+            }}
+            className="rounded-lg bg-courtdeep text-paper px-3.5 py-2 text-xs font-bold shadow-xs hover:bg-courtdeep/90 transition flex items-center gap-1.5 cursor-pointer"
+          >
+            ▶ Vào chấm điểm trực tiếp {live.a > 0 || live.b > 0 ? `(${live.a} - ${live.b})` : ""}
+          </button>
+          <span className="text-xs font-semibold text-line/50">Cài đặt trận đấu</span>
+        </div>
         <p className="text-xs font-semibold uppercase tracking-[0.2em] text-line/60">
           Chấm điểm trực tiếp
         </p>
@@ -230,6 +274,8 @@ function LiveScoringPage() {
                 type="button"
                 onClick={() => {
                   setLive({ serveTeam: i as 0 | 1 });
+                  setSelectedServerIdx(null);
+                  setSelectedReceiverIdx(null);
                   setTossed(true);
                 }}
                 className={
@@ -238,13 +284,7 @@ function LiveScoringPage() {
                     : "rounded-xl bg-card p-4 text-center font-head text-base font-bold text-line/70 ring-1 ring-line/20 hover:bg-card/80"
                 }
               >
-                <div className="text-xs font-normal text-line/50">Đội {i === 0 ? "A" : "B"}</div>
-                <div className="mt-0.5 truncate">{n}</div>
-                {tossed && live.serveTeam === i && (
-                  <span className="mt-1 inline-block rounded bg-accent px-2 py-0.5 text-[10px] font-bold text-accent-foreground">
-                    ✓ Giao trước
-                  </span>
-                )}
+                <div className="truncate py-1 text-center font-bold text-base">{n}</div>
               </button>
             );
           })}
@@ -265,6 +305,8 @@ function LiveScoringPage() {
                   const r: 0 | 1 = Math.random() < 0.5 ? 0 : 1;
                   setTossFlash(r);
                   setLive({ serveTeam: r });
+                  setSelectedServerIdx(null);
+                  setSelectedReceiverIdx(null);
                   setTossing(false);
                   setTossed(true);
                 }
@@ -277,67 +319,145 @@ function LiveScoringPage() {
         </div>
 
         {tossed ? (
-        <>
-        <Lbl>Ai giao bóng trước?</Lbl>
-        <p className="text-center text-xs text-line/50">
-          {live.serveTeam === 0 ? entryName(teamA) : entryName(teamB)}
-        </p>
-        <div className="mt-2 grid grid-cols-2 gap-2">
-          {(live.serveTeam === 0 ? namesA : namesB).map((n, i) => (
-            <Chip key={n + i} active={live.serverIdx === i} onClick={() => setLive({ serverIdx: i })}>
-              {n}
-            </Chip>
-          ))}
-        </div>
+          <>
+            <Lbl>Ai giao bóng trước?</Lbl>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              {(live.serveTeam === 0 ? namesA : namesB).map((n, i) => {
+                const isSelected = selectedServerIdx === i;
+                return (
+                  <div
+                    key={n + i}
+                    onClick={() => {
+                      setSelectedServerIdx(i);
+                      setLive({ serverIdx: i });
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    className={`cursor-pointer rounded-xl p-3 text-center transition-all select-none ${
+                      isSelected
+                        ? "bg-emerald-50/90 ring-2 ring-emerald-500 border border-emerald-500 shadow-sm"
+                        : "bg-card ring-1 ring-line/20 hover:bg-card/80"
+                    }`}
+                  >
+                    <div className={`truncate py-1 text-center font-bold text-sm ${isSelected ? "text-emerald-950 font-bold" : "text-line/80"}`}>
+                      {n}
+                    </div>
+                    <input
+                      type="text"
+                      placeholder="Ghi chú..."
+                      value={live.playerIcons?.[n] ?? ""}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => setPlayerIcon(n, e.target.value)}
+                      className="mt-1.5 w-full rounded-md border border-line/20 bg-paper px-2 py-1 text-center text-xs outline-none hover:border-accent focus:border-accent"
+                    />
+                  </div>
+                );
+              })}
+            </div>
 
-        <Lbl>Ai nhận giao trước?</Lbl>
-        <p className="text-center text-xs text-line/50">
-          {live.serveTeam === 0 ? entryName(teamB) : entryName(teamA)}
-        </p>
-        <div className="mt-2 grid grid-cols-2 gap-2">
-          {(live.serveTeam === 0 ? namesB : namesA).map((n, i) => (
-            <Chip
-              key={n + i}
-              active={live.receiverIdx === i}
-              onClick={() => setLive({ receiverIdx: i })}
-            >
-              {n}
-            </Chip>
-          ))}
-        </div>
-
-        </>
+            <Lbl>Ai nhận giao trước?</Lbl>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              {(live.serveTeam === 0 ? namesB : namesA).map((n, i) => {
+                const isSelected = selectedReceiverIdx === i;
+                return (
+                  <div
+                    key={n + i}
+                    onClick={() => {
+                      setSelectedReceiverIdx(i);
+                      setLive({ receiverIdx: i });
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    className={`cursor-pointer rounded-xl p-3 text-center transition-all select-none ${
+                      isSelected
+                        ? "bg-emerald-50/90 ring-2 ring-emerald-500 border border-emerald-500 shadow-sm"
+                        : "bg-card ring-1 ring-line/20 hover:bg-card/80"
+                    }`}
+                  >
+                    <div className={`truncate py-1 text-center font-bold text-sm ${isSelected ? "text-emerald-950 font-bold" : "text-line/80"}`}>
+                      {n}
+                    </div>
+                    <input
+                      type="text"
+                      placeholder="Ghi chú..."
+                      value={live.playerIcons?.[n] ?? ""}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => setPlayerIcon(n, e.target.value)}
+                      className="mt-1.5 w-full rounded-md border border-line/20 bg-paper px-2 py-1 text-center text-xs outline-none hover:border-accent focus:border-accent"
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          </>
         ) : (
           <p className="mt-4 text-center text-xs text-line/50">
-            Tung đồng xu để chọn đội giao bóng, sau đó chọn người giao và người nhận.
+            Tung đồng xu hoặc bấm chọn đội giao bóng để tiếp tục.
           </p>
         )}
 
         <button
-          disabled={!tossed}
-          className="mt-6 w-full rounded-lg bg-courtdeep py-4 disabled:opacity-40 font-head text-lg font-bold uppercase tracking-wide text-paper"
+          className="mt-6 w-full cursor-pointer rounded-lg bg-courtdeep py-3.5 font-head text-base font-bold uppercase tracking-wide text-paper hover:bg-courtdeep/90 transition shadow-md"
           onClick={() => {
+            const effServerIdx = selectedServerIdx ?? live.serverIdx ?? 0;
+            const effReceiverIdx = selectedReceiverIdx ?? live.receiverIdx ?? 0;
+            const nextPosA: [number, number] = live.posA ? [...live.posA] : [0, 1];
+            const nextPosB: [number, number] = live.posB ? [...live.posB] : [0, 1];
+            // If server is player 1, place player 1 in the Right court (pos[0])
+            if (live.serveTeam === 0) {
+              if (effServerIdx === 1) {
+                nextPosA[0] = 1;
+                nextPosA[1] = 0;
+              }
+              if (effReceiverIdx === 1) {
+                nextPosB[0] = 1;
+                nextPosB[1] = 0;
+              }
+            } else {
+              if (effServerIdx === 1) {
+                nextPosB[0] = 1;
+                nextPosB[1] = 0;
+              }
+              if (effReceiverIdx === 1) {
+                nextPosA[0] = 1;
+                nextPosA[1] = 0;
+              }
+            }
             updateMatch(match.id, {
               status: "live",
-              live: { ...live, a: 0, b: 0, history: [] },
+              live: {
+                ...defaultLive(),
+                ...live,
+                serverIdx: effServerIdx,
+                receiverIdx: effReceiverIdx,
+                toUsed: live.toUsed ?? [0, 0],
+                medUsed: live.medUsed ?? [0, 0],
+                history: live.history ?? [],
+                posA: nextPosA,
+                posB: nextPosB,
+                serverNum: isSideout && doubles ? 2 : 1,
+              },
             });
             setStarted(true);
           }}
         >
-          Bắt đầu
+          {live.a > 0 || live.b > 0 ? "✓ Lưu cài đặt & Chấm điểm" : "▶ Bắt đầu chấm điểm"}
         </button>
         <Link to="/quan-ly-giai" className="btn-ghost mt-3 w-full">
-          Quay lại
+          Quay lại Quản lý giải
         </Link>
       </div>
     );
   }
 
   /* ---------- Màn hình chấm điểm ---------- */
-  const serverName = (live.serveTeam === 0 ? namesA : namesB)[live.serverIdx] ?? "—";
-  const receiverName = (live.serveTeam === 0 ? namesB : namesA)[live.receiverIdx] ?? "—";
-  const doubles = namesA.length > 1;
-  const isSideout = live.scoring === "sideout";
+  const getPlayerDisplay = (name: string) => {
+    const icon = live.playerIcons?.[name]?.trim();
+    return icon ? `${icon} ${name}` : name;
+  };
+
+  const serverName = getPlayerDisplay((live.serveTeam === 0 ? namesA : namesB)[live.serverIdx] ?? "—");
+  const receiverName = getPlayerDisplay((live.serveTeam === 0 ? namesB : namesA)[live.receiverIdx] ?? "—");
   const winner =
     Math.max(live.a, live.b) >= live.target &&
     (!live.winBy2 || Math.abs(live.a - live.b) >= 2)
@@ -357,6 +477,9 @@ function LiveScoringPage() {
           serveTeam: live.serveTeam,
           serverNum: live.serverNum,
           serverIdx: live.serverIdx,
+          receiverIdx: live.receiverIdx,
+          posA: live.posA ?? [0, 1],
+          posB: live.posB ?? [0, 1],
         },
       ],
     });
@@ -380,12 +503,45 @@ function LiveScoringPage() {
     afterScore(na, nb);
   };
 
+  /** Điểm cho đội đang giao bóng (chuẩn luật Pickleball) */
   const scoreForServing = () => {
-    const na = live.serveTeam === 0 ? live.a + 1 : live.a;
-    const nb = live.serveTeam === 1 ? live.b + 1 : live.b;
+    const sTeam = live.serveTeam;
+    const na = sTeam === 0 ? live.a + 1 : live.a;
+    const nb = sTeam === 1 ? live.b + 1 : live.b;
+
+    let nextPosA: [number, number] = [...posA];
+    let nextPosB: [number, number] = [...posB];
+
+    // Đôi: đội giao bóng ĐỔI Ô ĐỨNG (Trái <-> Phải). Đội nhận bóng KHÔNG đổi ô!
+    if (doubles) {
+      if (sTeam === 0) {
+        nextPosA = [posA[1], posA[0]];
+      } else {
+        nextPosB = [posB[1], posB[0]];
+      }
+    }
+
+    // NGƯỜI GIAO BÓNG VẪN TIẾP TỤC GIAO BÓNG!
+    const nextServerIdx = live.serverIdx;
+
+    // Người nhận là đối thủ ở ô đường chéo đối diện:
+    let nextReceiverIdx = live.receiverIdx;
+    if (doubles) {
+      if (sTeam === 0) {
+        const serverInRight = nextPosA[0] === nextServerIdx;
+        nextReceiverIdx = serverInRight ? nextPosB[0] : nextPosB[1];
+      } else {
+        const serverInRight = nextPosB[0] === nextServerIdx;
+        nextReceiverIdx = serverInRight ? nextPosA[0] : nextPosA[1];
+      }
+    }
+
     push({
-      ...(live.serveTeam === 0 ? { a: na } : { b: nb }),
-      serverIdx: doubles ? 1 - live.serverIdx : live.serverIdx,
+      ...(sTeam === 0 ? { a: na } : { b: nb }),
+      posA: nextPosA,
+      posB: nextPosB,
+      serverIdx: nextServerIdx,
+      receiverIdx: nextReceiverIdx,
     });
     afterScore(na, nb);
   };
@@ -394,14 +550,43 @@ function LiveScoringPage() {
   const mmss = (t: number) =>
     `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
 
+  /** Side-out (Mất giao bóng) chuẩn luật Pickleball */
   const sideOut = () => {
-    if (doubles && live.serverNum === 1) {
-      push({ serverNum: 2, serverIdx: 1 - live.serverIdx });
-    } else {
+    if (doubles && isSideout && live.serverNum === 1) {
+      // Chuyển sang Người giao thứ 2 của cùng đội!
+      // Cả 2 đội giữ nguyên ô đứng!
+      const partnerIdx = 1 - live.serverIdx;
+      let nextReceiverIdx = live.receiverIdx;
+      if (live.serveTeam === 0) {
+        const serverInRight = posA[0] === partnerIdx;
+        nextReceiverIdx = serverInRight ? posB[0] : posB[1];
+      } else {
+        const serverInRight = posB[0] === partnerIdx;
+        nextReceiverIdx = serverInRight ? posA[0] : posA[1];
+      }
+
       push({
-        serveTeam: (1 - live.serveTeam) as 0 | 1,
+        serverNum: 2,
+        serverIdx: partnerIdx,
+        receiverIdx: nextReceiverIdx,
+      });
+    } else {
+      // Đổi lượt giao cho Đội đối phương (Side-out)
+      const nextServeTeam: 0 | 1 = (1 - live.serveTeam) as 0 | 1;
+      const nextScore = nextServeTeam === 0 ? live.a : live.b;
+      const isEven = nextScore % 2 === 0;
+
+      // Chuẩn luật: Đội mới giao bóng: nếu điểm chẵn thì người ở ô Phải giao, nếu lẻ thì người ở ô Trái giao!
+      const servingTeamPos = nextServeTeam === 0 ? posA : posB;
+      const opponentPos = nextServeTeam === 0 ? posB : posA;
+      const nextServerIdx = doubles ? (isEven ? servingTeamPos[0] : servingTeamPos[1]) : 0;
+      const nextReceiverIdx = doubles ? (isEven ? opponentPos[0] : opponentPos[1]) : 0;
+
+      push({
+        serveTeam: nextServeTeam,
         serverNum: 1,
-        serverIdx: 0,
+        serverIdx: nextServerIdx,
+        receiverIdx: nextReceiverIdx,
       });
     }
   };
@@ -409,7 +594,13 @@ function LiveScoringPage() {
   const undo = () => {
     const last = live.history[live.history.length - 1];
     if (!last) return;
-    setLive({ ...last, history: live.history.slice(0, -1) });
+    setLive({
+      ...last,
+      posA: last.posA ?? posA,
+      posB: last.posB ?? posB,
+      receiverIdx: last.receiverIdx ?? live.receiverIdx,
+      history: live.history.slice(0, -1),
+    });
   };
 
   const [showHistory, setShowHistory] = useState(false);
@@ -427,6 +618,13 @@ function LiveScoringPage() {
           ← Về Quản lý giải
         </Link>
         <div className="flex items-center gap-2">
+          <button
+            className="rounded-md bg-secondary px-2 py-1 text-xs font-semibold ring-1 ring-line/20 hover:bg-secondary/80 flex items-center gap-1"
+            onClick={() => setStarted(false)}
+            title="Mở cài đặt & Tung đồng xu lại"
+          >
+            ⚙️ Cài đặt & Tung xu
+          </button>
           <span className="text-xs font-semibold text-line/60">
             {match.court} {match.referee ? `· TT: ${match.referee}` : ""}
           </span>
@@ -434,7 +632,7 @@ function LiveScoringPage() {
             className="rounded-md bg-secondary px-2 py-1 text-xs font-semibold ring-1 ring-line/20 hover:bg-secondary/80"
             onClick={() => setShowHistory(true)}
           >
-            📊 Lịch sử điểm ({live.history.length})
+            📊 Lịch sử ({live.history.length})
           </button>
           <button
             className="rounded-md bg-secondary px-2 py-1 text-xs font-semibold ring-1 ring-line/20 hover:bg-secondary/80"
@@ -487,7 +685,7 @@ function LiveScoringPage() {
                           : "bg-paper/70 border border-line/15 text-line/70"
                     }`}
                   >
-                    <span className="truncate flex-1">{pName}</span>
+                    <span className="truncate flex-1 font-medium">{getPlayerDisplay(pName)}</span>
                     {isServ && (
                       <span className="shrink-0 rounded bg-accent px-1.5 py-0.5 text-[10px] font-bold text-accent-foreground animate-pulse">
                         🎾 Giao bóng {isSideout && doubles ? `(${live.serverNum})` : ""}
@@ -527,7 +725,7 @@ function LiveScoringPage() {
                           : "bg-paper/70 border border-line/15 text-line/70"
                     }`}
                   >
-                    <span className="truncate flex-1">{pName}</span>
+                    <span className="truncate flex-1 font-medium">{getPlayerDisplay(pName)}</span>
                     {isServ && (
                       <span className="shrink-0 rounded bg-accent px-1.5 py-0.5 text-[10px] font-bold text-accent-foreground animate-pulse">
                         🎾 Giao bóng {isSideout && doubles ? `(${live.serverNum})` : ""}
@@ -545,82 +743,189 @@ function LiveScoringPage() {
           </div>
         </div>
 
-        {/* Sân bóng Mini mô phỏng vị trí 4 VĐV */}
+        {/* Sân bóng Mini mô phỏng vị trí VĐV theo ô đứng */}
         <div className="mx-auto mt-3 max-w-md">
-          <div className="relative h-28 w-full overflow-hidden rounded-xl border-2 border-white/80 bg-emerald-800 shadow-inner">
+          {doubles && (
+            <div className="mb-1.5 flex flex-wrap items-center justify-between gap-1 text-[10px] text-line/60">
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  className="rounded bg-secondary px-1.5 py-0.5 font-bold hover:bg-secondary/80 ring-1 ring-line/15"
+                  onClick={() =>
+                    push({
+                      posA: [posA[1], posA[0]],
+                    })
+                  }
+                  title="Đổi ô đứng của 2 VĐV Đội A"
+                >
+                  ↔️ Đổi ô Đội A
+                </button>
+                <button
+                  type="button"
+                  className="rounded bg-secondary px-1.5 py-0.5 font-bold hover:bg-secondary/80 ring-1 ring-line/15"
+                  onClick={() =>
+                    push({
+                      posB: [posB[1], posB[0]],
+                    })
+                  }
+                  title="Đổi ô đứng của 2 VĐV Đội B"
+                >
+                  ↔️ Đổi ô Đội B
+                </button>
+              </div>
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  className="rounded bg-secondary px-1.5 py-0.5 font-bold hover:bg-secondary/80 ring-1 ring-line/15"
+                  onClick={() =>
+                    push({
+                      serverIdx: 1 - live.serverIdx,
+                    })
+                  }
+                  title="Đổi quyền giao bóng cho đồng đội"
+                >
+                  🔄 Đổi người giao
+                </button>
+                <button
+                  type="button"
+                  className="rounded bg-secondary px-1.5 py-0.5 font-bold hover:bg-secondary/80 ring-1 ring-line/15"
+                  onClick={() =>
+                    push({
+                      receiverIdx: 1 - live.receiverIdx,
+                    })
+                  }
+                  title="Đổi quyền nhận bóng cho đối thủ"
+                >
+                  🔄 Đổi người nhận
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="relative h-32 w-full overflow-hidden rounded-xl border-2 border-white/90 bg-emerald-800 shadow-inner select-none">
             {/* Vạch lưới chính giữa */}
-            <div className="absolute inset-y-0 left-1/2 w-1 -translate-x-1/2 bg-white/90 z-10 shadow-sm flex items-center justify-center">
-              <span className="rotate-90 text-[8px] font-bold uppercase tracking-widest text-emerald-950 bg-white/80 px-1 rounded">
+            <div className="absolute inset-y-0 left-1/2 w-1.5 -translate-x-1/2 bg-white z-20 shadow-md flex items-center justify-center">
+              <span className="rotate-90 text-[8px] font-extrabold uppercase tracking-widest text-emerald-950 bg-white/95 px-1 py-0.5 rounded shadow-xs">
                 Lưới
               </span>
             </div>
             {/* Kitchen (NVZ) trái */}
-            <div className="absolute inset-y-0 left-[35%] w-0.5 bg-white/50" />
+            <div className="absolute inset-y-0 left-[34%] w-0.5 bg-white/60 z-10" />
             {/* Kitchen (NVZ) phải */}
-            <div className="absolute inset-y-0 right-[35%] w-0.5 bg-white/50" />
+            <div className="absolute inset-y-0 right-[34%] w-0.5 bg-white/60 z-10" />
             {/* Vạch giữa ô giao bóng bên trái */}
-            <div className="absolute left-0 top-1/2 right-[65%] h-0.5 bg-white/50" />
+            <div className="absolute left-0 top-1/2 right-[66%] h-0.5 bg-white/60" />
             {/* Vạch giữa ô giao bóng bên phải */}
-            <div className="absolute left-[65%] top-1/2 right-0 h-0.5 bg-white/50" />
+            <div className="absolute left-[66%] top-1/2 right-0 h-0.5 bg-white/60" />
 
-            {/* Vị trí VĐV Đội A (Nửa trái) */}
-            <div className="absolute inset-y-0 left-0 w-1/2 p-2 flex flex-col justify-around">
-              <div
-                className={`flex items-center gap-1 text-[11px] font-bold max-w-[130px] truncate rounded px-1.5 py-0.5 ${
-                  live.serveTeam === 0 && live.serverIdx === 0
-                    ? "bg-amber-400 text-black shadow-md ring-2 ring-amber-300"
-                    : live.serveTeam === 1 && live.receiverIdx === 0
-                      ? "bg-blue-400 text-black ring-1 ring-white"
-                      : "bg-emerald-900/80 text-white/90 border border-white/30"
-                }`}
-              >
-                {live.serveTeam === 0 && live.serverIdx === 0 ? "🎾" : ""}
-                <span className="truncate">{namesA[0]}</span>
-              </div>
-              {namesA[1] && (
-                <div
-                  className={`flex items-center gap-1 text-[11px] font-bold max-w-[130px] truncate rounded px-1.5 py-0.5 ${
-                    live.serveTeam === 0 && live.serverIdx === 1
-                      ? "bg-amber-400 text-black shadow-md ring-2 ring-amber-300"
-                      : live.serveTeam === 1 && live.receiverIdx === 1
-                        ? "bg-blue-400 text-black ring-1 ring-white"
-                        : "bg-emerald-900/80 text-white/90 border border-white/30"
-                  }`}
-                >
-                  {live.serveTeam === 0 && live.serverIdx === 1 ? "🎾" : ""}
-                  <span className="truncate">{namesA[1]}</span>
-                </div>
-              )}
+            {/* Vị trí VĐV Đội A (Nửa trái): Ô trên là Trái (Lẻ), Ô dưới là Phải (Chẵn) */}
+            <div className="absolute inset-y-0 left-0 w-[34%] grid grid-rows-2 p-1 gap-1">
+              {/* Ô Trái (Lẻ) - index posA[1] */}
+              {(() => {
+                const idx = doubles ? (posA[1] ?? 1) : 0;
+                const pName = (doubles ? namesA[idx] : namesA[0]) || namesA[0] || "VĐV A";
+                const isServ = live.serveTeam === 0 && live.serverIdx === idx;
+                const isRecv = live.serveTeam === 1 && live.receiverIdx === idx;
+                return (
+                  <div
+                    className={`flex flex-col justify-center rounded px-1 text-[10px] truncate transition ${
+                      isServ
+                        ? "bg-amber-400 text-black font-extrabold shadow-md ring-2 ring-amber-300"
+                        : isRecv
+                          ? "bg-blue-400 text-black font-extrabold ring-2 ring-white"
+                          : "bg-emerald-900/80 text-white/90 border border-white/20"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between text-[8px] opacity-75">
+                      <span>{doubles ? "Trái (Lẻ)" : "A"}</span>
+                      {isServ && <span>🎾</span>}
+                      {isRecv && <span>🛡️</span>}
+                    </div>
+                    <span className="truncate font-bold">{pName}</span>
+                  </div>
+                );
+              })()}
+
+              {/* Ô Phải (Chẵn) - index posA[0] */}
+              {(() => {
+                const idx = doubles ? (posA[0] ?? 0) : 0;
+                const pName = (doubles ? namesA[idx] : namesA[0]) || namesA[0] || "VĐV A";
+                const isServ = live.serveTeam === 0 && live.serverIdx === idx;
+                const isRecv = live.serveTeam === 1 && live.receiverIdx === idx;
+                return (
+                  <div
+                    className={`flex flex-col justify-center rounded px-1 text-[10px] truncate transition ${
+                      isServ
+                        ? "bg-amber-400 text-black font-extrabold shadow-md ring-2 ring-amber-300"
+                        : isRecv
+                          ? "bg-blue-400 text-black font-extrabold ring-2 ring-white"
+                          : "bg-emerald-900/80 text-white/90 border border-white/20"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between text-[8px] opacity-75">
+                      <span>{doubles ? "Phải (Chẵn)" : "A"}</span>
+                      {isServ && <span>🎾</span>}
+                      {isRecv && <span>🛡️</span>}
+                    </div>
+                    <span className="truncate font-bold">{pName}</span>
+                  </div>
+                );
+              })()}
             </div>
 
-            {/* Vị trí VĐV Đội B (Nửa phải) */}
-            <div className="absolute inset-y-0 right-0 w-1/2 p-2 flex flex-col justify-around items-end">
-              <div
-                className={`flex items-center gap-1 text-[11px] font-bold max-w-[130px] truncate rounded px-1.5 py-0.5 ${
-                  live.serveTeam === 1 && live.serverIdx === 0
-                    ? "bg-amber-400 text-black shadow-md ring-2 ring-amber-300"
-                    : live.serveTeam === 0 && live.receiverIdx === 0
-                      ? "bg-blue-400 text-black ring-1 ring-white"
-                      : "bg-emerald-900/80 text-white/90 border border-white/30"
-                }`}
-              >
-                <span className="truncate">{namesB[0]}</span>
-                {live.serveTeam === 1 && live.serverIdx === 0 ? "🎾" : ""}
-              </div>
-              {namesB[1] && (
-                <div
-                  className={`flex items-center gap-1 text-[11px] font-bold max-w-[130px] truncate rounded px-1.5 py-0.5 ${
-                    live.serveTeam === 1 && live.serverIdx === 1
-                      ? "bg-amber-400 text-black shadow-md ring-2 ring-amber-300"
-                      : live.serveTeam === 0 && live.receiverIdx === 1
-                        ? "bg-blue-400 text-black ring-1 ring-white"
-                        : "bg-emerald-900/80 text-white/90 border border-white/30"
-                  }`}
-                >
-                  <span className="truncate">{namesB[1]}</span>
-                  {live.serveTeam === 1 && live.serverIdx === 1 ? "🎾" : ""}
-                </div>
-              )}
+            {/* Vị trí VĐV Đội B (Nửa phải): Ô trên là Phải (Chẵn), Ô dưới là Trái (Lẻ) để chéo qua lưới! */}
+            <div className="absolute inset-y-0 right-0 w-[34%] grid grid-rows-2 p-1 gap-1 text-right">
+              {/* Ô Phải (Chẵn) - index posB[0] */}
+              {(() => {
+                const idx = doubles ? (posB[0] ?? 0) : 0;
+                const pName = (doubles ? namesB[idx] : namesB[0]) || namesB[0] || "VĐV B";
+                const isServ = live.serveTeam === 1 && live.serverIdx === idx;
+                const isRecv = live.serveTeam === 0 && live.receiverIdx === idx;
+                return (
+                  <div
+                    className={`flex flex-col justify-center rounded px-1 text-[10px] truncate transition ${
+                      isServ
+                        ? "bg-amber-400 text-black font-extrabold shadow-md ring-2 ring-amber-300"
+                        : isRecv
+                          ? "bg-blue-400 text-black font-extrabold ring-2 ring-white"
+                          : "bg-emerald-900/80 text-white/90 border border-white/20"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between text-[8px] opacity-75">
+                      {isServ && <span>🎾</span>}
+                      {isRecv && <span>🛡️</span>}
+                      <span className="ml-auto">{doubles ? "Phải (Chẵn)" : "B"}</span>
+                    </div>
+                    <span className="truncate font-bold">{pName}</span>
+                  </div>
+                );
+              })()}
+
+              {/* Ô Trái (Lẻ) - index posB[1] */}
+              {(() => {
+                const idx = doubles ? (posB[1] ?? 1) : 0;
+                const pName = (doubles ? namesB[idx] : namesB[0]) || namesB[0] || "VĐV B";
+                const isServ = live.serveTeam === 1 && live.serverIdx === idx;
+                const isRecv = live.serveTeam === 0 && live.receiverIdx === idx;
+                return (
+                  <div
+                    className={`flex flex-col justify-center rounded px-1 text-[10px] truncate transition ${
+                      isServ
+                        ? "bg-amber-400 text-black font-extrabold shadow-md ring-2 ring-amber-300"
+                        : isRecv
+                          ? "bg-blue-400 text-black font-extrabold ring-2 ring-white"
+                          : "bg-emerald-900/80 text-white/90 border border-white/20"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between text-[8px] opacity-75">
+                      {isServ && <span>🎾</span>}
+                      {isRecv && <span>🛡️</span>}
+                      <span className="ml-auto">{doubles ? "Trái (Lẻ)" : "B"}</span>
+                    </div>
+                    <span className="truncate font-bold">{pName}</span>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>
@@ -659,16 +964,20 @@ function LiveScoringPage() {
           <button
             className="rounded-md bg-paper px-2 py-1 ring-1 ring-line/20 hover:bg-paper/80"
             onClick={() => {
-              setLive({ toUsed: [live.toUsed[0] + 1, live.toUsed[1]] });
+              const u0 = live.toUsed?.[0] ?? 0;
+              const u1 = live.toUsed?.[1] ?? 0;
+              setLive({ toUsed: [u0 + 1, u1] });
               startTimer(`Hội ý · ${entryName(teamA)}`, live.timeoutSeconds);
             }}
           >
-            ⏱ Hội ý ({live.timeoutsPerTeam - live.toUsed[0]})
+            ⏱ Hội ý ({Math.max(0, (live.timeoutsPerTeam ?? 1) - (live.toUsed?.[0] ?? 0))})
           </button>
           <button
             className="rounded-md bg-destructive px-2 py-1 text-destructive-foreground hover:opacity-90"
             onClick={() => {
-              setLive({ medUsed: [live.medUsed[0] + 1, live.medUsed[1]] });
+              const m0 = live.medUsed?.[0] ?? 0;
+              const m1 = live.medUsed?.[1] ?? 0;
+              setLive({ medUsed: [m0 + 1, m1] });
               startTimer(`Y tế · ${entryName(teamA)}`, live.medicalSeconds);
             }}
           >
@@ -680,7 +989,9 @@ function LiveScoringPage() {
           <button
             className="rounded-md bg-destructive px-2 py-1 text-destructive-foreground hover:opacity-90"
             onClick={() => {
-              setLive({ medUsed: [live.medUsed[0], live.medUsed[1] + 1] });
+              const m0 = live.medUsed?.[0] ?? 0;
+              const m1 = live.medUsed?.[1] ?? 0;
+              setLive({ medUsed: [m0, m1 + 1] });
               startTimer(`Y tế · ${entryName(teamB)}`, live.medicalSeconds);
             }}
           >
@@ -689,11 +1000,13 @@ function LiveScoringPage() {
           <button
             className="rounded-md bg-paper px-2 py-1 ring-1 ring-line/20 hover:bg-paper/80"
             onClick={() => {
-              setLive({ toUsed: [live.toUsed[0], live.toUsed[1] + 1] });
+              const u0 = live.toUsed?.[0] ?? 0;
+              const u1 = live.toUsed?.[1] ?? 0;
+              setLive({ toUsed: [u0, u1 + 1] });
               startTimer(`Hội ý · ${entryName(teamB)}`, live.timeoutSeconds);
             }}
           >
-            ⏱ Hội ý ({live.timeoutsPerTeam - live.toUsed[1]})
+            ⏱ Hội ý ({Math.max(0, (live.timeoutsPerTeam ?? 1) - (live.toUsed?.[1] ?? 0))})
           </button>
           <span className="max-w-[90px] truncate text-line/70">{entryName(teamB)}</span>
         </div>

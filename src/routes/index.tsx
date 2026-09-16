@@ -67,7 +67,7 @@ function CreateTournamentPage() {
       <div className="title-container min-h-[140px] flex items-center mb-6 overflow-visible">
         <h1
           id="main-title"
-          className="font-[system-ui] text-left no-underline text-ink tracking-[-0.05em] uppercase italic font-black transition-all duration-200"
+          className="font-[system-ui] text-left no-underline border-[#093220] text-[#0a3320] tracking-[-0.05em] uppercase italic font-black transition-all duration-200"
           style={{
             fontSize: titleFontSize,
             lineHeight: 1.08,
@@ -88,7 +88,7 @@ function CreateTournamentPage() {
             type="text"
             id="tour-name-input"
             className="field mt-1.5 font-['Verdana',sans-serif] not-italic font-normal text-base bg-white"
-            placeholder="Gà Mờ Tranh Cúp"
+            placeholder="Cúp Nảy"
             maxLength={90}
             value={state.name}
             onChange={(e) => update({ name: e.target.value })}

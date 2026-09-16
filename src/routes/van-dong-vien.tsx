@@ -52,7 +52,7 @@ function PlayersPage() {
   if (!ev) {
     return (
       <div className="max-w-xl">
-        <h1 className="font-head text-4xl font-bold uppercase tracking-tighter">Danh sách VĐV</h1>
+        <h1 className="font-head text-4xl font-bold uppercase tracking-tighter text-[#0a3320]">Danh sách VĐV</h1>
         <p className="mt-3 text-sm text-line/60">
           Chưa có nội dung nào. Hãy tạo nội dung thi đấu trước.
         </p>
@@ -84,14 +84,16 @@ function PlayersPage() {
 
   const patchPlayer = (id: string, idx: number, patch: Partial<Entry["players"][number]>) =>
     setEntries(
-      entries.map((e) =>
-        e.id === id
-          ? {
-              ...e,
-              players: e.players.map((p, i) => (i === idx ? { ...p, ...patch } : p)),
-            }
-          : e,
-      ),
+      entries.map((e) => {
+        if (e.id !== id) return e;
+        const newPlayers = e.players.map((p, i) => (i === idx ? { ...p, ...patch } : p));
+        const allPaid = newPlayers.length > 0 && newPlayers.every((p) => Boolean(p.paid));
+        return {
+          ...e,
+          players: newPlayers,
+          paid: allPaid,
+        };
+      }),
     );
 
   const removeEntry = (id: string) => setEntries(entries.filter((e) => e.id !== id));
@@ -162,12 +164,44 @@ function PlayersPage() {
     updateEvent(ev.id, { groups });
   };
 
+  const swapEntriesInGroups = (sourceId: string, targetId: string) => {
+    if (sourceId === targetId) return;
+    const groups = ev.groups.map((g) => {
+      const hasSource = g.entryIds.includes(sourceId);
+      const hasTarget = g.entryIds.includes(targetId);
+      if (!hasSource && !hasTarget) return g;
+      return {
+        ...g,
+        entryIds: g.entryIds.map((id) => {
+          if (id === sourceId) return targetId;
+          if (id === targetId) return sourceId;
+          return id;
+        }),
+      };
+    });
+    updateEvent(ev.id, { groups });
+  };
+
+  const handleGroupCountChange = (newVal: number) => {
+    const count = Math.max(1, Math.min(8, newVal || 1));
+    const existingGroups = ev.groups || [];
+    const nextGroups = Array.from({ length: count }, (_, i) => {
+      const name = `Bảng ${"ABCDEFGH"[i]}`;
+      const found = existingGroups.find((g) => g.name === name);
+      return found ?? { name, entryIds: [] };
+    });
+    updateEvent(ev.id, {
+      groupCount: count,
+      groups: nextGroups,
+    });
+  };
+
   const [dragEntryId, setDragEntryId] = useState<string | null>(null);
   const [showPrintModal, setShowPrintModal] = useState(false);
 
   return (
     <div>
-      <h1 className="text-balance font-head text-4xl font-bold uppercase leading-none tracking-tighter">
+      <h1 className="text-balance font-head text-4xl font-bold uppercase leading-none tracking-tighter text-[#0a3320]">
         Danh sách VĐV
       </h1>
 
@@ -175,7 +209,7 @@ function PlayersPage() {
       <div className="mt-4 flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3.5 text-xs text-amber-900 dark:text-amber-200">
         <span className="text-base leading-none">⚠️</span>
         <div>
-          <span className="font-bold">Lưu ý quan trọng khi nhập tên VĐV:</span> Nếu có cùng 1 tên VĐV tham gia ở các nội dung khác nhau, hoặc cùng 1 nội dung có 2 VĐV trùng tên, timeline và hệ thống nhận diện trận đấu sẽ bị lỗi nhầm lẫn. Vui lòng thêm ký hiệu phân biệt khi nhập (ví dụ: <strong className="text-amber-600 dark:text-amber-300">Tuấn (A)</strong>, <strong className="text-amber-600 dark:text-amber-300">Tuấn (B)</strong> hoặc <strong className="text-amber-600 dark:text-amber-300">Hoàng (Q1)</strong>, <strong className="text-amber-600 dark:text-amber-300">Hoàng (Q7)</strong>).
+          <span className="font-bold">Lưu ý quan trọng khi nhập tên VĐV:</span> Nếu có cùng 1 tên VĐV tham gia ở các nội dung khác nhau, hoặc cùng 1 nội dung có 2 VĐV trùng tên, hệ thống nhận diện sẽ hiểu là vận động viên bị trùng trận. Vui lòng thêm các ký hiệu phân biệt khi nhập (ví dụ: <strong className="text-amber-600 dark:text-amber-300">Tuấn (A)</strong>, <strong className="text-amber-600 dark:text-amber-300">Tuấn (B)</strong> hoặc <strong className="text-amber-600 dark:text-amber-300">Hoàng (Q1)</strong>, <strong className="text-amber-600 dark:text-amber-300">Hoàng (Q7)</strong>).
         </div>
       </div>
 
@@ -231,19 +265,26 @@ function PlayersPage() {
               </p>
             ) : (
               entries.map((en, i) => {
-                const totalRating =
-                  slots === 2
-                    ? (en.players[0]?.rating ?? 0) + (en.players[1]?.rating ?? 0)
-                    : en.players[0]?.rating ?? 0;
+                const totalRating = en.players.reduce((sum, p) => sum + (p.rating ?? 0), 0);
                 return (
                   <div key={en.id} className="flex flex-wrap items-center gap-2 px-3 py-2.5">
                     <span className="w-5 font-head font-bold text-line/40">{i + 1}</span>
                     <div className="flex min-w-[220px] flex-1 flex-wrap items-center gap-2">
                       {en.players.map((p, pi) => (
-                        <div key={pi} className="flex min-w-[170px] flex-1 gap-1.5">
+                        <div key={pi} className="flex min-w-[180px] flex-1 items-center gap-1.5">
+                          <input
+                            type="checkbox"
+                            title={`Tình trạng đóng phí: ${p.name || `VĐV ${pi + 1}`}`}
+                            className="size-4 shrink-0 rounded accent-[oklch(0.615_0.145_154.2)] cursor-pointer"
+                            checked={Boolean(p.paid)}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              patchPlayer(en.id, pi, { paid: checked });
+                            }}
+                          />
                           <input
                             className="field"
-                            placeholder={slots === 2 ? `VĐV ${pi + 1}` : "Tên VĐV"}
+                            placeholder={en.players.length > 1 ? `VĐV ${pi + 1}` : "Tên VĐV"}
                             value={p.name}
                             onChange={(e) => patchPlayer(en.id, pi, { name: e.target.value })}
                           />
@@ -253,27 +294,18 @@ function PlayersPage() {
                           />
                         </div>
                       ))}
-                      {slots === 2 && (
+                      {en.players.length > 1 && (
                         <div
                           className="flex h-9 shrink-0 items-center justify-center rounded-md border border-accent/40 bg-accent/10 px-2.5 text-xs font-bold text-accent"
-                          title="Tổng điểm trình của cặp đôi"
+                          title="Tổng điểm trình của cả 2 VĐV cộng lại"
                         >
                           <span className="text-[10px] uppercase text-accent/70 mr-1">Tổng:</span>
                           <span>{totalRating > 0 ? totalRating.toFixed(1).replace(/\.0$/, "") : "—"}</span>
                         </div>
                       )}
                     </div>
-                    <label className="flex items-center gap-1.5 text-xs font-semibold text-line/70">
-                      <input
-                        type="checkbox"
-                        className="size-4 accent-[oklch(0.615_0.145_154.2)]"
-                        checked={en.paid}
-                        onChange={(e) => patchEntry(en.id, { paid: e.target.checked })}
-                      />
-                      Đã đóng phí
-                    </label>
                     <button
-                      className="text-line/40 hover:text-destructive"
+                      className="text-line/40 hover:text-destructive shrink-0 p-1"
                       onClick={() => removeEntry(en.id)}
                       aria-label="Xoá"
                     >
@@ -310,11 +342,7 @@ function PlayersPage() {
                 max={8}
                 className="field mt-1.5 w-20 text-center"
                 value={ev.groupCount}
-                onChange={(e) =>
-                  updateEvent(ev.id, {
-                    groupCount: Math.max(1, Math.min(8, Number(e.target.value) || 1)),
-                  })
-                }
+                onChange={(e) => handleGroupCountChange(Number(e.target.value) || 1)}
               />
             </div>
             <button className="btn-accent" onClick={autoGroups}>
@@ -376,10 +404,7 @@ function PlayersPage() {
                   ) : (
                     g.entryIds.map((id) => {
                       const entry = entries.find((e) => e.id === id);
-                      const pts =
-                        entry && slots === 2
-                          ? (entry.players[0]?.rating ?? 0) + (entry.players[1]?.rating ?? 0)
-                          : entry?.players[0]?.rating ?? 0;
+                      const pts = entry ? entry.players.reduce((sum, p) => sum + (p.rating ?? 0), 0) : 0;
                       return (
                         <div
                           key={id}
@@ -389,16 +414,53 @@ function PlayersPage() {
                             setDragEntryId(id);
                           }}
                           onDragEnd={() => setDragEntryId(null)}
-                          className="flex cursor-grab items-center justify-between gap-1.5 rounded-lg bg-paper p-2 text-xs font-semibold shadow-xs ring-1 ring-line/15 active:cursor-grabbing hover:ring-accent/40"
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            e.dataTransfer.dropEffect = "move";
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const sourceId = e.dataTransfer.getData("text/plain") || dragEntryId;
+                            if (sourceId && sourceId !== id) {
+                              swapEntriesInGroups(sourceId, id);
+                              setDragEntryId(null);
+                            }
+                          }}
+                          className="flex cursor-grab items-center justify-between gap-1.5 rounded-lg bg-paper p-2 text-xs font-semibold shadow-xs ring-1 ring-line/15 active:cursor-grabbing hover:ring-accent/60"
                         >
-                          <span className="truncate flex-1">{entryName(entry)}</span>
+                          <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                            {/* Ô tích đóng phí cho từng VĐV trong đội */}
+                            {entry && (
+                              <div
+                                className="flex items-center gap-1 shrink-0"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                {entry.players.map((p, pIdx) => (
+                                  <input
+                                    key={pIdx}
+                                    type="checkbox"
+                                    checked={Boolean(p.paid)}
+                                    title={`${p.name || `VĐV ${pIdx + 1}`}: ${Boolean(p.paid) ? "Đã đóng phí" : "Chưa đóng phí"}`}
+                                    className="size-3.5 rounded accent-[oklch(0.615_0.145_154.2)] cursor-pointer"
+                                    onChange={(e) => {
+                                      const checked = e.target.checked;
+                                      patchPlayer(entry.id, pIdx, { paid: checked });
+                                    }}
+                                  />
+                                ))}
+                              </div>
+                            )}
+                            <span className="truncate flex-1">{entryName(entry)}</span>
+                          </div>
                           {pts > 0 && (
                             <span className="shrink-0 rounded bg-accent/15 px-1 py-0.5 text-[10px] font-bold text-accent">
                               {pts.toFixed(1).replace(/\.0$/, "")}đ
                             </span>
                           )}
                           <button
-                            className="text-line/40 hover:text-destructive"
+                            className="text-line/40 hover:text-destructive shrink-0"
                             onClick={() => removeFromGroups(id)}
                             title="Bỏ khỏi bảng"
                           >
@@ -439,10 +501,7 @@ function PlayersPage() {
                 {entries
                   .filter((e) => !ev.groups.some((g) => g.entryIds.includes(e.id)))
                   .map((e) => {
-                    const pts =
-                      slots === 2
-                        ? (e.players[0]?.rating ?? 0) + (e.players[1]?.rating ?? 0)
-                        : e.players[0]?.rating ?? 0;
+                    const pts = e.players.reduce((sum, p) => sum + (p.rating ?? 0), 0);
                     return (
                       <div
                         key={e.id}
@@ -454,6 +513,25 @@ function PlayersPage() {
                         onDragEnd={() => setDragEntryId(null)}
                         className="flex cursor-grab items-center gap-2 rounded-lg bg-card px-2.5 py-1.5 text-xs font-semibold shadow-xs ring-1 ring-line/20 active:cursor-grabbing hover:border-accent hover:ring-accent"
                       >
+                        {/* Ô tích đóng phí cho từng VĐV */}
+                        <div
+                          className="flex items-center gap-1 shrink-0"
+                          onClick={(evt) => evt.stopPropagation()}
+                        >
+                          {e.players.map((p, pIdx) => (
+                            <input
+                              key={pIdx}
+                              type="checkbox"
+                              checked={Boolean(p.paid)}
+                              title={`${p.name || `VĐV ${pIdx + 1}`}: ${Boolean(p.paid) ? "Đã đóng phí" : "Chưa đóng phí"}`}
+                              className="size-3.5 rounded accent-[oklch(0.615_0.145_154.2)] cursor-pointer"
+                              onChange={(evt) => {
+                                const checked = evt.target.checked;
+                                patchPlayer(e.id, pIdx, { paid: checked });
+                              }}
+                            />
+                          ))}
+                        </div>
                         <span className="truncate max-w-[140px]">{entryName(e)}</span>
                         {pts > 0 && (
                           <span className="rounded bg-accent/15 px-1 py-0.5 text-[10px] font-bold text-accent">
@@ -553,7 +631,7 @@ function PlayersPage() {
                                 {entryName(entry)}
                               </span>
                             </div>
-                            {slots === 2 && entry && (
+                            {entry && entry.players.length > 1 && (
                               <span className="text-xs text-line/60">
                                 {entry.players.map((p) => p.name).filter(Boolean).join(" - ")}
                               </span>
