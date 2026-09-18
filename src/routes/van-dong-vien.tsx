@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   drawPairs,
   entryName,
+  getGroupName,
   splitGroups,
   uid,
   useTournament,
@@ -133,9 +134,9 @@ function PlayersPage() {
 
   const reDrawGroups = () => {
     const shuffled = [...entries].sort(() => Math.random() - 0.5);
-    const n = Math.max(1, Math.min(ev.groupCount, 8));
+    const n = Math.max(1, ev.groupCount || 1);
     const groups = Array.from({ length: n }, (_, i) => ({
-      name: `Bảng ${"ABCDEFGH"[i]}`,
+      name: getGroupName(i),
       entryIds: [] as string[],
     }));
     shuffled.forEach((en, i) => {
@@ -183,10 +184,10 @@ function PlayersPage() {
   };
 
   const handleGroupCountChange = (newVal: number) => {
-    const count = Math.max(1, Math.min(8, newVal || 1));
+    const count = Math.max(1, newVal || 1);
     const existingGroups = ev.groups || [];
     const nextGroups = Array.from({ length: count }, (_, i) => {
-      const name = `Bảng ${"ABCDEFGH"[i]}`;
+      const name = getGroupName(i);
       const found = existingGroups.find((g) => g.name === name);
       return found ?? { name, entryIds: [] };
     });
@@ -297,10 +298,10 @@ function PlayersPage() {
                       {en.players.length > 1 && (
                         <div
                           className="flex h-9 shrink-0 items-center justify-center rounded-md border border-accent/40 bg-accent/10 px-2.5 text-xs font-bold text-accent"
-                          title="Tổng điểm trình của cả 2 VĐV cộng lại"
+                          title="Tổng điểm trình của cả 2 VĐV cộng lại (đầy đủ số thập phân)"
                         >
                           <span className="text-[10px] uppercase text-accent/70 mr-1">Tổng:</span>
-                          <span>{totalRating > 0 ? totalRating.toFixed(1).replace(/\.0$/, "") : "—"}</span>
+                          <span>{totalRating > 0 ? Number(totalRating.toFixed(4)) : "—"}</span>
                         </div>
                       )}
                     </div>
@@ -339,7 +340,7 @@ function PlayersPage() {
               <input
                 type="number"
                 min={1}
-                max={8}
+                max={64}
                 className="field mt-1.5 w-20 text-center"
                 value={ev.groupCount}
                 onChange={(e) => handleGroupCountChange(Number(e.target.value) || 1)}
@@ -356,7 +357,7 @@ function PlayersPage() {
               onClick={() =>
                 updateEvent(ev.id, {
                   groups: Array.from({ length: ev.groupCount }, (_, i) => ({
-                    name: `Bảng ${"ABCDEFGH"[i]}`,
+                    name: getGroupName(i),
                     entryIds: [],
                   })),
                 })
@@ -456,7 +457,7 @@ function PlayersPage() {
                           </div>
                           {pts > 0 && (
                             <span className="shrink-0 rounded bg-accent/15 px-1 py-0.5 text-[10px] font-bold text-accent">
-                              {pts.toFixed(1).replace(/\.0$/, "")}đ
+                              {Number(pts.toFixed(4))}đ
                             </span>
                           )}
                           <button
@@ -535,7 +536,7 @@ function PlayersPage() {
                         <span className="truncate max-w-[140px]">{entryName(e)}</span>
                         {pts > 0 && (
                           <span className="rounded bg-accent/15 px-1 py-0.5 text-[10px] font-bold text-accent">
-                            {pts.toFixed(1).replace(/\.0$/, "")}đ
+                            {Number(pts.toFixed(4))}đ
                           </span>
                         )}
                         <select

@@ -96,6 +96,7 @@ function LiveScoringPage() {
   const [changeover, setChangeover] = useState(false);
   const [coDone, setCoDone] = useState(false);
   const [endAsk, setEndAsk] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const endDismissed = useRef(false);
 
   useEffect(() => {
@@ -451,13 +452,18 @@ function LiveScoringPage() {
   }
 
   /* ---------- Màn hình chấm điểm ---------- */
-  const getPlayerDisplay = (name: string) => {
+  const getPlayerDisplay = (name?: string | null) => {
+    if (!name || typeof name !== "string") return name || "—";
     const icon = live.playerIcons?.[name]?.trim();
     return icon ? `${icon} ${name}` : name;
   };
 
-  const serverName = getPlayerDisplay((live.serveTeam === 0 ? namesA : namesB)[live.serverIdx] ?? "—");
-  const receiverName = getPlayerDisplay((live.serveTeam === 0 ? namesB : namesA)[live.receiverIdx] ?? "—");
+  const currentServeNames = live.serveTeam === 0 ? namesA : namesB;
+  const currentRecvNames = live.serveTeam === 0 ? namesB : namesA;
+  const sIdx = Math.max(0, Math.min(currentServeNames.length - 1, live.serverIdx ?? 0));
+  const rIdx = Math.max(0, Math.min(currentRecvNames.length - 1, live.receiverIdx ?? 0));
+  const serverName = getPlayerDisplay(currentServeNames[sIdx] ?? "—");
+  const receiverName = getPlayerDisplay(currentRecvNames[rIdx] ?? "—");
   const winner =
     Math.max(live.a, live.b) >= live.target &&
     (!live.winBy2 || Math.abs(live.a - live.b) >= 2)
@@ -602,8 +608,6 @@ function LiveScoringPage() {
       history: live.history.slice(0, -1),
     });
   };
-
-  const [showHistory, setShowHistory] = useState(false);
 
   // Vị trí trên sân mini:
   // Đội A ở nửa sân bên trái, Đội B ở nửa sân bên phải.

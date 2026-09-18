@@ -129,9 +129,9 @@ function RefereeSelector({
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute left-0 top-full mt-1 z-50 min-w-[150px] max-h-48 overflow-y-auto rounded-lg border border-line/20 bg-card p-1 shadow-lg text-xs">
+          <div className="absolute left-0 bottom-full mb-1 z-50 min-w-[170px] max-h-56 overflow-y-auto rounded-lg border border-line/20 bg-card p-1 shadow-2xl text-xs">
             <div className="px-2 py-1 text-[10px] font-bold text-line/50 uppercase tracking-wider">
-              Trọng tài đã lưu
+              Danh sách trọng tài
             </div>
             {referees.length === 0 ? (
               <div className="px-2 py-1.5 text-[11px] text-line/50 italic">
@@ -142,8 +142,8 @@ function RefereeSelector({
                 <button
                   key={r}
                   type="button"
-                  className={`w-full text-left px-2 py-1 rounded text-[11px] hover:bg-line/10 transition truncate ${
-                    r === value ? "font-bold text-accent bg-accent/10" : "text-line/80"
+                  className={`w-full text-left px-2 py-1.5 rounded text-[11px] hover:bg-accent/10 transition truncate cursor-pointer ${
+                    r === value ? "font-bold text-accent bg-accent/10" : "text-ink"
                   }`}
                   onClick={() => {
                     setText(r);
@@ -158,13 +158,13 @@ function RefereeSelector({
             {text.trim() && !referees.includes(text.trim()) && (
               <button
                 type="button"
-                className="w-full text-left px-2 py-1 rounded text-[11px] text-accent font-semibold hover:bg-accent/10 transition border-t border-line/10 mt-1"
+                className="w-full text-left px-2 py-1.5 rounded text-[11px] text-accent font-semibold hover:bg-accent/10 transition border-t border-line/10 mt-1 cursor-pointer"
                 onClick={() => {
                   commit(text);
                   setOpen(false);
                 }}
               >
-                + Lưu trọng tài "{text.trim()}"
+                + Thêm "{text.trim()}"
               </button>
             )}
           </div>
@@ -243,8 +243,10 @@ type CardProps = {
   onDurationChange?: (mins: number) => void;
   onOffsetChange?: (offset: number) => void;
   onDropOnMatch?: (targetMatchId: string) => void;
+  hasConflict?: boolean;
   compact?: boolean | undefined;
   colWidth?: number;
+  rowHeight?: number;
   slotMinutes?: number;
   key?: React.Key;
 };
@@ -271,8 +273,10 @@ function MatchCard({
   onDurationChange,
   onOffsetChange,
   onDropOnMatch,
+  hasConflict,
   compact,
   colWidth = 210,
+  rowHeight = 115,
   slotMinutes = 30,
 }: CardProps) {
   const c = groupColor(m.groupName);
@@ -285,22 +289,24 @@ function MatchCard({
       ? groupTag(m.groupName)
       : `${groupTag(m.groupName)} · V${m.round}`;
 
+  const isUltraCompact = compact && rowHeight < 75;
+  const isMidCompact = compact && rowHeight >= 75 && rowHeight < 100;
+
   return (
     <div
-      className={`relative rounded-xl p-2.5 ring-1 transition-all select-none ${
-        m.status === "live"
-          ? "ring-2 ring-red-500 shadow-md bg-red-50/70 dark:bg-red-950/20"
-          : "ring-line/15"
+      className={`relative rounded-xl ring-1 transition-all select-none flex flex-col justify-between overflow-hidden ${
+        compact ? (isUltraCompact ? "p-1" : isMidCompact ? "p-1.5" : "p-2") : "p-2.5"
+      } ${
+        hasConflict
+          ? "ring-1 ring-red-500 border border-red-500 shadow-sm"
+          : m.status === "live"
+            ? "ring-2 ring-red-500 shadow-md bg-red-50/70 dark:bg-red-950/20"
+            : "ring-line/15"
       }`}
-      style={{ backgroundColor: m.status === "live" ? undefined : m.status === "done" ? "var(--muted)" : c.bg }}
-      onDragOver={(e) => {
-        if (onDropOnMatch) e.preventDefault();
-      }}
-      onDrop={(e) => {
-        if (onDropOnMatch) {
-          e.stopPropagation();
-          onDropOnMatch(m.id);
-        }
+      style={{
+        backgroundColor: m.status === "live" ? undefined : m.status === "done" ? "var(--muted)" : c.bg,
+        height: compact ? "100%" : undefined,
+        maxHeight: compact ? `${Math.max(40, rowHeight - 6)}px` : undefined,
       }}
     >
       <div className="flex items-center justify-between gap-1">
@@ -311,6 +317,11 @@ function MatchCard({
           >
             {displayTag}
           </span>
+          {hasConflict && (
+            <span className="rounded bg-red-600 px-1 py-0.2 text-[9px] font-bold text-white shrink-0">
+              Trùng giờ
+            </span>
+          )}
           {m.court && (
             <span className="text-[10px] font-medium text-line/60 truncate">
               {m.court}
@@ -382,144 +393,113 @@ function MatchCard({
         </div>
       </div>
 
+      {/* Hành động dưới thẻ */}
       {compact ? (
-        /* Thẻ gọn gàng trong ô Timeline kèm nút tăng giảm thời gian & kéo dài/thu gọn */
-        <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1 pt-1.5 border-t border-line/10 text-[10px]">
-          {/* Thời lượng trận đấu & nút tăng giảm 5 phút */}
-          <div className="flex items-center gap-1">
-            <span className="font-mono font-bold text-ink text-[10px]">⏱️ {m.durationMinutes ?? 30}p</span>
-            <button
-              type="button"
-              className="rounded bg-card/90 px-1 py-0.5 text-[9px] font-bold ring-1 ring-line/20 hover:bg-accent/20 hover:text-accent cursor-pointer transition-colors"
-              title="Giảm thời gian trận đấu 5 phút"
-              onClick={(e) => {
-                e.stopPropagation();
-                onDurationChange?.(Math.max(10, (m.durationMinutes ?? 30) - 5));
-              }}
+        /* Trên Timeline: thanh thao tác hiển thị rõ chữ bắt đầu và chấm điểm */
+        rowHeight >= 65 ? (
+          <div className="mt-1 flex items-center justify-between gap-1 border-t border-line/10 pt-1 text-[10px]">
+            <div className="flex items-center gap-1">
+              {m.status === "done" ? (
+                <button className="btn-ghost !px-1.5 !py-0.5 text-[9px] whitespace-nowrap cursor-pointer" onClick={onReset}>
+                  ↺ Lại
+                </button>
+              ) : (
+                <button
+                  className={`btn-ghost !px-1.5 !py-0.5 text-[9px] whitespace-nowrap cursor-pointer ${
+                    m.status === "live" ? "text-red-600 font-bold" : ""
+                  }`}
+                  onClick={() => onStatus(m.status === "live" ? "pending" : "live")}
+                >
+                  {m.status === "live" ? "⏸ Tạm dừng" : "▶ Bắt đầu"}
+                </button>
+              )}
+            </div>
+            <Link
+              to="/cham-diem/$matchId"
+              params={{ matchId: m.id } as any}
+              className="btn-ghost !px-1.5 !py-0.5 text-[9px] flex items-center gap-0.5 whitespace-nowrap font-medium cursor-pointer"
             >
-              -5p
-            </button>
-            <button
-              type="button"
-              className="rounded bg-card/90 px-1 py-0.5 text-[9px] font-bold ring-1 ring-line/20 hover:bg-accent/20 hover:text-accent cursor-pointer transition-colors"
-              title="Tăng thời gian trận đấu 5 phút"
-              onClick={(e) => {
-                e.stopPropagation();
-                onDurationChange?.(Math.min(180, (m.durationMinutes ?? 30) + 5));
-              }}
-            >
-              +5p
-            </button>
+              ⚡ Chấm điểm
+            </Link>
           </div>
-
-          {/* Dời giờ bắt đầu (nấc 5 phút) */}
-          <div className="flex items-center gap-0.5">
-            <button
-              type="button"
-              className="rounded bg-card/90 px-1 py-0.5 text-[9px] font-bold ring-1 ring-line/20 hover:bg-amber-500/20 hover:text-amber-600 cursor-pointer transition-colors"
-              title="Lùi giờ bắt đầu 5 phút"
-              onClick={(e) => {
-                e.stopPropagation();
-                onOffsetChange?.(Math.max(-25, (m.offsetMinutes ?? 0) - 5));
-              }}
-            >
-              ◀ 5p
-            </button>
-            <span
-              className={`font-mono text-[9px] px-1 py-0.5 rounded font-bold ${
-                (m.offsetMinutes ?? 0) !== 0
-                  ? "text-amber-600 dark:text-amber-400 bg-amber-500/10"
-                  : "text-line/40"
-              }`}
-            >
-              {(m.offsetMinutes ?? 0) === 0 ? "0p" : (m.offsetMinutes ?? 0) > 0 ? `+${m.offsetMinutes}p` : `${m.offsetMinutes}p`}
-            </span>
-            <button
-              type="button"
-              className="rounded bg-card/90 px-1 py-0.5 text-[9px] font-bold ring-1 ring-line/20 hover:bg-amber-500/20 hover:text-amber-600 cursor-pointer transition-colors"
-              title="Tiến giờ bắt đầu 5 phút"
-              onClick={(e) => {
-                e.stopPropagation();
-                onOffsetChange?.(Math.min(25, (m.offsetMinutes ?? 0) + 5));
-              }}
-            >
-              5p ▶
-            </button>
-          </div>
-        </div>
+        ) : null
       ) : (
-        <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-          <select
-            className="rounded-md bg-card px-1.5 py-1 text-[11px] font-semibold ring-1 ring-line/20 outline-none"
-            value={m.court}
-            onChange={(e) => onCourt(e.target.value)}
-          >
-            {courts.map((x) => (
-              <option key={x} value={x}>
-                {x}
-              </option>
-            ))}
-          </select>
-
-          <RefereeSelector
-            value={m.referee}
-            referees={referees}
-            onSelect={onReferee}
-            onAddReferee={onAddReferee}
-          />
-
-          {hasNote && onViewNote && (
-            <button
-              type="button"
-              className="rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-700 ring-1 ring-amber-300 dark:bg-amber-950/30 dark:text-amber-400"
-              onClick={() => onViewNote(m.note || m.live?.note || "")}
+        /* Danh sách vòng bình thường ngoài Timeline */
+        <div className="mt-2.5 space-y-2 border-t border-line/10 pt-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <select
+              className="rounded-md bg-card px-1.5 py-1 text-[11px] font-semibold ring-1 ring-line/20 outline-none"
+              value={m.court}
+              onChange={(e) => onCourt(e.target.value)}
             >
-              📝 Ghi chú
-            </button>
-          )}
+              <option value="">Chọn sân...</option>
+              {courts.map((x) => (
+                <option key={x} value={x}>
+                  {x}
+                </option>
+              ))}
+            </select>
+
+            <RefereeSelector
+              value={m.referee}
+              referees={referees}
+              onSelect={onReferee}
+              onAddReferee={onAddReferee}
+            />
+
+            {hasNote && onViewNote && (
+              <button
+                type="button"
+                className="rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-700 ring-1 ring-amber-300 dark:bg-amber-950/30 dark:text-amber-400"
+                onClick={() => onViewNote(m.note || m.live?.note || "")}
+              >
+                📝 Ghi chú
+              </button>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            {m.status === "done" ? (
+              <button className="btn-ghost !px-2 !py-1 text-[11px]" onClick={onReset}>
+                ↺ Bắt đầu lại
+              </button>
+            ) : (
+              <button
+                className={`btn-ghost !px-2 !py-1 text-[11px] ${
+                  m.status === "live" ? "text-red-600 font-bold" : ""
+                }`}
+                onClick={() => onStatus(m.status === "live" ? "pending" : "live")}
+              >
+                {m.status === "live" ? "⏸ Tạm dừng" : "▶ Bắt đầu"}
+              </button>
+            )}
+            <Link
+              to="/cham-diem/$matchId"
+              params={{ matchId: m.id } as any}
+              className="btn-ghost !px-2 !py-1 text-[11px] flex items-center gap-1"
+            >
+              ⚡ Chấm điểm
+            </Link>
+          </div>
         </div>
       )}
 
-      <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-        {m.status === "done" ? (
-          <button className="btn-ghost !px-2 !py-1 text-[11px]" onClick={onReset}>
-            ↺ Bắt đầu lại
-          </button>
-        ) : (
-          <button
-            className={`btn-ghost !px-2 !py-1 text-[11px] ${
-              m.status === "live" ? "text-red-600 font-bold" : ""
-            }`}
-            onClick={() => onStatus(m.status === "live" ? "pending" : "live")}
-          >
-            {m.status === "live" ? "⏸ Tạm dừng" : "▶ Bắt đầu"}
-          </button>
-        )}
-        <Link
-          to="/cham-diem/$matchId"
-          params={{ matchId: m.id } as any}
-          className="btn-ghost !px-2 !py-1 text-[11px] flex items-center gap-1"
-        >
-          ⚡ Chấm điểm
-        </Link>
-      </div>
-
-      {/* Cạnh kéo giãn / thu gọn thời lượng (Resize Handle) */}
+      {/* Cạnh phải nắm kéo trực tiếp để kéo dãn / thu gọn thời lượng (Direct Drag-to-Resize Handle) */}
       {compact && onDurationChange && (
         <div
-          className="absolute right-0 top-0 bottom-0 w-3.5 cursor-ew-resize flex items-center justify-center group/resize hover:bg-accent/30 rounded-r transition-colors select-none z-30"
-          title="Nắm kéo sang phải để kéo dài trận đấu, sang trái để thu gọn (bước 5 phút)"
+          className="absolute right-0 top-0 bottom-0 w-3.5 cursor-ew-resize flex items-center justify-center group/resize hover:bg-accent/40 rounded-r transition-colors select-none z-30"
+          title="Nắm kéo trực tiếp sang phải để kéo dài trận đấu, sang trái để thu gọn (bước 5 phút)"
           onMouseDown={(e) => {
             e.stopPropagation();
             e.preventDefault();
             const startX = e.clientX;
-            const startDur = m.durationMinutes ?? 30;
+            const startDur = m.durationMinutes ?? slotMinutes;
             const pxPerMin = (colWidth || 210) / (slotMinutes || 30);
 
             const onMouseMove = (moveEvent: MouseEvent) => {
               const deltaX = moveEvent.clientX - startX;
-              const deltaMinutes = Math.round((deltaX / pxPerMin) / 5) * 5;
-              const newDur = Math.max(10, Math.min(180, startDur + deltaMinutes));
+              const deltaMinutes = Math.round(deltaX / pxPerMin / 5) * 5;
+              const newDur = Math.max(5, Math.min(240, startDur + deltaMinutes));
               onDurationChange(newDur);
             };
 
@@ -553,6 +533,9 @@ function KoCard({
   onReset,
   onDropTeam,
   onViewNote,
+  referees = [],
+  onReferee,
+  onAddReferee,
 }: {
   m: Match;
   nameA: string;
@@ -567,11 +550,21 @@ function KoCard({
   onReset: () => void;
   onDropTeam: (side: "aId" | "bId") => void;
   onViewNote?: (note: string) => void;
+  referees?: string[];
+  onReferee?: (r: string) => void;
+  onAddReferee?: (r: string) => void;
   key?: React.Key;
 }) {
   const aWin = m.scoreA !== null && m.scoreB !== null && m.scoreA > m.scoreB;
   const bWin = m.scoreA !== null && m.scoreB !== null && m.scoreB > m.scoreA;
   const hasNote = Boolean(m.note || m.live?.note);
+
+  const seedA = m.customPlaceholderA
+    ? m.customPlaceholderA.replace(/^Nhất\s+/i, "I ").replace(/^Nhì\s+/i, "II ")
+    : null;
+  const seedB = m.customPlaceholderB
+    ? m.customPlaceholderB.replace(/^Nhất\s+/i, "I ").replace(/^Nhì\s+/i, "II ")
+    : null;
 
   const row = (win: boolean, live: boolean | undefined) =>
     `flex items-center justify-between gap-2 px-2.5 py-2 transition-all ${
@@ -580,11 +573,11 @@ function KoCard({
 
   return (
     <div
-      className={`overflow-hidden rounded-xl bg-card ring-1 transition-all ${
+      className={`relative rounded-xl bg-card ring-1 transition-all ${
         m.status === "live" ? "ring-2 ring-red-500 shadow-md" : "ring-line/20"
       }`}
     >
-      <div className="flex items-center justify-between border-b border-line/10 bg-secondary/30 px-2 py-1 text-[10px] font-semibold text-line/60">
+      <div className="flex items-center justify-between border-b border-line/10 bg-secondary/30 px-2 py-1 text-[10px] font-semibold text-line/60 rounded-t-xl">
         <span>{m.koRound || `Vòng ${m.round}`}</span>
         <div className="flex items-center gap-1">
           {m.status === "live" && (
@@ -610,8 +603,13 @@ function KoCard({
         onDragOver={(e) => e.preventDefault()}
         onDrop={() => onDropTeam("aId")}
       >
-        <div className="flex items-center gap-1 min-w-0 flex-1">
+        <div className="flex items-center gap-1.5 min-w-0 flex-1">
           {isLiveA && <span className="size-2 rounded-full bg-red-600 animate-pulse shrink-0" />}
+          {seedA && (
+            <span className="shrink-0 px-1 py-0.2 rounded bg-accent/15 text-accent text-[10px] font-bold font-mono">
+              {seedA}
+            </span>
+          )}
           <PlayerNameDisplay
             entry={entryA}
             fallback={nameA}
@@ -629,8 +627,13 @@ function KoCard({
         onDragOver={(e) => e.preventDefault()}
         onDrop={() => onDropTeam("bId")}
       >
-        <div className="flex items-center gap-1 min-w-0 flex-1">
+        <div className="flex items-center gap-1.5 min-w-0 flex-1">
           {isLiveB && <span className="size-2 rounded-full bg-red-600 animate-pulse shrink-0" />}
+          {seedB && (
+            <span className="shrink-0 px-1 py-0.2 rounded bg-secondary text-line/70 text-[10px] font-bold font-mono">
+              {seedB}
+            </span>
+          )}
           <PlayerNameDisplay
             entry={entryB}
             fallback={nameB}
@@ -641,7 +644,7 @@ function KoCard({
         <ScoreBox value={m.scoreB} onCommit={(v) => onScore("scoreB", v)} />
       </div>
 
-      <div className="flex items-center justify-between gap-1.5 bg-secondary/50 px-2 py-1.5 border-t border-line/10">
+      <div className="flex items-center justify-between gap-1.5 bg-secondary/50 px-2 py-1.5 border-t border-line/10 rounded-b-xl">
         <div className="flex items-center gap-1">
           {m.status === "done" ? (
             <button className="btn-ghost !px-1.5 !py-0.5 text-[10px]" onClick={onReset}>
@@ -658,6 +661,19 @@ function KoCard({
             </button>
           )}
         </div>
+
+        {/* Nút chọn trọng tài nằm giữa nút bắt đầu và nút chấm điểm */}
+        {onReferee && (
+          <div className="shrink-0 max-w-[110px]">
+            <RefereeSelector
+              value={m.referee}
+              referees={referees}
+              onSelect={onReferee}
+              onAddReferee={onAddReferee}
+            />
+          </div>
+        )}
+
         <Link
           to="/cham-diem/$matchId"
           params={{ matchId: m.id } as any}
@@ -672,7 +688,7 @@ function KoCard({
 
 /* ---------------- Đường nối thẳng, bo cong nhẹ ở góc, nét mỏng nối các vòng Knockout ---------------- */
 
-function BracketConnectors({ count }: { count: number }) {
+function BracketConnectors({ count, isFirst }: { count: number; isFirst?: boolean }) {
   if (count <= 0) return null;
   return (
     <div className="w-10 shrink-0 flex flex-col pt-12 pb-4 self-stretch">
@@ -697,6 +713,7 @@ function BracketConnectors({ count }: { count: number }) {
                 strokeWidth="1.5"
                 strokeLinecap="round"
                 strokeLinejoin="round"
+                style={isFirst && p === 0 ? { backgroundColor: "#000000" } : undefined}
               />
               {/* Nhánh từ trận dưới ra, bo cong nhẹ 90 độ lên thân dọc */}
               <path
@@ -751,6 +768,8 @@ function ManagePage() {
   // Zoom timeline (infinite range slider)
   const [colWidth, setColWidth] = useState(210);
   const [rowHeight, setRowHeight] = useState(115);
+  // Chiều cao bảng timeline (kéo thả để mở rộng dọc)
+  const [timelineHeight, setTimelineHeight] = useState(580);
 
   // Toggles for flexible screen space
   const [showStandings, setShowStandings] = useState(true);
@@ -929,6 +948,32 @@ function ManagePage() {
     setNote(`Đã hoán đổi vị trí trận đấu trên lịch.`);
   };
 
+  // Phát hiện các trận trùng giờ nhau trên cùng một sân để cảnh báo viền đỏ
+  const conflictsSet = useMemo(() => {
+    const set = new Set<string>();
+    const slotMins = state.slotMinutes || 30;
+    const scheduled = state.matches.filter(
+      (m) => m.eventId === ev.id && m.court && m.timeSlot !== undefined,
+    );
+    for (let i = 0; i < scheduled.length; i++) {
+      const mA = scheduled[i];
+      const startA = (mA.timeSlot ?? 0) * slotMins + (mA.offsetMinutes ?? 0);
+      const endA = startA + (mA.durationMinutes ?? slotMins);
+      for (let j = i + 1; j < scheduled.length; j++) {
+        const mB = scheduled[j];
+        if (mA.court === mB.court) {
+          const startB = (mB.timeSlot ?? 0) * slotMins + (mB.offsetMinutes ?? 0);
+          const endB = startB + (mB.durationMinutes ?? slotMins);
+          if (Math.max(startA, startB) < Math.min(endA, endB)) {
+            set.add(mA.id);
+            set.add(mB.id);
+          }
+        }
+      }
+    }
+    return set;
+  }, [state.matches, state.slotMinutes, ev.id]);
+
   const cardProps = (m: Match, compact?: boolean): CardProps => ({
     m,
     nameA: nameOf(m.aId),
@@ -950,7 +995,7 @@ function ManagePage() {
     onViewNote: (n) => setViewNoteText(n),
     onDurationChange: (mins) => updateMatch(m.id, { durationMinutes: mins }),
     onOffsetChange: (offset) => updateMatch(m.id, { offsetMinutes: offset }),
-    onDropOnMatch: handleMatchDrop,
+    hasConflict: compact && conflictsSet.has(m.id),
     compact,
   });
 
@@ -1337,11 +1382,21 @@ function ManagePage() {
                   max={64}
                   className="field w-14 text-center !py-1 text-xs"
                   value={ev.advancePerGroup}
-                  onChange={(e) =>
-                    updateEvent(ev.id, {
-                      advancePerGroup: Math.max(1, Math.min(64, Number(e.target.value) || 1)),
-                    })
-                  }
+                  onChange={(e) => {
+                    const newAdvance = Math.max(1, Math.min(64, Number(e.target.value) || 1));
+                    updateEvent(ev.id, { advancePerGroup: newAdvance });
+                    const updatedEv = { ...ev, advancePerGroup: newAdvance };
+                    const fresh = generateKnockout(updatedEv, entries, groupMatches, state.courts);
+                    if (fresh.length > 0) {
+                      update({
+                        matches: [
+                          ...state.matches.filter((m) => !(m.eventId === ev.id && m.stage === "ko")),
+                          ...fresh,
+                        ],
+                      });
+                      setNote(`Đã cập nhật nhánh loại trực tiếp với ${newAdvance} đội đi tiếp mỗi bảng.`);
+                    }
+                  }}
                   title="Số lượng đội được chọn đi tiếp từ mỗi bảng vào nhánh KO (không giới hạn)"
                 />
               </label>
@@ -1461,7 +1516,7 @@ function ManagePage() {
               <span className="text-[11px] font-medium text-line/60">Zoom dọc:</span>
               <input
                 type="range"
-                min="80"
+                min="50"
                 max="250"
                 step="5"
                 value={rowHeight}
@@ -1724,8 +1779,12 @@ function ManagePage() {
 
           <div className="grid gap-4 lg:grid-cols-12 items-start">
             {/* Bảng timeline với sticky headers */}
-            <div className={`${showQueue ? "lg:col-span-9" : "lg:col-span-12"} panel overflow-hidden rounded-2xl`}>
-              <div className="relative max-h-[72vh] overflow-x-auto overflow-y-auto" ref={timelinePrintRef}>
+            <div className={`${showQueue ? "lg:col-span-9" : "lg:col-span-12"} panel overflow-hidden rounded-2xl flex flex-col`}>
+              <div
+                className="relative overflow-x-auto overflow-y-auto flex-1"
+                style={{ height: `${timelineHeight}px`, maxHeight: `${timelineHeight}px` }}
+                ref={timelinePrintRef}
+              >
                 {/* Đường chỉ đỏ thời gian thực */}
                 {redLineOffsetPx !== null && (
                   <div
@@ -1742,11 +1801,15 @@ function ManagePage() {
                   className="border-l border-t border-line/20 bg-card"
                   style={{
                     display: "grid",
-                    gridTemplateColumns: `130px repeat(${slotIdxs.length}, ${colWidth}px)`,
+                    gridTemplateColumns: `80px repeat(${slotIdxs.length}, ${colWidth}px)`,
+                    gridTemplateRows: `34px repeat(${state.courts.length}, ${rowHeight}px)`,
                   }}
                 >
                   {/* Ô góc trên bên trái: STICKY top-0 left-0 z-30 */}
-                  <div className="sticky top-0 left-0 z-30 border-b border-r border-line/20 bg-card p-3 text-[11px] font-bold uppercase tracking-wider text-line/70 shadow-xs">
+                  <div
+                    data-timeline-hours="true"
+                    className="sticky top-0 left-0 z-30 border-b border-r border-line/20 bg-card p-1 text-[11px] font-bold uppercase tracking-wider text-line/70 shadow-xs flex items-center justify-center text-center h-[34px] w-[80px]"
+                  >
                     Sân / Giờ
                   </div>
 
@@ -1754,7 +1817,8 @@ function ManagePage() {
                   {slotIdxs.map((s) => (
                     <div
                       key={`h${s}`}
-                      className="sticky top-0 z-20 border-b border-l border-line/15 bg-card/95 p-3 text-center text-[11px] font-bold uppercase tracking-wider text-line/70 backdrop-blur-xs shadow-xs"
+                      data-timeline-hours="true"
+                      className="sticky top-0 z-20 border-b border-l border-line/15 bg-card/95 p-1 text-center text-[11px] font-bold uppercase tracking-wider text-line/70 backdrop-blur-xs shadow-xs flex items-center justify-center h-[34px]"
                     >
                       {addMinutes(state.startTime, s * state.slotMinutes)}
                     </div>
@@ -1766,8 +1830,8 @@ function ManagePage() {
                       <React.Fragment key={court}>
                         {/* Cột Sân: STICKY left-0 z-10 (chỉ hiển thị tên sân, không icon) */}
                         <div
-                          className="sticky left-0 z-10 border-b border-r border-line/20 bg-card/95 p-3 text-xs font-bold text-ink backdrop-blur-xs flex items-center shadow-xs"
-                          style={{ minHeight: `${rowHeight}px`, height: `${rowHeight}px` }}
+                          className="sticky left-0 z-10 border-b border-r border-line/20 bg-card/95 p-1 text-xs font-bold text-ink backdrop-blur-xs flex items-center justify-center text-center shadow-xs select-none truncate w-[80px]"
+                          style={{ minHeight: `${rowHeight}px`, height: `${rowHeight}px`, maxHeight: `${rowHeight}px` }}
                         >
                           <span className="truncate">{court}</span>
                         </div>
@@ -1778,8 +1842,8 @@ function ManagePage() {
                           return (
                             <div
                               key={`${court}-${s}`}
-                              className="relative border-b border-l border-line/10 p-1.5 transition hover:bg-accent/5 group"
-                              style={{ minHeight: `${rowHeight}px` }}
+                              className="relative border-b border-l border-line/10 p-0.5 transition hover:bg-accent/5 group overflow-visible"
+                              style={{ minHeight: `${rowHeight}px`, height: `${rowHeight}px`, maxHeight: `${rowHeight}px` }}
                               onDragOver={(e) => e.preventDefault()}
                               onDrop={(e) => {
                                 const rect = e.currentTarget.getBoundingClientRect();
@@ -1804,8 +1868,8 @@ function ManagePage() {
                                 ))}
                               </div>
 
-                              <div className="relative z-1 space-y-1.5">
-                                {cell.map(({ match: m }) => {
+                              <div className="relative z-1 h-full w-full">
+                                {cell.map(({ match: m }, cellIdx) => {
                                   const slotMins = state.slotMinutes || 30;
                                   const cardWidth = Math.max(
                                     colWidth - 12,
@@ -1817,17 +1881,20 @@ function ManagePage() {
                                       key={m.id}
                                       draggable
                                       onDragStart={() => setDragMatch(m.id)}
-                                      className="cursor-grab active:cursor-grabbing transition-all"
+                                      onDragEnd={() => setDragMatch(null)}
+                                      className={`cursor-grab active:cursor-grabbing transition-all absolute top-0.5 bottom-0.5 ${
+                                        dragMatch ? "pointer-events-none" : ""
+                                      } hover:z-30`}
                                       style={{
                                         width: `${cardWidth}px`,
-                                        marginLeft: `${leftOffset}px`,
-                                        position: "relative",
-                                        zIndex: 10,
+                                        left: `${leftOffset}px`,
+                                        zIndex: 10 + cellIdx * 2,
                                       }}
                                     >
                                       <MatchCard
                                         {...cardProps(m, true)}
                                         colWidth={colWidth}
+                                        rowHeight={rowHeight}
                                         slotMinutes={slotMins}
                                       />
                                     </div>
@@ -1842,11 +1909,66 @@ function ManagePage() {
                   })}
                 </div>
               </div>
+
+              {/* Thanh nắm kéo mở rộng bảng timeline theo chiều dọc (Drag to resize container height) */}
+              <div
+                className="flex items-center justify-center py-1.5 cursor-ns-resize bg-secondary/50 hover:bg-accent/20 border-t border-line/15 select-none transition-colors group"
+                title="Nắm và kéo xuống để mở rộng chiều cao bảng timeline, kéo lên để thu gọn"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  let currentClientY = e.clientY;
+                  let startY = e.clientY;
+                  let startH = timelineHeight;
+                  let animId: number | null = null;
+
+                  const scrollLoop = () => {
+                    const distFromBottom = window.innerHeight - currentClientY;
+                    const distFromTop = currentClientY;
+
+                    if (distFromBottom < 70 && distFromBottom >= -30) {
+                      const speed = Math.min(25, Math.max(6, Math.floor((70 - distFromBottom) / 2)));
+                      window.scrollBy({ top: speed, behavior: "auto" });
+                      setTimelineHeight((h) => Math.min(3000, h + speed));
+                    } else if (distFromTop < 70 && distFromTop >= -30) {
+                      const speed = Math.min(25, Math.max(6, Math.floor((70 - distFromTop) / 2)));
+                      window.scrollBy({ top: -speed, behavior: "auto" });
+                      setTimelineHeight((h) => Math.max(200, h - speed));
+                    }
+                    animId = requestAnimationFrame(scrollLoop);
+                  };
+
+                  animId = requestAnimationFrame(scrollLoop);
+
+                  const onMouseMove = (moveEvent: MouseEvent) => {
+                    currentClientY = moveEvent.clientY;
+                    const deltaY = moveEvent.clientY - startY;
+                    setTimelineHeight(Math.max(200, Math.min(3000, startH + deltaY)));
+                  };
+
+                  const onMouseUp = () => {
+                    if (animId !== null) cancelAnimationFrame(animId);
+                    window.removeEventListener("mousemove", onMouseMove);
+                    window.removeEventListener("mouseup", onMouseUp);
+                  };
+
+                  window.addEventListener("mousemove", onMouseMove);
+                  window.addEventListener("mouseup", onMouseUp);
+                }}
+              >
+                <div className="flex items-center gap-2 text-[11px] font-bold text-line/50 group-hover:text-accent">
+                  <span className="text-xs">⇕</span>
+                  <span>Nắm kéo để mở rộng / thu hẹp chiều dọc bảng timeline ({timelineHeight}px)</span>
+                  <span className="text-xs">⇕</span>
+                </div>
+              </div>
             </div>
 
             {/* Cột trận chờ xếp lịch bên phải - bật/tắt linh hoạt */}
             {showQueue && (
-              <div className="lg:col-span-3 panel p-3 max-h-[72vh] flex flex-col rounded-2xl">
+              <div
+                className="lg:col-span-3 panel p-3 flex flex-col rounded-2xl"
+                style={{ maxHeight: `${timelineHeight + 35}px` }}
+              >
                 <div className="flex items-center justify-between border-b border-line/10 pb-2">
                   <p className="eyebrow">Trận chờ xếp ({unassignedMatches.length})</p>
                   <button
@@ -1896,21 +2018,22 @@ function ManagePage() {
                               key={m.id}
                               draggable
                               onDragStart={() => setDragMatch(m.id)}
+                              onDragEnd={() => setDragMatch(null)}
                               className="cursor-grab active:cursor-grabbing rounded-lg bg-card p-2 text-xs ring-1 ring-line/15 hover:ring-accent/50 shadow-xs transition"
                             >
                               <div className="flex items-center justify-between gap-1 text-[10px] text-line/60 pb-1 border-b border-line/10">
                                 <span className="font-bold text-ink">{groupTag(m.groupName)}</span>
-                                <span className="font-mono text-line/50">{m.durationMinutes ?? 30}p</span>
                               </div>
-                              <div className="mt-1 space-y-0.5 text-[11px]">
-                                <div className="truncate">
+                              <div className="mt-1 flex items-center justify-between gap-1 text-[11px]">
+                                <div className="truncate flex-1">
                                   <PlayerNameDisplay
                                     entry={state.entries.find((e) => e.id === m.aId)}
                                     fallback={nameOf(m.aId)}
                                     activePlayerNames={activePlayerNames}
                                   />
                                 </div>
-                                <div className="truncate">
+                                <span className="shrink-0 text-line/40 font-mono text-[10px] font-bold px-1">vs</span>
+                                <div className="truncate flex-1 text-right">
                                   <PlayerNameDisplay
                                     entry={state.entries.find((e) => e.id === m.bId)}
                                     fallback={nameOf(m.bId)}
@@ -1958,12 +2081,18 @@ function ManagePage() {
 
                   return (
                     <React.Fragment key={r}>
-                      <div className="w-[275px] shrink-0 flex flex-col">
+                      <div
+                        className={`w-[275px] shrink-0 flex flex-col ${colIdx === 0 ? "pl-[2px]" : ""}`}
+                        style={colIdx === 0 ? { paddingLeft: "2px" } : undefined}
+                      >
                         <div className="rounded-xl bg-accent/15 py-2.5 text-center font-head text-sm font-bold uppercase tracking-wide text-accent ring-1 ring-accent/30 shadow-xs">
                           {roundTitle}
                         </div>
 
-                        <div className="mt-4 flex flex-1 flex-col justify-around gap-6">
+                        <div
+                          className={`mt-4 flex flex-1 flex-col justify-around gap-6 ${colIdx === 0 ? "pl-0" : ""}`}
+                          style={colIdx === 0 ? { paddingLeft: "0px" } : undefined}
+                        >
                           {list.map((m) => (
                             <KoCard
                               key={m.id}
@@ -1980,6 +2109,9 @@ function ManagePage() {
                               onReset={() => resetMatch(m)}
                               onDropTeam={(side) => dropTeam(m, side)}
                               onViewNote={(n) => setViewNoteText(n)}
+                              referees={state.referees}
+                              onReferee={(r) => updateMatch(m.id, { referee: r })}
+                              onAddReferee={handleAddReferee}
                             />
                           ))}
                         </div>
@@ -1987,7 +2119,10 @@ function ManagePage() {
 
                       {/* Đường cong Sigma kết nối các vòng kế tiếp nhau */}
                       {colIdx < koRounds.length - 1 && (
-                        <BracketConnectors count={Math.max(1, Math.floor(list.length / 2))} />
+                        <BracketConnectors
+                          count={Math.max(1, Math.floor(list.length / 2))}
+                          isFirst={colIdx === 0}
+                        />
                       )}
                     </React.Fragment>
                   );
@@ -2014,6 +2149,9 @@ function ManagePage() {
                         onReset={() => resetMatch(thirdMatch)}
                         onDropTeam={(side) => dropTeam(thirdMatch, side)}
                         onViewNote={(n) => setViewNoteText(n)}
+                        referees={state.referees}
+                        onReferee={(r) => updateMatch(thirdMatch.id, { referee: r })}
+                        onAddReferee={handleAddReferee}
                       />
                     </div>
                   </div>

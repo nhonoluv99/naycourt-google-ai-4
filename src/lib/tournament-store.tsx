@@ -251,10 +251,26 @@ export function entryName(e: Entry | undefined | null): string {
 
 export function entryRating(e: Entry): number {
   const rs = e.players.map((p) => p.rating).filter((r): r is number => typeof r === "number" && !isNaN(r));
-  return rs.length ? Math.round(rs.reduce((a, b) => a + b, 0) * 100) / 100 : 0;
+  return rs.length ? Math.round(rs.reduce((a, b) => a + b, 0) * 10000) / 10000 : 0;
 }
 
-const GROUP_LETTERS = "ABCDEFGH".split("");
+export const GROUP_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+
+export function getGroupName(idx: number): string {
+  if (idx < 26) {
+    return `Bảng ${String.fromCharCode(65 + idx)}`;
+  }
+  const first = String.fromCharCode(65 + Math.floor(idx / 26) - 1);
+  const second = String.fromCharCode(65 + (idx % 26));
+  return `Bảng ${first}${second}`;
+}
+
+export function groupLetterFromIndex(idx: number): string {
+  if (idx < 26) return String.fromCharCode(65 + idx);
+  const first = String.fromCharCode(65 + Math.floor(idx / 26) - 1);
+  const second = String.fromCharCode(65 + (idx % 26));
+  return `${first}${second}`;
+}
 
 /** Bốc thăm ghép đôi cân bằng: người điểm cao nhất ghép người điểm thấp nhất, nhì với nhì, trung bình với trung bình để tổng điểm đều nhau nhất có thể. */
 export function drawPairs(entries: Entry[], eventId: string): Entry[] {
@@ -305,11 +321,11 @@ export function drawPairs(entries: Entry[], eventId: string): Entry[] {
   return out;
 }
 
-/** Chia bảng rải đều theo điểm trình, tối ưu tổng điểm các bảng cân bằng nhất có thể. */
+/** Chia bảng rải đều theo điểm trình, hỗ trợ không giới hạn số lượng bảng đấu. */
 export function splitGroups(entries: Entry[], groupCount: number): Group[] {
-  const n = Math.max(1, Math.min(groupCount, GROUP_LETTERS.length));
+  const n = Math.max(1, groupCount || 1);
   const groups: Group[] = Array.from({ length: n }, (_, i) => ({
-    name: `Bảng ${GROUP_LETTERS[i]}`,
+    name: getGroupName(i),
     entryIds: [],
   }));
 
@@ -553,11 +569,14 @@ export function getBracketSeedOrder(numSlots: number): number[] {
 }
 
 /**
- * Sinh nhánh loại trực tiếp từ kết quả vòng bảng theo barem chuẩn:
- * - Hỗ trợ không giới hạn số lượng đội đi tiếp mỗi bảng (K >= 1).
- * - Tự động tính kích thước nhánh luỹ thừa của 2 (2, 4, 8, 16, 32...).
- * - Tách các đội cùng bảng sang 2 nửa nhánh đối diện (tránh gặp lại nhau trước trận chung kết).
- * - Hỗ trợ Bye (miễn đấu) cho hạt giống cao nếu số đội chưa đủ luỹ thừa 2.
+ * Sinh nhánh loại trực tiếp từ kết quả vòng bảng:
+ * - Sau khi xong vòng bảng, 2 bảng kế bên nhau trích ra Nhất và Nhì bảng đấu với nhau:
+ *     Nhất A gặp Nhì B
+ *     Nhất B gặp Nhì A
+ *     Nhất C gặp Nhì D
+ *     Nhất D gặp Nhì C...
+ * - Tách các trận cùng bảng sang 2 nhánh đối diện (Top Half vs Bottom Half)
+ *   để nếu cùng thắng thì chỉ gặp nhau ở chung kết.
  */
 export function generateKnockout(
   ev: TEvent,
@@ -579,71 +598,193 @@ export function generateKnockout(
     ),
   }));
 
-  const K = Math.max(1, ev.advancePerGroup);
-  const numGroups = byGroup.length;
+  const numGroups = groups.length;
+  const courtList = courts.length ? courts : ["Sân 1"];
+  let courtCursor = 0;
+  const advanceN = Math.max(1, ev.advancePerGroup || 2);
 
-  // Thu thập danh sách các đội đi tiếp từ các bảng
-  // Ưu tiên theo thứ hạng: tất cả đội Nhất (rank 0), rồi Nhì (rank 1), Ba (rank 2)...
-  interface AdvancingTeam {
-    entryId: string;
-    groupIndex: number;
-    rank: number;
+  interface InitialKoSlot {
+    aId: string | null;
+    bId: string | null;
+    placeholderA: string;
+    placeholderB: string;
   }
 
-  const advancing: AdvancingTeam[] = [];
+  // Helper sinh các trận cho toàn bộ các vòng KO
+  const createBracketMatches = (
+    size: number,
+    firstRoundSlots: InitialKoSlot[],
+  ): Match[] => {
+    const matches: Match[] = [];
+    let roundIdx = 1;
+    let current = size;
+
+    while (current >= 2) {
+      const label = KO_LABEL(current);
+      const matchCount = current / 2;
+      for (let i = 0; i < matchCount; i++) {
+        const isFirst = current === size;
+        const slotData = isFirst ? firstRoundSlots[i] : null;
+        matches.push({
+          id: uid(),
+          eventId: ev.id,
+          stage: "ko",
+          groupName: label,
+          round: roundIdx,
+          koRound: label,
+          slot: i,
+          aId: slotData?.aId ?? null,
+          bId: slotData?.bId ?? null,
+          customPlaceholderA: slotData?.placeholderA,
+          customPlaceholderB: slotData?.placeholderB,
+          scoreA: null,
+          scoreB: null,
+          court: courtList[courtCursor++ % courtList.length]!,
+          referee: "",
+          status: "pending",
+        });
+      }
+      roundIdx++;
+      current /= 2;
+    }
+
+    if (ev.thirdPlace && size >= 4) {
+      matches.push({
+        id: uid(),
+        eventId: ev.id,
+        stage: "ko",
+        groupName: "Tranh hạng 3",
+        round: roundIdx - 1,
+        koRound: "Tranh hạng 3",
+        slot: 99,
+        aId: null,
+        bId: null,
+        scoreA: null,
+        scoreB: null,
+        court: courtList[courtCursor++ % courtList.length]!,
+        referee: "",
+        status: "pending",
+      });
+    }
+
+    return propagateKnockout(matches, ev.id, ev, groupMatches);
+  };
+
+  // Nếu có từ 2 bảng trở lên theo thể thức chia bảng + loại trực tiếp
+  if (numGroups >= 2 && ev.bracket === "rr_ko") {
+    if (advanceN === 1) {
+      // 1 đội đi tiếp mỗi bảng (Nhất các bảng đấu với nhau)
+      const numFirstRound = Math.ceil(numGroups / 2);
+      let size = 2;
+      while (size < numFirstRound * 2) {
+        size *= 2;
+      }
+      const totalFirstRoundSlots = size / 2;
+
+      const firstRoundSlots: InitialKoSlot[] = Array.from({ length: totalFirstRoundSlots }, () => ({
+        aId: null,
+        bId: null,
+        placeholderA: "Chờ xác định",
+        placeholderB: "Chờ xác định",
+      }));
+
+      for (let p = 0; p < numFirstRound; p++) {
+        const g1 = groups[p * 2];
+        const g2 = groups[p * 2 + 1];
+        firstRoundSlots[p] = {
+          aId: null,
+          bId: null,
+          placeholderA: `Nhất ${g1.name}`,
+          placeholderB: g2 ? `Nhất ${g2.name}` : "Bye",
+        };
+      }
+
+      return createBracketMatches(size, firstRoundSlots);
+    } else {
+      // advanceN >= 2: Phân hạt giống chuẩn Ảnh 5:
+      // Các cặp bảng kề nhau: A-B, C-D, E-F, G-H...
+      // Nửa trên (Top Half):
+      //   Match 0: I A vs II B
+      //   Match 1: I C vs II D
+      //   Match 2: I E vs II F
+      //   Match 3: I G vs II H...
+      // Nửa dưới (Bottom Half):
+      //   Match 4: I B vs II A
+      //   Match 5: I D vs II C
+      //   Match 6: I F vs II E
+      //   Match 7: I H vs II G...
+      const numPairs = Math.ceil(numGroups / 2);
+      const neededMatches = numPairs * 2;
+      let size = 4;
+      while (size < neededMatches * 2) {
+        size *= 2;
+      }
+      const numFirstRoundMatches = size / 2;
+      const half = numFirstRoundMatches / 2; // Số trận trong nửa nhánh trên (Top Half)
+
+      const firstRoundSlots: InitialKoSlot[] = Array.from({ length: numFirstRoundMatches }, () => ({
+        aId: null,
+        bId: null,
+        placeholderA: "Chờ xác định",
+        placeholderB: "Chờ xác định",
+      }));
+
+      for (let p = 0; p < numPairs; p++) {
+        const gIdx1 = p * 2;
+        const gIdx2 = p * 2 + 1;
+        const g1 = groups[gIdx1];
+        const g2 = gIdx2 < numGroups ? groups[gIdx2] : null;
+
+        const topSlotIdx = p;
+        const bottomSlotIdx = half + p;
+
+        if (topSlotIdx < half) {
+          firstRoundSlots[topSlotIdx] = {
+            aId: null,
+            bId: null,
+            placeholderA: `Nhất ${g1.name}`,
+            placeholderB: g2 ? `Nhì ${g2.name}` : "Bye",
+          };
+        }
+
+        if (bottomSlotIdx < numFirstRoundMatches) {
+          firstRoundSlots[bottomSlotIdx] = {
+            aId: null,
+            bId: null,
+            placeholderA: g2 ? `Nhất ${g2.name}` : `Nhì ${g1.name}`,
+            placeholderB: g2 ? `Nhì ${g1.name}` : "Bye",
+          };
+        }
+      }
+
+      return createBracketMatches(size, firstRoundSlots);
+    }
+  }
+
+  // Fallback nếu 1 bảng hoặc bốc thăm đơn thuần
+  const K = Math.max(1, ev.advancePerGroup);
+  const advancing: string[] = [];
   for (let r = 0; r < K; r++) {
     for (let gi = 0; gi < numGroups; gi++) {
       const row = byGroup[gi]?.rows[r];
-      const entryId = row?.entryId ?? byGroup[gi]?.rows.find((x) => !advancing.some((a) => a.entryId === x.entryId))?.entryId;
-      if (entryId && !advancing.some((a) => a.entryId === entryId)) {
-        advancing.push({ entryId, groupIndex: gi, rank: r });
+      if (row?.entryId && !advancing.includes(row.entryId)) {
+        advancing.push(row.entryId);
       }
     }
   }
-
-  // Nếu số đội chưa đủ hoặc chưa có vòng bảng, lấy từ danh sách entries
   if (advancing.length < 2) {
-    const unselected = entries.filter((e) => !advancing.some((a) => a.entryId === e.id));
-    unselected.forEach((e, idx) => {
-      if (advancing.length < Math.max(2, entries.length)) {
-        advancing.push({ entryId: e.id, groupIndex: idx % numGroups, rank: Math.floor(idx / numGroups) });
-      }
+    entries.forEach((e) => {
+      if (!advancing.includes(e.id)) advancing.push(e.id);
     });
   }
-
   if (advancing.length < 2) return [];
 
-  // Xác định kích thước nhánh luỹ thừa 2 gần nhất (2, 4, 8, 16, 32...)
   let size = 2;
-  while (size < advancing.length) {
-    size *= 2;
-  }
-
-  // Thứ tự hạt giống theo bracket
+  while (size < advancing.length) size *= 2;
   const bracketOrder = getBracketSeedOrder(size);
-  // Tạo mảng hạt giống: seedMap[seedNumber - 1] = entryId
-  const seedAssignment = new Map<number, string | null>();
+  const slots: Array<string | null> = bracketOrder.map((seed) => advancing[seed - 1] ?? null);
 
-  // Phân bổ hạt giống sao cho:
-  // - Hạt giống 1, 2, ... được ưu tiên cho đội Nhất
-  // - Đội cùng bảng ở rank 1 được đẩy sang nửa đối diện với rank 0
-  const topHalfSeeds = bracketOrder.slice(0, size / 2);
-  const bottomHalfSeeds = bracketOrder.slice(size / 2);
-
-  // Gán lần lượt các đội đi tiếp vào các vị trí hạt giống
-  advancing.forEach((team, idx) => {
-    const seedNum = idx + 1;
-    if (seedNum <= size) {
-      seedAssignment.set(seedNum, team.entryId);
-    }
-  });
-
-  // Điền vào slots vòng 1 theo thứ tự bracketOrder
-  const slots: Array<string | null> = bracketOrder.map((seedNum) => seedAssignment.get(seedNum) ?? null);
-
-  const courtList = courts.length ? courts : ["Sân 1"];
   const matches: Match[] = [];
-  let courtCursor = 0;
   let roundIdx = 1;
   let current = size;
 
@@ -691,12 +832,16 @@ export function generateKnockout(
     });
   }
 
-  // Tự động đẩy các đội có Bye ở vòng 1 lên vòng 2
-  return propagateKnockout(matches, ev.id);
+  return propagateKnockout(matches, ev.id, ev, groupMatches);
 }
 
-/** Đẩy đội thắng/thua sang vòng kế tiếp trong nhánh loại trực tiếp & cập nhật bảng 3 đội. */
-export function propagateKnockout(matches: Match[], eventId: string): Match[] {
+/** Đẩy đội thắng/thua sang vòng kế tiếp trong nhánh loại trực tiếp & cập nhật bảng 3 đội / vòng bảng. */
+export function propagateKnockout(
+  matches: Match[],
+  eventId: string,
+  ev?: TEvent,
+  groupMatchesOpt?: Match[],
+): Match[] {
   // 1. Cập nhật bảng 3 đội nếu có kết quả Vòng 1
   const updated = matches.map((m) => ({ ...m }));
   const group3Names = new Set(
@@ -722,7 +867,76 @@ export function propagateKnockout(matches: Match[], eventId: string): Match[] {
     }
   });
 
-  // 2. Cập nhật nhánh KO
+  // 2. Tự động tính kết quả vòng bảng cập nhật vào các ô chờ "Nhất Bảng X", "Nhì Bảng Y" của Vòng 1 KO
+  const gMatches = groupMatchesOpt ?? updated.filter((m) => m.eventId === eventId && m.stage === "group");
+  if (gMatches.length > 0) {
+    const groupNames = Array.from(new Set(gMatches.map((m) => m.groupName)));
+    const standingsByGroup = new Map<string, ReturnType<typeof computeStandings>>();
+
+    groupNames.forEach((gn) => {
+      const thisGroupMatches = gMatches.filter((m) => m.groupName === gn);
+      const entryIds = Array.from(
+        new Set(thisGroupMatches.flatMap((m) => [m.aId, m.bId]).filter((id): id is string => Boolean(id))),
+      );
+      if (entryIds.length > 0) {
+        const eventConfig = ev ?? {
+          id: eventId,
+          name: "",
+          mode: "doi" as const,
+          bracket: "rr_ko" as const,
+          thirdPlace: true,
+          pairMode: "random" as const,
+          winPoints: 3,
+          lossPoints: 0,
+          drawPoints: 1,
+          groupCount: 4,
+          advancePerGroup: 2,
+          groups: [],
+        };
+        standingsByGroup.set(gn, computeStandings(entryIds, thisGroupMatches, eventConfig));
+      }
+    });
+
+    const resolveTeam = (placeholder?: string) => {
+      if (!placeholder) return null;
+      const matchNhast = /^(?:Nhất|I)\s+(.+)$/i.exec(placeholder);
+      const matchNhi = /^(?:Nhì|II)\s+(.+)$/i.exec(placeholder);
+      const matchBa = /^(?:Ba|III)\s+(.+)$/i.exec(placeholder);
+      const matchTu = /^(?:Tư|IV)\s+(.+)$/i.exec(placeholder);
+      if (matchNhast) {
+        const gn = matchNhast[1]?.trim() ?? "";
+        const standings = standingsByGroup.get(gn);
+        return standings?.[0]?.entryId ?? null;
+      }
+      if (matchNhi) {
+        const gn = matchNhi[1]?.trim() ?? "";
+        const standings = standingsByGroup.get(gn);
+        return standings?.[1]?.entryId ?? null;
+      }
+      if (matchBa) {
+        const gn = matchBa[1]?.trim() ?? "";
+        const standings = standingsByGroup.get(gn);
+        return standings?.[2]?.entryId ?? null;
+      }
+      if (matchTu) {
+        const gn = matchTu[1]?.trim() ?? "";
+        const standings = standingsByGroup.get(gn);
+        return standings?.[3]?.entryId ?? null;
+      }
+      return null;
+    };
+
+    updated.forEach((m) => {
+      if (m.eventId === eventId && m.stage === "ko" && m.round === 1) {
+        const resolvedA = resolveTeam(m.customPlaceholderA);
+        if (resolvedA) m.aId = resolvedA;
+        const resolvedB = resolveTeam(m.customPlaceholderB);
+        if (resolvedB) m.bId = resolvedB;
+      }
+    });
+  }
+
+  // 3. Cập nhật nhánh KO (thắng lên vòng tiếp, thua vào tranh hạng 3)
   const ko = updated.filter((m) => m.eventId === eventId && m.stage === "ko");
   const byRound = new Map<number, Match[]>();
   ko.forEach((m) => {
