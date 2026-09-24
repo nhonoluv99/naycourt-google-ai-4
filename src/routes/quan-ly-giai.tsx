@@ -8,6 +8,7 @@ import {
   buildTimeline,
   computeStandings,
   entryName,
+  generateEmptyKnockout,
   generateGroupMatches,
   generateKnockout,
   getActivePlayerNames,
@@ -44,9 +45,11 @@ export const Route = createFileRoute("/quan-ly-giai")({
 function ScoreBox({
   value,
   onCommit,
+  isWinning,
 }: {
   value: number | null;
   onCommit: (v: number | null) => void;
+  isWinning?: boolean;
 }) {
   const [raw, setRaw] = useState(value === null ? "" : String(value));
   useEffect(() => {
@@ -54,7 +57,12 @@ function ScoreBox({
   }, [value]);
   return (
     <input
-      className="w-11 rounded-md bg-card px-1 py-1 text-center text-sm font-bold ring-1 ring-line/20 outline-none focus:ring-2 focus:ring-accent"
+      className={`w-11 rounded-md px-1 py-1 text-center text-sm font-bold ring-1 outline-none focus:ring-2 focus:ring-[#e44c11] transition-all ${
+        isWinning
+          ? "bg-[#e44c11]/15 text-[#e44c11] ring-2 ring-[#e44c11] font-bold shadow-xs"
+          : "bg-card text-ink ring-line/20"
+      }`}
+      style={{ fontFamily: "'Space Grotesk', sans-serif" }}
       inputMode="numeric"
       placeholder="—"
       value={raw}
@@ -174,46 +182,104 @@ function RefereeSelector({
   );
 }
 
-/* ---------------- Hiển thị Tên VĐV & Đổi đỏ khi đang đấu ---------------- */
+/* ---------------- Chữ số La Mã cho xếp hạng hạt giống ---------------- */
+
+const toRoman = (num: number) => {
+  const romans = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "XIII", "XIV", "XV", "XVI"];
+  return romans[num - 1] ?? String(num);
+};
+
+/* ---------------- Đồng hồ bấm giờ trận đấu đang diễn ra trực tiếp (Ảnh 3) ---------------- */
+
+function LiveStopwatch({ startedAt, onReset }: { startedAt?: number; onReset?: () => void }) {
+  const getElapsed = (ts?: number) => {
+    if (!ts) return 0;
+    return Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  };
+
+  const [elapsed, setElapsed] = useState(() => getElapsed(startedAt));
+
+  useEffect(() => {
+    if (!startedAt) {
+      setElapsed(0);
+      return;
+    }
+    setElapsed(getElapsed(startedAt));
+    const timer = setInterval(() => {
+      setElapsed(getElapsed(startedAt));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [startedAt]);
+
+  const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
+  const ss = String(elapsed % 60).padStart(2, "0");
+
+  return (
+    <span
+      className="text-[11px] font-bold text-red-600 dark:text-red-400 bg-red-500/10 px-2 py-0.5 rounded flex items-center gap-1 shadow-2xs shrink-0 select-none cursor-pointer"
+      style={{ fontFamily: "'Courier New', Courier, monospace" }}
+      title="Bấm để khởi động lại đồng hồ từ 00:00"
+      onClick={onReset}
+    >
+      ⏱️ {mm}:{ss}
+    </span>
+  );
+}
+
+/* ---------------- Hiển thị Tên VĐV & Đỏ tên khi đang thi đấu (Ảnh 5: Bỏ chấm đỏ, giữ font gốc) ---------------- */
 
 function PlayerNameDisplay({
   entry,
   fallback,
   activePlayerNames,
   isWinning,
+  isMatchLive,
 }: {
   entry?: Entry;
   fallback: string;
   activePlayerNames: Set<string>;
   isWinning?: boolean;
+  isMatchLive?: boolean;
 }) {
   if (!entry || entry.players.length === 0) {
-    return <span className="truncate">{fallback || "Chưa xếp"}</span>;
+    const isLive = Boolean(isMatchLive) || activePlayerNames.has((fallback || "").toLowerCase());
+    return (
+      <span
+        className={`truncate ${
+          isLive
+            ? "text-red-600 dark:text-red-400 font-semibold"
+            : isWinning
+              ? "font-bold text-[#e44c11]"
+              : "text-ink/85 font-medium"
+        }`}
+        style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+      >
+        {fallback || "Chưa xếp"}
+      </span>
+    );
   }
   return (
     <span className="truncate inline-flex items-center gap-1">
       {entry.players.map((p, idx) => {
         const pName = p.name.trim();
         if (!pName) return null;
-        const isLive = activePlayerNames.has(pName.toLowerCase());
+        const isLive = Boolean(isMatchLive) || activePlayerNames.has(pName.toLowerCase());
         return (
-          <span key={idx} className="inline-flex items-center gap-0.5">
-            {idx > 0 && <span className="text-line/40 mx-0.5">/</span>}
+          <span key={idx} className="inline-flex items-center shrink-0">
+            {idx > 0 && <span className="text-line/40 mx-1">/</span>}
             <span
               className={`${
                 isLive
-                  ? "text-red-600 font-extrabold dark:text-red-400 underline decoration-red-500"
+                  ? "text-red-600 dark:text-red-400 font-semibold"
                   : isWinning
-                    ? "font-bold text-ink"
+                    ? "font-bold text-[#e44c11]"
                     : "text-ink/85 font-medium"
               }`}
-              title={isLive ? `${pName} đang thi đấu trong một trận khác!` : undefined}
+              style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+              title={isLive ? `${pName} đang thi đấu!` : undefined}
             >
               {pName}
             </span>
-            {isLive && (
-              <span className="size-1.5 rounded-full bg-red-600 animate-pulse shrink-0 inline-block" />
-            )}
           </span>
         );
       })}
@@ -240,8 +306,9 @@ type CardProps = {
   onAddReferee?: (r: string) => void;
   onRemoveFromTimeline?: () => void;
   onViewNote?: (note: string) => void;
-  onDurationChange?: (mins: number) => void;
-  onOffsetChange?: (offset: number) => void;
+  onDurationChange?: (mins: number, recordHistory?: boolean) => void;
+  onOffsetChange?: (offset: number, recordHistory?: boolean) => void;
+  onMoveHorizontal?: (newSlot: number, newOffset: number, recordHistory?: boolean) => void;
   onDropOnMatch?: (targetMatchId: string) => void;
   hasConflict?: boolean;
   compact?: boolean | undefined;
@@ -272,11 +339,12 @@ function MatchCard({
   onViewNote,
   onDurationChange,
   onOffsetChange,
+  onMoveHorizontal,
   onDropOnMatch,
   hasConflict,
   compact,
   colWidth = 210,
-  rowHeight = 115,
+  rowHeight = 85,
   slotMinutes = 30,
 }: CardProps) {
   const c = groupColor(m.groupName);
@@ -294,7 +362,9 @@ function MatchCard({
 
   return (
     <div
-      className={`relative rounded-xl ring-1 transition-all select-none flex flex-col justify-between overflow-hidden ${
+      className={`group relative rounded-xl ring-1 transition-all select-none flex flex-col justify-between overflow-hidden ${
+        compact ? "cursor-grab active:cursor-grabbing" : ""
+      } ${
         compact ? (isUltraCompact ? "p-1" : isMidCompact ? "p-1.5" : "p-2") : "p-2.5"
       } ${
         hasConflict
@@ -308,12 +378,13 @@ function MatchCard({
         height: compact ? "100%" : undefined,
         maxHeight: compact ? `${Math.max(40, rowHeight - 6)}px` : undefined,
       }}
+      title={compact ? "Nắm giữ thẻ trận đấu để kéo thả sang sân khác hoặc đổi giờ thi đấu" : undefined}
     >
       <div className="flex items-center justify-between gap-1">
         <div className="flex items-center gap-1.5 min-w-0">
           <span
             className="rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide shrink-0"
-            style={{ backgroundColor: c.dot, color: "white" }}
+            style={{ backgroundColor: c.dot, color: "white", fontFamily: "'Space Grotesk', sans-serif" }}
           >
             {displayTag}
           </span>
@@ -348,14 +419,14 @@ function MatchCard({
           {compact && onRemoveFromTimeline && (
             <button
               type="button"
-              className="ml-1 rounded p-0.5 text-line/40 hover:bg-line/10 hover:text-destructive"
-              title="Gỡ khỏi timeline"
+              className="ml-1 rounded px-1 py-0.5 text-[11px] text-line/40 hover:bg-destructive/10 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer shrink-0"
+              title="Xóa trận khỏi timeline (khi cấp nhầm)"
               onClick={(e) => {
                 e.stopPropagation();
                 onRemoveFromTimeline();
               }}
             >
-              ✕
+              🗑️
             </button>
           )}
         </div>
@@ -364,32 +435,28 @@ function MatchCard({
       <div className="mt-2 space-y-1.5">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1 min-w-0 flex-1">
-            {isLiveA && (
-              <span className="size-2 rounded-full bg-red-600 animate-pulse shrink-0" title="VĐV đang thi đấu trực tiếp" />
-            )}
             <PlayerNameDisplay
               entry={entryA}
               fallback={nameA}
               activePlayerNames={activePlayerNames}
               isWinning={aWin}
+              isMatchLive={m.status === "live"}
             />
           </div>
-          <ScoreBox value={m.scoreA} onCommit={(v) => onScore("scoreA", v)} />
+          <ScoreBox value={m.scoreA} onCommit={(v) => onScore("scoreA", v)} isWinning={aWin} />
         </div>
 
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1 min-w-0 flex-1">
-            {isLiveB && (
-              <span className="size-2 rounded-full bg-red-600 animate-pulse shrink-0" title="VĐV đang thi đấu trực tiếp" />
-            )}
             <PlayerNameDisplay
               entry={entryB}
               fallback={nameB}
               activePlayerNames={activePlayerNames}
               isWinning={bWin}
+              isMatchLive={m.status === "live"}
             />
           </div>
-          <ScoreBox value={m.scoreB} onCommit={(v) => onScore("scoreB", v)} />
+          <ScoreBox value={m.scoreB} onCommit={(v) => onScore("scoreB", v)} isWinning={bWin} />
         </div>
       </div>
 
@@ -400,7 +467,11 @@ function MatchCard({
           <div className="mt-1 flex items-center justify-between gap-1 border-t border-line/10 pt-1 text-[10px]">
             <div className="flex items-center gap-1">
               {m.status === "done" ? (
-                <button className="btn-ghost !px-1.5 !py-0.5 text-[9px] whitespace-nowrap cursor-pointer" onClick={onReset}>
+                <button
+                  className="btn-ghost !px-1.5 !py-0.5 text-[9px] whitespace-nowrap cursor-pointer"
+                  style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                  onClick={onReset}
+                >
                   ↺ Lại
                 </button>
               ) : (
@@ -408,6 +479,7 @@ function MatchCard({
                   className={`btn-ghost !px-1.5 !py-0.5 text-[9px] whitespace-nowrap cursor-pointer ${
                     m.status === "live" ? "text-red-600 font-bold" : ""
                   }`}
+                  style={{ fontFamily: "'Space Grotesk', sans-serif" }}
                   onClick={() => onStatus(m.status === "live" ? "pending" : "live")}
                 >
                   {m.status === "live" ? "⏸ Tạm dừng" : "▶ Bắt đầu"}
@@ -417,6 +489,7 @@ function MatchCard({
             <Link
               to="/cham-diem/$matchId"
               params={{ matchId: m.id } as any}
+              style={{ fontFamily: "'Space Grotesk', sans-serif" }}
               className="btn-ghost !px-1.5 !py-0.5 text-[9px] flex items-center gap-0.5 whitespace-nowrap font-medium cursor-pointer"
             >
               ⚡ Chấm điểm
@@ -429,6 +502,7 @@ function MatchCard({
           <div className="flex flex-wrap items-center gap-1.5">
             <select
               className="rounded-md bg-card px-1.5 py-1 text-[11px] font-semibold ring-1 ring-line/20 outline-none"
+              style={{ fontFamily: "'Space Grotesk', sans-serif" }}
               value={m.court}
               onChange={(e) => onCourt(e.target.value)}
             >
@@ -450,7 +524,8 @@ function MatchCard({
             {hasNote && onViewNote && (
               <button
                 type="button"
-                className="rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-700 ring-1 ring-amber-300 dark:bg-amber-950/30 dark:text-amber-400"
+                className="rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-700 ring-1 ring-amber-300 dark:bg-amber-950/30 dark:text-amber-400 cursor-pointer"
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
                 onClick={() => onViewNote(m.note || m.live?.note || "")}
               >
                 📝 Ghi chú
@@ -460,7 +535,11 @@ function MatchCard({
 
           <div className="flex flex-wrap items-center gap-1.5">
             {m.status === "done" ? (
-              <button className="btn-ghost !px-2 !py-1 text-[11px]" onClick={onReset}>
+              <button
+                className="btn-ghost !px-2 !py-1 text-[11px]"
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                onClick={onReset}
+              >
                 ↺ Bắt đầu lại
               </button>
             ) : (
@@ -468,6 +547,7 @@ function MatchCard({
                 className={`btn-ghost !px-2 !py-1 text-[11px] ${
                   m.status === "live" ? "text-red-600 font-bold" : ""
                 }`}
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
                 onClick={() => onStatus(m.status === "live" ? "pending" : "live")}
               >
                 {m.status === "live" ? "⏸ Tạm dừng" : "▶ Bắt đầu"}
@@ -476,6 +556,7 @@ function MatchCard({
             <Link
               to="/cham-diem/$matchId"
               params={{ matchId: m.id } as any}
+              style={{ fontFamily: "'Space Grotesk', sans-serif" }}
               className="btn-ghost !px-2 !py-1 text-[11px] flex items-center gap-1"
             >
               ⚡ Chấm điểm
@@ -487,33 +568,53 @@ function MatchCard({
       {/* Cạnh phải nắm kéo trực tiếp để kéo dãn / thu gọn thời lượng (Direct Drag-to-Resize Handle) */}
       {compact && onDurationChange && (
         <div
-          className="absolute right-0 top-0 bottom-0 w-3.5 cursor-ew-resize flex items-center justify-center group/resize hover:bg-accent/40 rounded-r transition-colors select-none z-30"
-          title="Nắm kéo trực tiếp sang phải để kéo dài trận đấu, sang trái để thu gọn (bước 5 phút)"
+          data-no-drag="true"
+          className="absolute right-0 top-0 bottom-0 w-3.5 cursor-ew-resize hover:bg-accent/40 active:bg-accent/60 rounded-r transition-colors select-none z-30 flex items-center justify-center group/resize"
+          title="Nắm kéo sang phải để kéo dài trận đấu, sang trái để thu ngắn lại (bước 5 phút, kéo thoải mái)"
           onMouseDown={(e) => {
             e.stopPropagation();
             e.preventDefault();
             const startX = e.clientX;
-            const startDur = m.durationMinutes ?? slotMinutes;
-            const pxPerMin = (colWidth || 210) / (slotMinutes || 30);
+            const slotMins = slotMinutes || 30;
+            const startDur = m.durationMinutes ?? slotMins;
+            const pxPerMin = (colWidth || 210) / slotMins;
+            let currentDur = startDur;
+
+            const wrapper = (e.currentTarget.closest(".timeline-card-wrapper") as HTMLElement) || e.currentTarget.parentElement?.parentElement;
+
+            const prevCursor = document.body.style.cursor;
+            const prevUserSelect = document.body.style.userSelect;
+            document.body.style.cursor = "ew-resize";
+            document.body.style.userSelect = "none";
 
             const onMouseMove = (moveEvent: MouseEvent) => {
+              moveEvent.preventDefault();
               const deltaX = moveEvent.clientX - startX;
               const deltaMinutes = Math.round(deltaX / pxPerMin / 5) * 5;
-              const newDur = Math.max(5, Math.min(240, startDur + deltaMinutes));
-              onDurationChange(newDur);
+              const newDur = Math.max(5, Math.min(360, startDur + deltaMinutes));
+              if (newDur !== currentDur) {
+                currentDur = newDur;
+                if (wrapper) {
+                  const newW = Math.max(36, Math.round((newDur / slotMins) * (colWidth || 210) - 6));
+                  wrapper.style.width = `${newW}px`;
+                }
+              }
             };
 
             const onMouseUp = () => {
+              document.body.style.cursor = prevCursor;
+              document.body.style.userSelect = prevUserSelect;
               window.removeEventListener("mousemove", onMouseMove);
               window.removeEventListener("mouseup", onMouseUp);
+              if (currentDur !== startDur) {
+                onDurationChange(currentDur, true);
+              }
             };
 
-            window.addEventListener("mousemove", onMouseMove);
+            window.addEventListener("mousemove", onMouseMove, { passive: false });
             window.addEventListener("mouseup", onMouseUp);
           }}
-        >
-          <div className="w-1 h-8 rounded-full bg-line/30 group-hover/resize:bg-accent group-hover/resize:h-12 transition-all" />
-        </div>
+        />
       )}
     </div>
   );
@@ -525,13 +626,20 @@ function KoCard({
   nameB,
   entryA,
   entryB,
+  seedBadgeA,
+  seedBadgeB,
   activePlayerNames,
   isLiveA,
   isLiveB,
+  isConflictA,
+  isConflictB,
+  hasRoundConflict,
   onScore,
   onStatus,
   onReset,
   onDropTeam,
+  onClearTeam,
+  onStartDragTeam,
   onViewNote,
   referees = [],
   onReferee,
@@ -542,13 +650,20 @@ function KoCard({
   nameB: string;
   entryA?: Entry;
   entryB?: Entry;
+  seedBadgeA?: string | null;
+  seedBadgeB?: string | null;
   activePlayerNames: Set<string>;
   isLiveA?: boolean;
   isLiveB?: boolean;
+  isConflictA?: boolean;
+  isConflictB?: boolean;
+  hasRoundConflict?: boolean;
   onScore: (k: "scoreA" | "scoreB", v: number | null) => void;
   onStatus: (s: Match["status"]) => void;
   onReset: () => void;
   onDropTeam: (side: "aId" | "bId") => void;
+  onClearTeam?: (side: "aId" | "bId") => void;
+  onStartDragTeam?: (side: "aId" | "bId") => void;
   onViewNote?: (note: string) => void;
   referees?: string[];
   onReferee?: (r: string) => void;
@@ -559,27 +674,78 @@ function KoCard({
   const bWin = m.scoreA !== null && m.scoreB !== null && m.scoreB > m.scoreA;
   const hasNote = Boolean(m.note || m.live?.note);
 
-  const seedA = m.customPlaceholderA
-    ? m.customPlaceholderA.replace(/^Nhất\s+/i, "I ").replace(/^Nhì\s+/i, "II ")
-    : null;
-  const seedB = m.customPlaceholderB
-    ? m.customPlaceholderB.replace(/^Nhất\s+/i, "I ").replace(/^Nhì\s+/i, "II ")
-    : null;
+  const formatSeed = (str?: string | null) => {
+    if (!str) return null;
+    const clean = str.trim();
+    if (/^bye$/i.test(clean)) return "BYE";
+    return clean
+      .replace(/^Nhất\s+/i, "1")
+      .replace(/^Nhì\s+/i, "2")
+      .replace(/^Ba\s+/i, "3")
+      .replace(/^Tư\s+/i, "4")
+      .replace(/^I\s+/i, "1")
+      .replace(/^II\s+/i, "2")
+      .replace(/^III\s+/i, "3")
+      .replace(/^IV\s+/i, "4")
+      .replace(/\s*bảng\s*/gi, "")
+      .replace(/\s+/g, "")
+      .trim();
+  };
 
-  const row = (win: boolean, live: boolean | undefined) =>
+  const seedA = seedBadgeA || formatSeed(m.customPlaceholderA);
+  const seedB = seedBadgeB || formatSeed(m.customPlaceholderB);
+  const isByeA = seedA === "BYE";
+  const isByeB = seedB === "BYE";
+  const isByeMatch = Boolean(
+    isByeA ||
+    isByeB ||
+    m.customPlaceholderA === "BYE" ||
+    m.customPlaceholderB === "BYE" ||
+    m.customPlaceholderA?.toLowerCase() === "bye" ||
+    m.customPlaceholderB?.toLowerCase() === "bye" ||
+    (m.round === 1 && !m.bId && !m.customPlaceholderB) ||
+    (m.round === 1 && !m.aId && !m.customPlaceholderA)
+  );
+
+  const row = (win: boolean, live: boolean | undefined, isConflict?: boolean) =>
     `flex items-center justify-between gap-2 px-2.5 py-2 transition-all ${
-      win ? "font-bold text-ink" : "text-line/70"
-    } ${live ? "bg-red-50/50 text-red-600 font-extrabold" : ""}`;
+      win ? "font-bold text-[#e44c11]" : "text-line/70"
+    } ${live ? "bg-red-50/50 text-red-600 font-bold" : ""} ${
+      isConflict ? "bg-red-100/90 dark:bg-red-950/50 text-red-900 dark:text-red-100 ring-1 ring-red-500 rounded-md my-0.5" : ""
+    }`;
+
+  // Kiểu viền frame trận vòng loại trực tiếp:
+  // - Trận có suất BYE: viền màu cam (#e44c11), nét đứt 1.2px
+  // - Trận đấu bình thường: viền màu cam (#e44c11), nét liền 1.2px
+  const matchFrameBorder = hasRoundConflict
+    ? "border-2 border-solid border-red-500 ring-2 ring-red-500 bg-red-50/60 dark:bg-red-950/30 shadow-md"
+    : m.status === "live"
+      ? "border-2 border-solid border-red-500 ring-2 ring-red-500 shadow-md bg-card"
+      : isByeMatch
+        ? "border-[1.2px] border-dashed border-[#e44c11]"
+        : "border-[1.2px] border-solid border-[#e44c11]";
 
   return (
     <div
-      className={`relative rounded-xl bg-card ring-1 transition-all ${
-        m.status === "live" ? "ring-2 ring-red-500 shadow-md" : "ring-line/20"
-      }`}
+      className={`relative rounded-xl ${matchFrameBorder} bg-card shadow-xs overflow-hidden transition-all`}
+      style={{ borderWidth: "1.2px" }}
     >
-      <div className="flex items-center justify-between border-b border-line/10 bg-secondary/30 px-2 py-1 text-[10px] font-semibold text-line/60 rounded-t-xl">
-        <span>{m.koRound || `Vòng ${m.round}`}</span>
+      <div
+        className={`flex items-center justify-between border-b px-2 py-1 text-[10px] font-semibold rounded-t-xl ${
+          hasRoundConflict
+            ? "border-red-300 bg-red-100/90 text-red-900 dark:bg-red-900/40 dark:text-red-200"
+            : "border-line/15 bg-secondary/40 text-line/70"
+        }`}
+      >
+        <span className="font-bold" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+          {m.koRound || `Vòng ${m.round}`}
+        </span>
         <div className="flex items-center gap-1">
+          {hasRoundConflict && (
+            <span className="flex items-center gap-1 rounded bg-red-600 px-1.5 py-0.5 text-[9px] font-bold text-white shadow-xs animate-pulse">
+              ⚠️ Trùng đội trong vòng!
+            </span>
+          )}
           {m.status === "live" && (
             <span className="flex items-center gap-1 text-red-600 font-bold animate-pulse">
               <span className="size-1.5 rounded-full bg-red-600" />
@@ -589,7 +755,7 @@ function KoCard({
           {hasNote && onViewNote && (
             <button
               type="button"
-              className="text-amber-600 font-bold hover:underline"
+              className="text-amber-600 font-bold hover:underline cursor-pointer"
               onClick={() => onViewNote(m.note || m.live?.note || "")}
             >
               📝 Ghi chú
@@ -598,63 +764,175 @@ function KoCard({
         </div>
       </div>
 
-      <div
-        className={row(aWin, isLiveA)}
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={() => onDropTeam("aId")}
-      >
-        <div className="flex items-center gap-1.5 min-w-0 flex-1">
-          {isLiveA && <span className="size-2 rounded-full bg-red-600 animate-pulse shrink-0" />}
-          {seedA && (
-            <span className="shrink-0 px-1 py-0.2 rounded bg-accent/15 text-accent text-[10px] font-bold font-mono">
-              {seedA}
-            </span>
+      {/* Đội A */}
+      <div className="p-1 pb-0.5">
+        <div
+          className={`group/slot rounded-lg border ${
+            aWin
+              ? "border-[#e44c11]/50 bg-[#e44c11]/10 dark:bg-[#e44c11]/15 shadow-xs"
+              : "border-line/25 dark:border-line/30 bg-muted/25 dark:bg-muted/15"
+          } ${row(aWin, isLiveA, isConflictA)} ${
+            m.aId ? "cursor-grab active:cursor-grabbing hover:bg-muted/40" : ""
+          }`}
+          draggable={Boolean(m.aId || (seedA && !isByeA))}
+          onDragStart={(e) => {
+            e.stopPropagation();
+            onStartDragTeam?.("aId");
+          }}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={() => onDropTeam("aId")}
+          title={m.aId ? "Nắm kéo đội này để hoán đổi hoặc xếp sang trận khác" : undefined}
+        >
+          <div className="flex items-center gap-1.5 min-w-0 flex-1">
+            {seedA && (
+              <span
+                className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                  isByeA
+                    ? "bg-line/15 text-line/60 border border-dashed border-line/30"
+                    : "bg-accent/15 text-accent"
+                }`}
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+              >
+                {seedA}
+              </span>
+            )}
+            {isByeA ? (
+              <span className="italic text-line/40 text-xs font-semibold">(Miễn đấu - BYE)</span>
+            ) : (
+              <PlayerNameDisplay
+                entry={entryA}
+                fallback={nameA}
+                activePlayerNames={activePlayerNames}
+                isWinning={aWin}
+                isMatchLive={m.status === "live"}
+              />
+            )}
+            {isConflictA && (
+              <span className="shrink-0 text-[9px] font-extrabold text-red-600 bg-red-200/90 dark:bg-red-950 px-1 py-0.2 rounded border border-red-400 animate-pulse">
+                ⚠️ Trùng đội
+              </span>
+            )}
+            {m.aId && onClearTeam && (
+              <button
+                type="button"
+                className="opacity-0 group-hover/slot:opacity-100 hover:text-red-600 p-0.5 rounded text-line/40 hover:bg-red-50 dark:hover:bg-red-950/40 transition-opacity cursor-pointer shrink-0"
+                title="Xóa đội khỏi ô này (Ảnh 1)"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClearTeam("aId");
+                }}
+              >
+                <svg className="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 6h18" />
+                  <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+                  <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+                  <line x1="10" y1="11" x2="10" y2="17" />
+                  <line x1="14" y1="11" x2="14" y2="17" />
+                </svg>
+              </button>
+            )}
+          </div>
+          {isByeA ? (
+            <span className="text-line/40 font-mono text-xs px-2 select-none">-</span>
+          ) : (
+            <ScoreBox value={m.scoreA} onCommit={(v) => onScore("scoreA", v)} isWinning={aWin} />
           )}
-          <PlayerNameDisplay
-            entry={entryA}
-            fallback={nameA}
-            activePlayerNames={activePlayerNames}
-            isWinning={aWin}
-          />
         </div>
-        <ScoreBox value={m.scoreA} onCommit={(v) => onScore("scoreA", v)} />
       </div>
 
-      <div className="h-px bg-line/10" />
-
-      <div
-        className={row(bWin, isLiveB)}
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={() => onDropTeam("bId")}
-      >
-        <div className="flex items-center gap-1.5 min-w-0 flex-1">
-          {isLiveB && <span className="size-2 rounded-full bg-red-600 animate-pulse shrink-0" />}
-          {seedB && (
-            <span className="shrink-0 px-1 py-0.2 rounded bg-secondary text-line/70 text-[10px] font-bold font-mono">
-              {seedB}
-            </span>
+      {/* Đội B */}
+      <div className="p-1 pt-0.5">
+        <div
+          className={`group/slot rounded-lg border ${
+            bWin
+              ? "border-[#e44c11]/50 bg-[#e44c11]/10 dark:bg-[#e44c11]/15 shadow-xs"
+              : "border-line/25 dark:border-line/30 bg-muted/25 dark:bg-muted/15"
+          } ${row(bWin, isLiveB, isConflictB)} ${
+            m.bId ? "cursor-grab active:cursor-grabbing hover:bg-muted/40" : ""
+          }`}
+          draggable={Boolean(m.bId || (seedB && !isByeB))}
+          onDragStart={(e) => {
+            e.stopPropagation();
+            onStartDragTeam?.("bId");
+          }}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={() => onDropTeam("bId")}
+          title={m.bId ? "Nắm kéo đội này để hoán đổi hoặc xếp sang trận khác" : undefined}
+        >
+          <div className="flex items-center gap-1.5 min-w-0 flex-1">
+            {seedB && (
+              <span
+                className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                  isByeB
+                    ? "bg-line/15 text-line/60 border border-dashed border-line/30"
+                    : "bg-secondary text-line/70"
+                }`}
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+              >
+                {seedB}
+              </span>
+            )}
+            {isByeB ? (
+              <span className="italic text-line/40 text-xs font-semibold">(Miễn đấu - BYE)</span>
+            ) : (
+              <PlayerNameDisplay
+                entry={entryB}
+                fallback={nameB}
+                activePlayerNames={activePlayerNames}
+                isWinning={bWin}
+                isMatchLive={m.status === "live"}
+              />
+            )}
+            {isConflictB && (
+              <span className="shrink-0 text-[9px] font-extrabold text-red-600 bg-red-200/90 dark:bg-red-950 px-1 py-0.2 rounded border border-red-400 animate-pulse">
+                ⚠️ Trùng đội
+              </span>
+            )}
+            {m.bId && onClearTeam && (
+              <button
+                type="button"
+                className="opacity-0 group-hover/slot:opacity-100 hover:text-red-600 p-0.5 rounded text-line/40 hover:bg-red-50 dark:hover:bg-red-950/40 transition-opacity cursor-pointer shrink-0"
+                title="Xóa đội khỏi ô này (Ảnh 1)"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClearTeam("bId");
+                }}
+              >
+                <svg className="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 6h18" />
+                  <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+                  <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+                  <line x1="10" y1="11" x2="10" y2="17" />
+                  <line x1="14" y1="11" x2="14" y2="17" />
+                </svg>
+              </button>
+            )}
+          </div>
+          {isByeB ? (
+            <span className="text-line/40 font-mono text-xs px-2 select-none">-</span>
+          ) : (
+            <ScoreBox value={m.scoreB} onCommit={(v) => onScore("scoreB", v)} isWinning={bWin} />
           )}
-          <PlayerNameDisplay
-            entry={entryB}
-            fallback={nameB}
-            activePlayerNames={activePlayerNames}
-            isWinning={bWin}
-          />
         </div>
-        <ScoreBox value={m.scoreB} onCommit={(v) => onScore("scoreB", v)} />
       </div>
 
       <div className="flex items-center justify-between gap-1.5 bg-secondary/50 px-2 py-1.5 border-t border-line/10 rounded-b-xl">
         <div className="flex items-center gap-1">
           {m.status === "done" ? (
-            <button className="btn-ghost !px-1.5 !py-0.5 text-[10px]" onClick={onReset}>
+            <button
+              className="btn-ghost !px-1.5 !py-0.5 text-[10px]"
+              style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+              onClick={onReset}
+            >
               ↺ Lại
             </button>
           ) : (
             <button
+              disabled={isByeA || isByeB}
               className={`btn-ghost !px-1.5 !py-0.5 text-[10px] ${
                 m.status === "live" ? "text-red-600 font-bold" : ""
-              }`}
+              } ${isByeA || isByeB ? "opacity-40 cursor-not-allowed" : ""}`}
+              style={{ fontFamily: "'Space Grotesk', sans-serif" }}
               onClick={() => onStatus(m.status === "live" ? "pending" : "live")}
             >
               {m.status === "live" ? "⏸ Dừng" : "▶ Bắt đầu"}
@@ -674,75 +952,239 @@ function KoCard({
           </div>
         )}
 
-        <Link
-          to="/cham-diem/$matchId"
-          params={{ matchId: m.id } as any}
-          className="btn-ghost !px-1.5 !py-0.5 text-[10px] flex items-center gap-1"
-        >
-          ⚡ Chấm điểm
-        </Link>
+        {isByeA || isByeB ? (
+          <span
+            className="text-[10px] font-bold text-accent px-1.5 py-0.5 rounded bg-accent/10"
+            style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+          >
+            Vào thẳng
+          </span>
+        ) : (
+          <Link
+            to="/cham-diem/$matchId"
+            params={{ matchId: m.id } as any}
+            className="btn-ghost !px-1.5 !py-0.5 text-[10px] flex items-center gap-1"
+            style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+          >
+            ⚡ Chấm điểm
+          </Link>
+        )}
       </div>
     </div>
   );
 }
 
-/* ---------------- Đường nối thẳng, bo cong nhẹ ở góc, nét mỏng nối các vòng Knockout ---------------- */
+/* ---------------- Helper nhận diện trận có suất BYE ---------------- */
 
-function BracketConnectors({ count, isFirst }: { count: number; isFirst?: boolean }) {
+const isMatchBye = (m?: Match) => {
+  if (!m) return false;
+  const isA = m.customPlaceholderA === "BYE" || m.customPlaceholderA?.toLowerCase() === "bye";
+  const isB = m.customPlaceholderB === "BYE" || m.customPlaceholderB?.toLowerCase() === "bye";
+  const noA = m.round === 1 && !m.aId && !m.customPlaceholderA;
+  const noB = m.round === 1 && !m.bId && !m.customPlaceholderB;
+  return Boolean(isA || isB || noA || noB);
+};
+
+/* ---------------- Đường nối thẳng các vòng Knockout (Đồng bộ 100% cùng định dạng CSS viền của thẻ trận) ---------------- */
+
+function BracketConnectors({
+  count,
+  direction = "ltr",
+  matches = [],
+}: {
+  count: number;
+  direction?: "ltr" | "rtl";
+  matches?: Match[];
+}) {
   if (count <= 0) return null;
   return (
-    <div className="w-10 shrink-0 flex flex-col pt-12 pb-4 self-stretch">
-      <svg
-        className="w-full h-full overflow-visible text-line/40 dark:text-line/40"
-        viewBox="0 0 40 1000"
-        preserveAspectRatio="none"
-      >
+    <div className="w-10 shrink-0 flex flex-col self-stretch pointer-events-none select-none">
+      {/* Khoảng trống trên cùng tương ứng với tiêu đề vòng đấu (py-2.5 text-sm) và mt-4 */}
+      <div className="h-[56px] shrink-0" />
+      {/* Vùng chứa các nhánh nối khớp chiều cao với danh sách trận đấu */}
+      <div className="flex-1 flex flex-col">
         {Array.from({ length: count }).map((_, p) => {
-          const yTop = ((2 * p + 0.5) / (2 * count)) * 1000;
-          const yBottom = ((2 * p + 1.5) / (2 * count)) * 1000;
-          const yMid = ((p + 0.5) / count) * 1000;
-          // Bán kính bo cong nhẹ ở góc (sang trọng, tinh tế)
-          const r = Math.min(12, Math.max(4, (yBottom - yTop) * 0.08));
+          const topMatch = matches[2 * p];
+          const bottomMatch = matches[2 * p + 1];
+          const isTopBye = isMatchBye(topMatch);
+          const isBottomBye = isMatchBye(bottomMatch);
+          const isStemBye = isTopBye && isBottomBye;
+
+          const topBorderStyle = isTopBye ? "1.2px dashed #e44c11" : "1.2px solid #e44c11";
+          const bottomBorderStyle = isBottomBye ? "1.2px dashed #e44c11" : "1.2px solid #e44c11";
+          const stemBorderStyle = isStemBye ? "1.2px dashed #e44c11" : "1.2px solid #e44c11";
+
+          if (direction === "rtl") {
+            return (
+              <div key={p} className="flex-1 relative">
+                {/* Nhánh ngang từ trận trên (từ mép phải vào giữa) */}
+                <div
+                  style={{
+                    position: "absolute",
+                    right: 0,
+                    top: "25%",
+                    width: "50%",
+                    borderTop: topBorderStyle,
+                  }}
+                />
+                {/* Nhánh dọc từ trận trên xuống giao điểm giữa */}
+                <div
+                  style={{
+                    position: "absolute",
+                    left: "calc(50% - 0.6px)",
+                    top: "25%",
+                    height: "25%",
+                    borderLeft: topBorderStyle,
+                  }}
+                />
+                {/* Nhánh dọc từ giao điểm giữa xuống nhánh dưới */}
+                <div
+                  style={{
+                    position: "absolute",
+                    left: "calc(50% - 0.6px)",
+                    top: "50%",
+                    height: "25%",
+                    borderLeft: bottomBorderStyle,
+                  }}
+                />
+                {/* Nhánh ngang từ trận dưới (từ mép phải vào giữa) */}
+                <div
+                  style={{
+                    position: "absolute",
+                    right: 0,
+                    top: "75%",
+                    width: "50%",
+                    borderTop: bottomBorderStyle,
+                  }}
+                />
+                {/* Đoạn thẳng ngang nối từ giữa sang trái vào trận vòng tiếp theo */}
+                <div
+                  style={{
+                    position: "absolute",
+                    left: 0,
+                    top: "50%",
+                    width: "50%",
+                    borderTop: stemBorderStyle,
+                  }}
+                />
+                {/* Điểm nút tròn tại điểm giao nhánh tiếp theo */}
+                <span
+                  style={{
+                    position: "absolute",
+                    left: "-2px",
+                    top: "calc(50% - 2px)",
+                    width: "4px",
+                    height: "4px",
+                    borderRadius: "50%",
+                    backgroundColor: "#e44c11",
+                  }}
+                />
+              </div>
+            );
+          }
+
           return (
-            <g key={p}>
-              {/* Nhánh từ trận trên ra, bo cong nhẹ 90 độ xuống thân dọc */}
-              <path
-                d={`M 0 ${yTop} L ${20 - r} ${yTop} Q 20 ${yTop} 20 ${yTop + r} L 20 ${yMid}`}
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                style={isFirst && p === 0 ? { backgroundColor: "#000000" } : undefined}
+            <div key={p} className="flex-1 relative">
+              {/* Nhánh ngang từ trận trên (từ mép trái vào giữa) */}
+              <div
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  top: "25%",
+                  width: "50%",
+                  borderTop: topBorderStyle,
+                }}
               />
-              {/* Nhánh từ trận dưới ra, bo cong nhẹ 90 độ lên thân dọc */}
-              <path
-                d={`M 0 ${yBottom} L ${20 - r} ${yBottom} Q 20 ${yBottom} 20 ${yBottom - r} L 20 ${yMid}`}
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
+              {/* Nhánh dọc từ trận trên xuống giao điểm giữa */}
+              <div
+                style={{
+                  position: "absolute",
+                  left: "calc(50% - 0.6px)",
+                  top: "25%",
+                  height: "25%",
+                  borderLeft: topBorderStyle,
+                }}
               />
-              {/* Đoạn thẳng ngang nối sang trận vòng tiếp theo */}
-              <path
-                d={`M 20 ${yMid} L 40 ${yMid}`}
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
+              {/* Nhánh dọc từ giao điểm giữa xuống nhánh dưới */}
+              <div
+                style={{
+                  position: "absolute",
+                  left: "calc(50% - 0.6px)",
+                  top: "50%",
+                  height: "25%",
+                  borderLeft: bottomBorderStyle,
+                }}
               />
-              {/* Điểm nút bo tròn tinh tế tại điểm nối */}
-              <circle
-                cx="40"
-                cy={yMid}
-                r="2.5"
-                className="fill-accent stroke-card stroke-1"
+              {/* Nhánh ngang từ trận dưới (từ mép trái vào giữa) */}
+              <div
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  top: "75%",
+                  width: "50%",
+                  borderTop: bottomBorderStyle,
+                }}
               />
-            </g>
+              {/* Đoạn thẳng ngang nối từ giữa sang phải vào trận vòng tiếp theo */}
+              <div
+                style={{
+                  position: "absolute",
+                  left: "50%",
+                  top: "50%",
+                  width: "50%",
+                  borderTop: stemBorderStyle,
+                }}
+              />
+              {/* Điểm nút tròn tại điểm giao nhánh tiếp theo */}
+              <span
+                style={{
+                  position: "absolute",
+                  right: "-2px",
+                  top: "calc(50% - 2px)",
+                  width: "4px",
+                  height: "4px",
+                  borderRadius: "50%",
+                  backgroundColor: "#e44c11",
+                }}
+              />
+            </div>
           );
         })}
-      </svg>
+      </div>
+    </div>
+  );
+}
+
+function SingleBridgeConnector({
+  direction = "ltr",
+  isBye = false,
+}: {
+  direction?: "ltr" | "rtl";
+  isBye?: boolean;
+}) {
+  const borderStyle = isBye ? "1.2px dashed #e44c11" : "1.2px solid #e44c11";
+  return (
+    <div className="w-10 shrink-0 flex flex-col self-stretch pointer-events-none select-none">
+      <div className="h-[56px] shrink-0" />
+      <div className="flex-1 relative flex items-center">
+        <div
+          style={{
+            width: "100%",
+            borderTop: borderStyle,
+          }}
+        />
+        <span
+          style={{
+            position: "absolute",
+            [direction === "rtl" ? "left" : "right"]: "-2px",
+            top: "calc(50% - 2px)",
+            width: "4px",
+            height: "4px",
+            borderRadius: "50%",
+            backgroundColor: "#e44c11",
+          }}
+        />
+      </div>
     </div>
   );
 }
@@ -776,6 +1218,12 @@ function ManagePage() {
   const [maximizeStandings, setMaximizeStandings] = useState(false);
   const [showQueue, setShowQueue] = useState(true);
   const [showManualSeeding, setShowManualSeeding] = useState(false);
+  const [dragKoSlot, setDragKoSlot] = useState<{
+    matchId: string;
+    side: "aId" | "bId";
+    entryId: string | null;
+    placeholder?: string;
+  } | null>(null);
 
   // Real-time red line
   const [nowMinutes, setNowMinutes] = useState(() => {
@@ -786,6 +1234,71 @@ function ManagePage() {
     const d = new Date();
     return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   });
+
+  // Undo / Redo cho bảng timeline
+  const [timelineHistory, setTimelineHistory] = useState<Match[][]>([]);
+  const [timelineRedoStack, setTimelineRedoStack] = useState<Match[][]>([]);
+
+  // Chế độ tạo nhánh KO: "total" (chọn tổng số đội, để bảng trống) hoặc "advance" (theo đội đi tiếp / bảng)
+  const [koType, setKoType] = useState<"total" | "advance">("total");
+  const [totalKoTeams, setTotalKoTeams] = useState<number>(8);
+  // Dạng hiển thị nhánh KO (Ảnh 4): 2 nhánh 2 bên hoặc 1 nhánh thẳng
+  const [koLayout, setKoLayout] = useState<"two_sided" | "single">("two_sided");
+  // Chế độ xem toàn màn hình nhánh KO
+  const [isFullscreenKo, setIsFullscreenKo] = useState(false);
+  const [koZoom, setKoZoom] = useState(1);
+
+  useEffect(() => {
+    if (!isFullscreenKo) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setIsFullscreenKo(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isFullscreenKo]);
+
+  const recordTimelineState = () => {
+    setTimelineHistory((prev) => [...prev.slice(-30), state.matches]);
+    setTimelineRedoStack([]);
+  };
+
+  const handleUndoTimeline = () => {
+    if (timelineHistory.length === 0) return;
+    const previous = timelineHistory[timelineHistory.length - 1];
+    setTimelineRedoStack((prev) => [...prev, state.matches]);
+    setTimelineHistory((prev) => prev.slice(0, -1));
+    update({ matches: previous });
+    setNote("Đã hoàn tác (Undo)");
+  };
+
+  const handleRedoTimeline = () => {
+    if (timelineRedoStack.length === 0) return;
+    const next = timelineRedoStack[timelineRedoStack.length - 1];
+    setTimelineHistory((prev) => [...prev, state.matches]);
+    setTimelineRedoStack((prev) => prev.slice(0, -1));
+    update({ matches: next });
+    setNote("Đã làm lại (Redo)");
+  };
+
+  useEffect(() => {
+    if (tab !== "timeline") return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        if (e.shiftKey) {
+          e.preventDefault();
+          handleRedoTimeline();
+        } else {
+          e.preventDefault();
+          handleUndoTimeline();
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        handleRedoTimeline();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [tab, timelineHistory, timelineRedoStack, state.matches]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -860,24 +1373,25 @@ function ManagePage() {
   };
 
   const buildKo = () => {
-    const fresh = generateKnockout(ev, entries, groupMatches, state.courts);
+    let fresh: Match[] = [];
+    if (koType === "total") {
+      fresh = generateEmptyKnockout(ev, totalKoTeams, state.courts);
+    } else {
+      fresh = generateKnockout(ev, entries, groupMatches, state.courts);
+    }
     if (!fresh.length) {
-      setNote("Chưa đủ dữ liệu vòng bảng để tạo nhánh loại trực tiếp.");
+      setNote("Chưa đủ dữ liệu để tạo nhánh loại trực tiếp.");
       return;
     }
     update({
       matches: [...state.matches.filter((m) => !(m.eventId === ev.id && m.stage === "ko")), ...fresh],
     });
     setTab("ko");
-    setNote(`Đã tạo ${fresh.length} trận loại trực tiếp.`);
-  };
-
-  const resetKo = () => {
-    const fresh = generateKnockout(ev, entries, groupMatches, state.courts);
-    update({
-      matches: [...state.matches.filter((m) => !(m.eventId === ev.id && m.stage === "ko")), ...fresh],
-    });
-    setNote("Đã làm mới lại toàn bộ nhánh loại trực tiếp.");
+    setNote(
+      koType === "total"
+        ? `Đã tạo nhánh KO gồm ${totalKoTeams} đội (bảng trống để kéo thả).`
+        : `Đã tạo ${fresh.length} trận loại trực tiếp.`
+    );
   };
 
   const setScore = (m: Match, key: "scoreA" | "scoreB", v: number | null) => {
@@ -899,7 +1413,7 @@ function ManagePage() {
     const patched: Match[] = state.matches.map((x) => {
       if (x.id !== m.id) return x;
       const { live: _live, ...rest } = x;
-      return { ...rest, scoreA: null, scoreB: null, status: "pending" as const };
+      return { ...rest, scoreA: null, scoreB: null, status: "pending" as const, startedAt: undefined } as any;
     });
     update({ matches: propagateKnockout(patched, ev.id) });
   };
@@ -921,6 +1435,7 @@ function ManagePage() {
     const mB = state.matches.find((m) => m.id === targetMatchId);
     if (!mA || !mB) return;
 
+    recordTimelineState();
     update({
       matches: state.matches.map((m) => {
         if (m.id === dragMatch) {
@@ -984,17 +1499,36 @@ function ManagePage() {
     isLiveA: isEntryActive(m.aId),
     isLiveB: isEntryActive(m.bId),
     onScore: (k, v) => setScore(m, k, v),
-    onStatus: (s) => updateMatch(m.id, { status: s }),
+    onStatus: (s) => {
+      updateMatch(m.id, {
+        status: s,
+        startedAt: s === "live" ? Date.now() : undefined,
+      } as any);
+    },
     onReset: () => resetMatch(m),
     courts: state.courts,
     referees: state.referees,
     onCourt: (c) => updateMatch(m.id, { court: c }),
     onReferee: (r) => updateMatch(m.id, { referee: r }),
     onAddReferee: handleAddReferee,
-    onRemoveFromTimeline: () => updateMatch(m.id, { timeSlot: undefined }),
+    onRemoveFromTimeline: () => {
+      recordTimelineState();
+      updateMatch(m.id, { timeSlot: undefined });
+    },
     onViewNote: (n) => setViewNoteText(n),
-    onDurationChange: (mins) => updateMatch(m.id, { durationMinutes: mins }),
-    onOffsetChange: (offset) => updateMatch(m.id, { offsetMinutes: offset }),
+    onDurationChange: (mins, recordHistory = true) => {
+      if (recordHistory) recordTimelineState();
+      updateMatch(m.id, { durationMinutes: mins });
+    },
+    onOffsetChange: (offset, recordHistory = true) => {
+      if (recordHistory) recordTimelineState();
+      updateMatch(m.id, { offsetMinutes: offset });
+    },
+    onMoveHorizontal: (newSlot, newOffset, recordHistory = true) => {
+      if (recordHistory) recordTimelineState();
+      updateMatch(m.id, { timeSlot: newSlot, offsetMinutes: newOffset });
+    },
+    onDropOnMatch: handleMatchDrop,
     hasConflict: compact && conflictsSet.has(m.id),
     compact,
   });
@@ -1085,11 +1619,13 @@ function ManagePage() {
 
   const dropOn = (court: string, slot: number, offsetMinutes = 0) => {
     if (!dragMatch) return;
+    recordTimelineState();
     updateMatch(dragMatch, { court, timeSlot: slot, offsetMinutes });
     setDragMatch(null);
   };
 
   const clearTimeline = () => {
+    recordTimelineState();
     const patched = state.matches.map((m) =>
       m.eventId === ev.id ? { ...m, timeSlot: undefined } : m,
     );
@@ -1098,6 +1634,7 @@ function ManagePage() {
   };
 
   const handleAutoSchedule = () => {
+    recordTimelineState();
     const updated = autoScheduleTimeline(
       matches,
       state.courts,
@@ -1254,10 +1791,79 @@ function ManagePage() {
   );
   const thirdMatch = koMatches.find((m) => m.slot === 99);
 
-  const dropTeam = (m: Match, side: "aId" | "bId") => {
+  // Đếm số lần mỗi đội xuất hiện trong cùng 1 vòng KO để cảnh báo trùng đội (Ảnh 3)
+  const roundEntryCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    koMatches.forEach((m) => {
+      if (m.slot === 99) return;
+      const keyPrefix = `${m.round}_`;
+      if (m.aId) {
+        const k = keyPrefix + m.aId;
+        counts.set(k, (counts.get(k) || 0) + 1);
+      }
+      if (m.bId) {
+        const k = keyPrefix + m.bId;
+        counts.set(k, (counts.get(k) || 0) + 1);
+      }
+    });
+    return counts;
+  }, [koMatches]);
+
+  const dropTeam = (targetMatch: Match, targetSide: "aId" | "bId") => {
+    // TH 1: Kéo thả giữa các ô trong nhánh KO để đổi chỗ / hoán đổi (swap/move)
+    if (dragKoSlot) {
+      if (dragKoSlot.matchId === targetMatch.id && dragKoSlot.side === targetSide) {
+        setDragKoSlot(null);
+        return;
+      }
+      const sourceMatch = state.matches.find((x) => x.id === dragKoSlot.matchId);
+      if (!sourceMatch) {
+        setDragKoSlot(null);
+        return;
+      }
+      const sourceVal = dragKoSlot.side === "aId" ? sourceMatch.aId : sourceMatch.bId;
+      const sourceHolder =
+        dragKoSlot.side === "aId" ? sourceMatch.customPlaceholderA : sourceMatch.customPlaceholderB;
+
+      const targetVal = targetSide === "aId" ? targetMatch.aId : targetMatch.bId;
+      const targetHolder =
+        targetSide === "aId" ? targetMatch.customPlaceholderA : targetMatch.customPlaceholderB;
+
+      const sourceHolderKey = dragKoSlot.side === "aId" ? "customPlaceholderA" : "customPlaceholderB";
+      const targetHolderKey = targetSide === "aId" ? "customPlaceholderA" : "customPlaceholderB";
+
+      updateMatch(sourceMatch.id, {
+        [dragKoSlot.side]: targetVal,
+        [sourceHolderKey]: targetHolder,
+      });
+      updateMatch(targetMatch.id, {
+        [targetSide]: sourceVal,
+        [targetHolderKey]: sourceHolder,
+      });
+
+      setDragKoSlot(null);
+      setNote("Đã hoán đổi / di chuyển vị trí đội trong nhánh loại trực tiếp.");
+      return;
+    }
+
+    // TH 2: Kéo từ bảng danh sách xếp thủ công sang
     if (!dragEntry) return;
-    updateMatch(m.id, { [side]: dragEntry } as Partial<Match>);
+    const targetGroup = ev.groups.find((g) => g.entryIds.includes(dragEntry));
+    let seedBadge = "";
+    if (targetGroup) {
+      const gM = groupMatches.filter((x) => x.groupName === targetGroup.name);
+      const standings = computeStandings(targetGroup.entryIds, gM, ev);
+      const rankIdx = standings.findIndex((r) => r.entryId === dragEntry);
+      const cleanGName = targetGroup.name.replace(/^Bảng\s+/i, "").trim().toUpperCase();
+      seedBadge = `${rankIdx >= 0 ? rankIdx + 1 : 1}${cleanGName}`;
+    }
+    const placeholderKey = targetSide === "aId" ? "customPlaceholderA" : "customPlaceholderB";
+    updateMatch(targetMatch.id, {
+      [targetSide]: dragEntry,
+      ...(seedBadge ? { [placeholderKey]: seedBadge } : {}),
+    } as Partial<Match>);
     setDragEntry(null);
+    setNote(seedBadge ? `Đã xếp đội (${seedBadge}) vào nhánh.` : "Đã xếp đội vào nhánh.");
   };
 
   const TabBtn = ({ id, label }: { id: typeof tab; label: string }) => (
@@ -1267,27 +1873,293 @@ function ManagePage() {
           ? "rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-accent-foreground shadow-xs"
           : "rounded-lg bg-card px-3 py-2 text-sm font-semibold text-line/70 ring-1 ring-line/20 hover:bg-card/80"
       }
+      style={{ fontFamily: "'Space Grotesk', sans-serif" }}
       onClick={() => setTab(id)}
     >
       {label}
     </button>
   );
 
+  const getEntrySeedBadge = (entryId?: string | null, customPlaceholder?: string | null): string => {
+    if (customPlaceholder && customPlaceholder.trim()) {
+      return customPlaceholder.trim();
+    }
+    if (!entryId || !ev) return "";
+    const grp = ev.groups.find((g) => g.entryIds.includes(entryId));
+    if (!grp) return "";
+    const cleanGn = grp.name.replace(/^Bảng\s+/i, "").trim().toUpperCase();
+    const gMatches = groupMatches.filter((x) => x.groupName === grp.name);
+    const standings = computeStandings(grp.entryIds, gMatches, ev);
+    const idx = standings.findIndex((s) => s.entryId === entryId);
+    return idx >= 0 ? `${idx + 1}${cleanGn}` : "";
+  };
+
+  const renderKoCard = (m: Match) => {
+    const isConflictA = Boolean(
+      m.aId && (roundEntryCounts.get(`${m.round}_${m.aId}`) ?? 0) > 1,
+    );
+    const isConflictB = Boolean(
+      m.bId && (roundEntryCounts.get(`${m.round}_${m.bId}`) ?? 0) > 1,
+    );
+    const hasRoundConflict = isConflictA || isConflictB;
+
+    return (
+      <KoCard
+        key={m.id}
+        m={m}
+        nameA={nameOf(m.aId)}
+        nameB={nameOf(m.bId)}
+        entryA={state.entries.find((e) => e.id === m.aId)}
+        entryB={state.entries.find((e) => e.id === m.bId)}
+        seedBadgeA={getEntrySeedBadge(m.aId, m.customPlaceholderA)}
+        seedBadgeB={getEntrySeedBadge(m.bId, m.customPlaceholderB)}
+        activePlayerNames={activePlayerNames}
+        isLiveA={isEntryActive(m.aId)}
+        isLiveB={isEntryActive(m.bId)}
+        isConflictA={isConflictA}
+        isConflictB={isConflictB}
+        hasRoundConflict={hasRoundConflict}
+        onScore={(k, v) => setScore(m, k, v)}
+        onStatus={(s) => updateMatch(m.id, { status: s, startedAt: s === "live" ? Date.now() : undefined } as any)}
+        onReset={() => resetMatch(m)}
+        onDropTeam={(side) => dropTeam(m, side)}
+        onClearTeam={(side) => {
+          updateMatch(m.id, { [side]: null, scoreA: null, scoreB: null, status: "pending" });
+          setNote("Đã xóa đội khỏi ô thi đấu.");
+        }}
+        onStartDragTeam={(side) =>
+          setDragKoSlot({
+            matchId: m.id,
+            side,
+            entryId: side === "aId" ? m.aId : m.bId,
+            placeholder:
+              side === "aId"
+                ? m.customPlaceholderA
+                : m.customPlaceholderB,
+          })
+        }
+        onViewNote={(n) => setViewNoteText(n)}
+        referees={state.referees}
+        onReferee={(r) => updateMatch(m.id, { referee: r })}
+        onAddReferee={handleAddReferee}
+      />
+    );
+  };
+
+  const renderKoBracketTree = () => {
+    if (koRounds.length === 0) return null;
+    const maxRound = Math.max(...koRounds);
+    const isTwoSided = koLayout === "two_sided" && koRounds.length > 1;
+
+    if (!isTwoSided) {
+      // Sơ đồ dạng 1 nhánh thẳng từ trái sang phải
+      return (
+        <div className="flex min-w-max items-stretch pt-2">
+          {koRounds.map((r, colIdx) => {
+            const list = koMatches
+              .filter((m) => m.round === r && m.slot !== 99)
+              .sort((a, b) => (a.slot ?? 0) - (b.slot ?? 0));
+
+            const roundTitle =
+              list[0]?.koRound ||
+              (r === koRounds.length
+                ? "Chung kết"
+                : r === koRounds.length - 1
+                  ? "Bán kết"
+                  : r === koRounds.length - 2
+                    ? "Tứ kết"
+                    : `Vòng ${r}`);
+
+            return (
+              <React.Fragment key={r}>
+                <div
+                  className={`w-[275px] shrink-0 flex flex-col ${colIdx === 0 ? "pl-[2px]" : ""}`}
+                  style={colIdx === 0 ? { paddingLeft: "2px" } : undefined}
+                >
+                  <div
+                    className="rounded-xl bg-accent/15 py-2.5 text-center font-head text-sm font-bold uppercase tracking-wide text-accent ring-1 ring-accent/30 shadow-xs"
+                    style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                  >
+                    {roundTitle}
+                  </div>
+
+                  <div
+                    className={`mt-4 flex flex-1 flex-col justify-around gap-6 ${colIdx === 0 ? "pl-0" : ""}`}
+                    style={colIdx === 0 ? { paddingLeft: "0px", marginLeft: "0px" } : undefined}
+                  >
+                    {list.map((m) => renderKoCard(m))}
+                  </div>
+                </div>
+
+                {/* Đường nối giữa các vòng kế tiếp nhau */}
+                {colIdx < koRounds.length - 1 && (
+                  <BracketConnectors
+                    count={Math.max(1, Math.floor(list.length / 2))}
+                    direction="ltr"
+                    matches={list}
+                  />
+                )}
+              </React.Fragment>
+            );
+          })}
+
+          {/* Trận tranh hạng 3 */}
+          {thirdMatch && (
+            <div className="w-[275px] shrink-0 flex flex-col justify-end ml-6">
+              <div
+                className="rounded-xl bg-court/15 py-2.5 text-center font-head text-sm font-bold uppercase tracking-wide text-courtdeep ring-1 ring-court/30"
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+              >
+                Tranh hạng 3
+              </div>
+              <div className="mt-4">
+                {renderKoCard(thirdMatch)}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Sơ đồ dạng 2 nhánh 2 bên hội tụ về chung kết ở giữa
+    const preRounds = koRounds.filter((r) => r < maxRound);
+    const finalMatches = koMatches.filter((m) => m.round === maxRound && m.slot !== 99);
+
+    return (
+      <div className="flex min-w-max items-stretch justify-center pt-2">
+        {/* Nhánh bên TRÁI: các vòng trước Chung kết đi từ ngoài vào trong */}
+        {preRounds.map((r, colIdx) => {
+          const list = koMatches
+            .filter((m) => m.round === r && m.slot !== 99)
+            .sort((a, b) => (a.slot ?? 0) - (b.slot ?? 0));
+          const half = Math.ceil(list.length / 2);
+          const leftMatches = list.slice(0, half);
+          const title = list[0]?.koRound || (r === maxRound - 1 ? "Bán kết" : r === maxRound - 2 ? "Tứ kết" : `Vòng ${r}`);
+          const isLastPreRound = colIdx === preRounds.length - 1;
+
+          return (
+            <React.Fragment key={`left_${r}`}>
+              <div
+                className={`w-[275px] shrink-0 flex flex-col ${colIdx === 0 ? "pl-[2px]" : ""}`}
+                style={colIdx === 0 ? { paddingLeft: "2px" } : undefined}
+              >
+                <div
+                  className="rounded-xl bg-accent/15 py-2.5 text-center font-head text-sm font-bold uppercase tracking-wide text-accent ring-1 ring-accent/30 shadow-xs"
+                  style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                >
+                  {title} (Nhánh trái)
+                </div>
+                <div
+                  className="mt-4 flex flex-1 flex-col justify-around gap-6"
+                  style={colIdx === 0 ? { paddingLeft: "0px", marginLeft: "0px" } : undefined}
+                >
+                  {leftMatches.map((m) => renderKoCard(m))}
+                </div>
+              </div>
+
+              {!isLastPreRound ? (
+                <BracketConnectors
+                  count={Math.max(1, Math.floor(leftMatches.length / 2))}
+                  direction="ltr"
+                  matches={leftMatches}
+                />
+              ) : (
+                <SingleBridgeConnector direction="ltr" isBye={isMatchBye(leftMatches[0])} />
+              )}
+            </React.Fragment>
+          );
+        })}
+
+        {/* CỘT TRUNG TÂM: Chung kết và Tranh hạng 3 */}
+        <div className="w-[285px] shrink-0 flex flex-col items-stretch px-2">
+          <div
+            className="rounded-xl bg-amber-500/20 py-2.5 text-center font-head text-sm font-bold uppercase tracking-wide text-amber-700 dark:text-amber-300 ring-2 ring-amber-500/40 shadow-sm"
+            style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+          >
+            🏆 Chung kết
+          </div>
+          <div className="mt-4 flex flex-1 flex-col justify-around gap-6">
+            {finalMatches.map((m) => renderKoCard(m))}
+          </div>
+
+          {thirdMatch && (
+            <div className="mt-8 border-t border-line/15 pt-4">
+              <div
+                className="rounded-xl bg-court/15 py-2 text-center font-head text-xs font-bold uppercase tracking-wide text-courtdeep ring-1 ring-court/30"
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+              >
+                🥉 Tranh hạng 3
+              </div>
+              <div className="mt-3">
+                {renderKoCard(thirdMatch)}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Nhánh bên PHẢI: các vòng trước Chung kết đi từ giữa ra ngoài */}
+        {preRounds.slice().reverse().map((r, revIdx) => {
+          const colIdx = preRounds.length - 1 - revIdx;
+          const list = koMatches
+            .filter((m) => m.round === r && m.slot !== 99)
+            .sort((a, b) => (a.slot ?? 0) - (b.slot ?? 0));
+          const half = Math.ceil(list.length / 2);
+          const rightMatches = list.slice(half);
+          const title = list[0]?.koRound || (r === maxRound - 1 ? "Bán kết" : r === maxRound - 2 ? "Tứ kết" : `Vòng ${r}`);
+          const isLastPreRound = colIdx === preRounds.length - 1;
+
+          return (
+            <React.Fragment key={`right_${r}`}>
+              {isLastPreRound ? (
+                <SingleBridgeConnector direction="rtl" isBye={isMatchBye(rightMatches[0])} />
+              ) : (
+                <BracketConnectors
+                  count={Math.max(1, Math.floor(rightMatches.length / 2))}
+                  direction="rtl"
+                  matches={rightMatches}
+                />
+              )}
+
+              <div className="w-[275px] shrink-0 flex flex-col">
+                <div
+                  className="rounded-xl bg-accent/15 py-2.5 text-center font-head text-sm font-bold uppercase tracking-wide text-accent ring-1 ring-accent/30 shadow-xs"
+                  style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                >
+                  {title} (Nhánh phải)
+                </div>
+                <div className="mt-4 flex flex-1 flex-col justify-around gap-6">
+                  {rightMatches.map((m) => renderKoCard(m))}
+                </div>
+              </div>
+            </React.Fragment>
+          );
+        })}
+      </div>
+    );
+  };
+
   return (
-    <div className="space-y-6 pl-0">
+    <div
+      className="space-y-6 pl-0"
+      style={{
+        paddingLeft: "0px",
+        marginLeft: "0px",
+        paddingTop: "0px",
+      }}
+    >
       {/* Tiêu đề & Chọn nội dung */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="font-head text-3xl font-extrabold uppercase tracking-tight text-[#0a3320] sm:text-4xl">
             Quản lý giải đấu
           </h1>
-          <p className="mt-1 text-xs text-line/60">
+          <p className="mt-1 text-xs text-line/60" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
             Điều hành trực tiếp các trận đấu, sân thi đấu, trọng tài và sơ đồ bảng/nhánh KO.
           </p>
         </div>
       </div>
 
-      {/* Thanh thông báo các trận ĐANG DIỄN RA (Active Matches Bar) */}
+      {/* Thanh thông báo các trận ĐANG DIỄN RA (Active Matches Bar - Ảnh 4) */}
       {allLiveMatches.length > 0 && (
         <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-3.5 shadow-sm">
           <div className="flex items-center justify-between gap-2">
@@ -1296,7 +2168,10 @@ function ManagePage() {
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-500 opacity-75" />
                 <span className="relative inline-flex h-3 w-3 rounded-full bg-red-600" />
               </span>
-              <span className="font-head text-xs font-bold uppercase tracking-wider text-red-700 dark:text-red-400">
+              <span
+                className="font-head text-xs font-bold uppercase tracking-wider text-red-700 dark:text-red-400"
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+              >
                 Trận đang diễn ra trực tiếp ({allLiveMatches.length})
               </span>
             </div>
@@ -1305,7 +2180,15 @@ function ManagePage() {
             </span>
           </div>
 
-          <div className="mt-3 flex gap-3 overflow-x-auto pb-1">
+          <div
+            className="mt-3 flex gap-3 overflow-x-auto pb-1"
+            style={{
+              paddingBottom: "4px",
+              paddingRight: "0px",
+              paddingTop: "4px",
+              paddingLeft: "3px",
+            }}
+          >
             {allLiveMatches.map((m) => {
               const evMatch = state.events.find((e) => e.id === m.eventId);
               const tA = state.entries.find((e) => e.id === m.aId);
@@ -1314,30 +2197,60 @@ function ManagePage() {
               return (
                 <div
                   key={m.id}
-                  className="w-72 shrink-0 rounded-xl bg-card p-2.5 ring-1 ring-red-500/40 shadow-xs"
+                  className="w-80 shrink-0 rounded-xl bg-card p-2.5 ring-1 ring-red-500/40 shadow-xs flex flex-col justify-between"
                 >
-                  <div className="flex items-center justify-between text-[11px]">
-                    <span className="font-bold text-accent truncate max-w-[120px]">
-                      {evMatch?.name}
-                    </span>
-                    <span className="font-semibold text-line/60">
-                      {icon} {m.court}
-                    </span>
+                  <div>
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="font-bold text-accent truncate max-w-[140px]">
+                        {evMatch?.name}
+                      </span>
+                      <span className="font-semibold text-line/60">
+                        {icon} {m.court}
+                      </span>
+                    </div>
+                    <div className="mt-1.5 flex items-center justify-between gap-2 text-xs font-bold">
+                      <span
+                        className="truncate text-red-600 font-extrabold"
+                        style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                      >
+                        {entryName(tA)}
+                      </span>
+                      <span className="rounded bg-red-600 px-2 py-0.5 text-white font-head text-xs tabular-nums shrink-0">
+                        {m.scoreA ?? 0} - {m.scoreB ?? 0}
+                      </span>
+                      <span
+                        className="truncate text-red-600 font-extrabold"
+                        style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                      >
+                        {entryName(tB)}
+                      </span>
+                    </div>
                   </div>
-                  <div className="mt-1.5 flex items-center justify-between gap-2 text-xs font-bold">
-                    <span className="truncate text-red-600 font-extrabold">{entryName(tA)}</span>
-                    <span className="rounded bg-red-600 px-2 py-0.5 text-white font-head text-xs tabular-nums">
-                      {m.scoreA ?? 0} - {m.scoreB ?? 0}
-                    </span>
-                    <span className="truncate text-red-600 font-extrabold">{entryName(tB)}</span>
-                  </div>
-                  <div className="mt-2 flex justify-end">
+
+                  {/* Thanh nút bấm theo Ảnh 4: Tạm dừng bên trái, Đồng hồ bấm giờ ở giữa, Chấm điểm bên phải */}
+                  <div className="mt-2.5 flex items-center justify-between gap-1.5 pt-2 border-t border-line/10">
+                    <button
+                      type="button"
+                      onClick={() => updateMatch(m.id, { status: "pending", startedAt: undefined } as any)}
+                      className="rounded px-2 py-1 text-[10px] font-bold text-red-600 bg-red-500/10 hover:bg-red-500/20 transition cursor-pointer flex items-center gap-1 shrink-0"
+                      style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                      title="Tạm dừng trận đấu"
+                    >
+                      ⏸ Tạm dừng
+                    </button>
+
+                    <LiveStopwatch
+                      startedAt={(m as any).startedAt}
+                      onReset={() => updateMatch(m.id, { startedAt: Date.now() } as any)}
+                    />
+
                     <Link
                       to="/cham-diem/$matchId"
                       params={{ matchId: m.id } as any}
-                      className="btn-accent !px-2.5 !py-0.5 text-[10px]"
+                      className="btn-accent !px-2.5 !py-1 text-[10px] font-bold shrink-0"
+                      style={{ fontFamily: "'Space Grotesk', sans-serif" }}
                     >
-                      ⚡ Vào chấm điểm
+                      ⚡ Chấm điểm
                     </Link>
                   </div>
                 </div>
@@ -1353,6 +2266,7 @@ function ManagePage() {
           <button
             key={e.id}
             onClick={() => setActiveId(e.id)}
+            style={{ fontFamily: "'Space Grotesk', sans-serif" }}
             className={
               e.id === ev.id
                 ? "rounded-lg bg-line px-3.5 py-2 text-sm font-semibold text-paper shadow-xs"
@@ -1373,50 +2287,140 @@ function ManagePage() {
           <span className="mx-1 h-5 w-px bg-line/15" />
 
           {tab === "ko" ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-line/70">
-                Đi tiếp / bảng (N):
-                <input
-                  type="number"
-                  min={1}
-                  max={64}
-                  className="field w-14 text-center !py-1 text-xs"
-                  value={ev.advancePerGroup}
-                  onChange={(e) => {
-                    const newAdvance = Math.max(1, Math.min(64, Number(e.target.value) || 1));
-                    updateEvent(ev.id, { advancePerGroup: newAdvance });
-                    const updatedEv = { ...ev, advancePerGroup: newAdvance };
-                    const fresh = generateKnockout(updatedEv, entries, groupMatches, state.courts);
-                    if (fresh.length > 0) {
-                      update({
-                        matches: [
-                          ...state.matches.filter((m) => !(m.eventId === ev.id && m.stage === "ko")),
-                          ...fresh,
-                        ],
-                      });
-                      setNote(`Đã cập nhật nhánh loại trực tiếp với ${newAdvance} đội đi tiếp mỗi bảng.`);
-                    }
-                  }}
-                  title="Số lượng đội được chọn đi tiếp từ mỗi bảng vào nhánh KO (không giới hạn)"
-                />
-              </label>
+            <div
+              className="flex flex-wrap items-center gap-2"
+              style={{
+                paddingLeft: "3px",
+                paddingBottom: "4px",
+                paddingRight: "0px",
+                marginRight: "0px",
+                marginBottom: "0px",
+                marginTop: "12px",
+                paddingTop: "4px",
+              }}
+            >
+              {/* Chế độ chọn tổng số đội KO vs Theo đội đi tiếp / bảng */}
+              <div
+                className="flex items-center gap-1 rounded-lg bg-card p-0.5 ring-1 ring-line/20 text-xs"
+                style={{ paddingLeft: "11px" }}
+              >
+                <button
+                  type="button"
+                  onClick={() => setKoType("total")}
+                  style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: "bold" }}
+                  className={`px-2.5 py-1 rounded-md font-bold transition cursor-pointer ${
+                    koType === "total"
+                      ? "bg-accent text-accent-foreground shadow-2xs"
+                      : "text-line/60 hover:text-ink"
+                  }`}
+                  title="Tạo nhánh KO với tổng số đội và để bảng trống để tự do kéo thả"
+                >
+                  Tổng số đội KO (Bảng trống)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setKoType("advance")}
+                  style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: "bold" }}
+                  className={`px-2.5 py-1 rounded-md font-bold transition cursor-pointer ${
+                    koType === "advance"
+                      ? "bg-accent text-accent-foreground shadow-2xs"
+                      : "text-line/60 hover:text-ink"
+                  }`}
+                  title="Tự động xếp hạt giống theo số lượng đội đi tiếp mỗi bảng"
+                >
+                  Theo đội đi tiếp / bảng
+                </button>
+              </div>
+
+              {koType === "total" ? (
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-line/70">
+                  <span style={{ fontFamily: "'Space Grotesk', sans-serif" }}>Tổng đội KO:</span>
+                  <div className="flex items-center gap-1">
+                    {[4, 8, 16, 32, 64].map((cnt) => (
+                      <button
+                        key={cnt}
+                        type="button"
+                        onClick={() => setTotalKoTeams(cnt)}
+                        style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                        className={`px-2 py-0.5 rounded text-xs font-bold transition cursor-pointer ${
+                          totalKoTeams === cnt
+                            ? "bg-accent text-accent-foreground shadow-2xs"
+                            : "bg-card text-line/60 ring-1 ring-line/15 hover:bg-card/80"
+                        }`}
+                      >
+                        {cnt}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-line/70">
+                  Đi tiếp / bảng:
+                  <input
+                    type="number"
+                    min={1}
+                    max={64}
+                    className="field w-14 text-center !py-1 text-xs"
+                    value={ev.advancePerGroup}
+                    onChange={(e) => {
+                      const newAdvance = Math.max(1, Math.min(64, Number(e.target.value) || 1));
+                      updateEvent(ev.id, { advancePerGroup: newAdvance });
+                    }}
+                    title="Số lượng đội được chọn đi tiếp từ mỗi bảng vào nhánh KO"
+                  />
+                </label>
+              )}
+
               <button className="btn-accent text-xs" onClick={buildKo}>
                 Tạo nhánh KO
               </button>
-              {koMatches.length > 0 && (
-                <button className="btn-ghost text-xs" onClick={resetKo}>
-                  ↺ Làm lại nhánh KO
+
+              {/* Lựa chọn dạng hiển thị 2 nhánh 2 bên hoặc 1 nhánh thẳng (Ảnh 4) */}
+              <div className="flex items-center gap-1 rounded-lg bg-card p-0.5 ring-1 ring-line/20 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setKoLayout("two_sided")}
+                  className={`px-2.5 py-1 rounded-md font-bold transition cursor-pointer ${
+                    koLayout === "two_sided"
+                      ? "bg-accent text-accent-foreground shadow-2xs"
+                      : "text-line/60 hover:text-ink"
+                  }`}
+                  title="Hiển thị sơ đồ dạng 2 nhánh 2 bên hội tụ về chung kết ở giữa (Ảnh 4)"
+                >
+                  ↔️ 2 nhánh 2 bên
                 </button>
-              )}
+                <button
+                  type="button"
+                  onClick={() => setKoLayout("single")}
+                  className={`px-2.5 py-1 rounded-md font-bold transition cursor-pointer ${
+                    koLayout === "single"
+                      ? "bg-accent text-accent-foreground shadow-2xs"
+                      : "text-line/60 hover:text-ink"
+                  }`}
+                  title="Hiển thị sơ đồ dạng 1 nhánh thẳng từ trái sang phải"
+                >
+                  ➡️ 1 nhánh thẳng
+                </button>
+              </div>
+
               <button
                 type="button"
                 className={`btn-ghost text-xs font-bold flex items-center gap-1 ${
                   showManualSeeding ? "bg-accent/15 text-accent ring-1 ring-accent/30" : ""
                 }`}
                 onClick={() => setShowManualSeeding((v) => !v)}
-                title="Bật / Tắt bảng xếp thủ công phân theo bảng"
+                title="Bật / Tắt danh sách kéo thả VĐV vào nhánh KO"
               >
                 🎯 Xếp thủ công {showManualSeeding ? "▼ (Hiện)" : "▶ (Ẩn)"}
+              </button>
+
+              <button
+                type="button"
+                className="btn-ghost text-xs font-bold flex items-center gap-1.5 px-2.5 py-1 rounded-lg ring-1 ring-line/20 hover:bg-card shadow-2xs cursor-pointer text-accent hover:text-accent font-semibold"
+                onClick={() => setIsFullscreenKo(true)}
+                title="Xem toàn bộ sơ đồ nhánh trực tiếp ở chế độ toàn màn hình"
+              >
+                ⛶ Toàn màn hình
               </button>
             </div>
           ) : tab === "timeline" ? (
@@ -1469,6 +2473,7 @@ function ManagePage() {
                 className={`btn-ghost text-xs font-bold flex items-center gap-1 ${
                   showStandings ? "bg-accent/15 text-accent ring-1 ring-accent/30" : ""
                 }`}
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
                 onClick={() => setShowStandings((s) => !s)}
                 title="Ẩn / Hiện bảng xếp hạng các bảng đấu"
               >
@@ -1480,13 +2485,18 @@ function ManagePage() {
                   className={`btn-ghost text-xs font-bold flex items-center gap-1 ${
                     maximizeStandings ? "bg-court/20 text-courtdeep ring-1 ring-court/30" : ""
                   }`}
+                  style={{ fontFamily: "'Space Grotesk', sans-serif" }}
                   onClick={() => setMaximizeStandings((m) => !m)}
                   title="Phóng to bảng xếp hạng toàn màn hình"
                 >
                   {maximizeStandings ? "🗗 Thu nhỏ BXH" : "🗖 Phóng to BXH"}
                 </button>
               )}
-              <button className="btn-accent text-xs" onClick={buildGroups}>
+              <button
+                className="btn-accent text-xs"
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                onClick={buildGroups}
+              >
                 Tạo lịch vòng bảng
               </button>
             </div>
@@ -1537,6 +2547,28 @@ function ManagePage() {
             >
               📋 Trận chờ xếp ({unassignedMatches.length}) {showQueue ? "▼" : "▶"}
             </button>
+
+            {/* Nút Undo / Redo cho bảng timeline */}
+            <div className="flex items-center gap-1 rounded-lg bg-card p-0.5 ring-1 ring-line/20 shadow-2xs">
+              <button
+                type="button"
+                disabled={timelineHistory.length === 0}
+                onClick={handleUndoTimeline}
+                className="rounded px-2.5 py-1 text-xs font-bold text-ink hover:bg-line/10 disabled:opacity-30 disabled:pointer-events-none cursor-pointer flex items-center gap-1 transition"
+                title="Hoàn tác thay đổi vừa thực hiện trên timeline (Ctrl+Z)"
+              >
+                ↶ Hoàn tác
+              </button>
+              <button
+                type="button"
+                disabled={timelineRedoStack.length === 0}
+                onClick={handleRedoTimeline}
+                className="rounded px-2.5 py-1 text-xs font-bold text-ink hover:bg-line/10 disabled:opacity-30 disabled:pointer-events-none cursor-pointer flex items-center gap-1 transition"
+                title="Làm lại thao tác vừa hoàn tác trên timeline (Ctrl+Y)"
+              >
+                ↷ Làm lại
+              </button>
+            </div>
 
             <button
               className="btn-accent text-xs !py-1.5"
@@ -1670,7 +2702,10 @@ function ManagePage() {
                         key={r}
                         className={`w-[280px] shrink-0 pt-[2px] ${idx === 0 ? "pl-[2px] pr-[3px]" : "px-[3px]"}`}
                       >
-                        <div className="rounded-xl bg-accent/15 h-[40px] flex items-center justify-center text-center font-head text-sm font-bold uppercase tracking-wide text-accent ring-1 ring-accent/30">
+                        <div
+                          className="rounded-xl bg-accent/15 h-[40px] flex items-center justify-center text-center font-head text-sm font-bold uppercase tracking-wide text-accent ring-1 ring-accent/30"
+                          style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                        >
                           Vòng {r}
                         </div>
                         <div className="mt-3 space-y-3">
@@ -1825,85 +2860,126 @@ function ManagePage() {
                   ))}
 
                   {/* Từng dòng Sân */}
-                  {state.courts.map((court) => {
+                  {state.courts.map((court, courtIdx) => {
+                    const rowNum = courtIdx + 2;
+                    const courtMatches = grid.get(court) ?? [];
+                    const slotMins = state.slotMinutes || 30;
+
                     return (
                       <React.Fragment key={court}>
-                        {/* Cột Sân: STICKY left-0 z-10 (chỉ hiển thị tên sân, không icon) */}
+                        {/* Cột Sân: STICKY left-0 z-20 (chỉ hiển thị tên sân, không icon) */}
                         <div
-                          className="sticky left-0 z-10 border-b border-r border-line/20 bg-card/95 p-1 text-xs font-bold text-ink backdrop-blur-xs flex items-center justify-center text-center shadow-xs select-none truncate w-[80px]"
-                          style={{ minHeight: `${rowHeight}px`, height: `${rowHeight}px`, maxHeight: `${rowHeight}px` }}
+                          className="sticky left-0 z-20 border-b border-r border-line/20 bg-card/95 p-1 text-xs font-bold text-ink backdrop-blur-xs flex items-center justify-center text-center shadow-xs select-none truncate w-[80px]"
+                          style={{
+                            gridRow: rowNum,
+                            gridColumn: 1,
+                            minHeight: `${rowHeight}px`,
+                            height: `${rowHeight}px`,
+                            maxHeight: `${rowHeight}px`,
+                          }}
                         >
                           <span className="truncate">{court}</span>
                         </div>
 
-                        {/* Các ô giờ của Sân này với vạch 5 phút & kéo thả nấc 5 phút */}
-                        {slotIdxs.map((s) => {
-                          const cell = (grid.get(court) ?? []).filter((x) => x.slot === s);
-                          return (
-                            <div
-                              key={`${court}-${s}`}
-                              className="relative border-b border-l border-line/10 p-0.5 transition hover:bg-accent/5 group overflow-visible"
-                              style={{ minHeight: `${rowHeight}px`, height: `${rowHeight}px`, maxHeight: `${rowHeight}px` }}
-                              onDragOver={(e) => e.preventDefault()}
-                              onDrop={(e) => {
-                                const rect = e.currentTarget.getBoundingClientRect();
-                                const offsetX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
-                                const ratio = offsetX / rect.width;
-                                const slotMins = state.slotMinutes || 30;
-                                const numSteps = Math.max(1, Math.floor(slotMins / 5));
-                                const stepIdx = Math.min(numSteps - 1, Math.floor(ratio * numSteps));
-                                const offset = stepIdx * 5;
-                                dropOn(court, s, offset);
-                              }}
-                            >
-                              {/* Vạch chia 5 phút khi hover để kéo thả chính xác */}
-                              <div className="pointer-events-none absolute inset-0 hidden group-hover:flex">
-                                {Array.from({ length: Math.max(1, Math.floor((state.slotMinutes || 30) / 5)) }).map((_, stepI) => (
-                                  <div
-                                    key={stepI}
-                                    className="flex-1 border-r border-accent/15 border-dashed last:border-r-0 flex items-end justify-center pb-0.5"
-                                  >
-                                    <span className="text-[8px] font-mono text-accent/50">+{stepI * 5}p</span>
-                                  </div>
-                                ))}
-                              </div>
-
-                              <div className="relative z-1 h-full w-full">
-                                {cell.map(({ match: m }, cellIdx) => {
-                                  const slotMins = state.slotMinutes || 30;
-                                  const cardWidth = Math.max(
-                                    colWidth - 12,
-                                    ((m.durationMinutes ?? slotMins) / slotMins) * colWidth - 8,
-                                  );
-                                  const leftOffset = ((m.offsetMinutes ?? 0) / slotMins) * colWidth;
-                                  return (
-                                    <div
-                                      key={m.id}
-                                      draggable
-                                      onDragStart={() => setDragMatch(m.id)}
-                                      onDragEnd={() => setDragMatch(null)}
-                                      className={`cursor-grab active:cursor-grabbing transition-all absolute top-0.5 bottom-0.5 ${
-                                        dragMatch ? "pointer-events-none" : ""
-                                      } hover:z-30`}
-                                      style={{
-                                        width: `${cardWidth}px`,
-                                        left: `${leftOffset}px`,
-                                        zIndex: 10 + cellIdx * 2,
-                                      }}
-                                    >
-                                      <MatchCard
-                                        {...cardProps(m, true)}
-                                        colWidth={colWidth}
-                                        rowHeight={rowHeight}
-                                        slotMinutes={slotMins}
-                                      />
-                                    </div>
-                                  );
-                                })}
-                              </div>
+                        {/* Các ô giờ của Sân này: Nền nhận kéo thả (Drop Target) với vạch chia 5 phút */}
+                        {slotIdxs.map((s) => (
+                          <div
+                            key={`${court}-${s}`}
+                            className="relative border-b border-l border-line/10 p-0.5 transition hover:bg-accent/10 group overflow-hidden"
+                            style={{
+                              gridRow: rowNum,
+                              gridColumn: s + 2,
+                              minHeight: `${rowHeight}px`,
+                              height: `${rowHeight}px`,
+                              maxHeight: `${rowHeight}px`,
+                            }}
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              e.dataTransfer.dropEffect = "move";
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              const draggedId = e.dataTransfer.getData("text/plain") || dragMatch;
+                              if (!draggedId) return;
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              const offsetX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+                              const ratio = offsetX / rect.width;
+                              const numSteps = Math.max(1, Math.floor(slotMins / 5));
+                              const stepIdx = Math.min(numSteps - 1, Math.floor(ratio * numSteps));
+                              const offset = stepIdx * 5;
+                              recordTimelineState();
+                              updateMatch(draggedId, { court, timeSlot: s, offsetMinutes: offset });
+                              setDragMatch(null);
+                              setNote(`Đã chuyển trận sang ${court} (+${offset}p)`);
+                            }}
+                          >
+                            {/* Vạch chia 5 phút khi hover để kéo thả chính xác (+5p, +10p, +15p...) */}
+                            <div className="pointer-events-none absolute inset-0 hidden group-hover:flex">
+                              {Array.from({ length: Math.max(1, Math.floor(slotMins / 5)) }).map((_, stepI) => (
+                                <div
+                                  key={stepI}
+                                  className="flex-1 border-r border-accent/20 border-dashed last:border-r-0 flex items-end justify-center pb-0.5"
+                                >
+                                  <span className="text-[8px] font-mono text-accent font-semibold">+{(stepI + 1) * 5}p</span>
+                                </div>
+                              ))}
                             </div>
-                          );
-                        })}
+                          </div>
+                        ))}
+
+                        {/* Lớp chứa tất cả các thẻ trận đấu trên sân này (Cards Layer) nằm trên nền drop targets */}
+                        <div
+                          key={`${court}-cards-layer`}
+                          className="relative pointer-events-none w-full h-full overflow-visible z-10"
+                          style={{
+                            gridRow: rowNum,
+                            gridColumn: `2 / span ${slotIdxs.length}`,
+                            height: `${rowHeight}px`,
+                          }}
+                        >
+                          {courtMatches.map(({ match: m }, cardIdx) => {
+                            const minWidth = Math.max(36, Math.round((5 / slotMins) * colWidth));
+                            const cardWidth = Math.max(
+                              minWidth,
+                              Math.round(((m.durationMinutes ?? slotMins) / slotMins) * colWidth - 6),
+                            );
+                            const leftOffset = (((m.timeSlot ?? 0) * slotMins + (m.offsetMinutes ?? 0)) / slotMins) * colWidth;
+
+                            return (
+                              <div
+                                key={m.id}
+                                draggable={true}
+                                onDragStart={(e) => {
+                                  if ((e.target as HTMLElement).closest("[data-no-drag]")) {
+                                    e.preventDefault();
+                                    return;
+                                  }
+                                  e.dataTransfer.setData("text/plain", m.id);
+                                  e.dataTransfer.effectAllowed = "move";
+                                  // Cho phép chuyển sang trạng thái drag ngay sau khi event dragstart được browser khởi tạo
+                                  setTimeout(() => setDragMatch(m.id), 0);
+                                }}
+                                onDragEnd={() => setDragMatch(null)}
+                                className={`timeline-card-wrapper pointer-events-auto cursor-grab active:cursor-grabbing absolute top-0.5 bottom-0.5 transition-[opacity] ${
+                                  dragMatch === m.id ? "opacity-30 !pointer-events-none" : ""
+                                } ${dragMatch && dragMatch !== m.id ? "pointer-events-none" : ""} hover:z-30`}
+                                style={{
+                                  width: `${cardWidth}px`,
+                                  left: `${leftOffset}px`,
+                                  zIndex: 10 + cardIdx * 2,
+                                }}
+                              >
+                                <MatchCard
+                                  {...cardProps(m, true)}
+                                  colWidth={colWidth}
+                                  rowHeight={rowHeight}
+                                  slotMinutes={slotMins}
+                                />
+                              </div>
+                            );
+                          })}
+                        </div>
                       </React.Fragment>
                     );
                   })}
@@ -2063,108 +3139,18 @@ function ManagePage() {
                 Chưa có nhánh loại trực tiếp. Bấm <strong>“Tạo nhánh KO”</strong> để sinh sơ đồ.
               </div>
             ) : (
-              <div className="flex min-w-max items-stretch pt-2">
-                {koRounds.map((r, colIdx) => {
-                  const list = koMatches
-                    .filter((m) => m.round === r && m.slot !== 99)
-                    .sort((a, b) => (a.slot ?? 0) - (b.slot ?? 0));
-
-                  const roundTitle =
-                    list[0]?.koRound ||
-                    (r === koRounds.length
-                      ? "Chung kết"
-                      : r === koRounds.length - 1
-                        ? "Bán kết"
-                        : r === koRounds.length - 2
-                          ? "Tứ kết"
-                          : `Vòng ${r}`);
-
-                  return (
-                    <React.Fragment key={r}>
-                      <div
-                        className={`w-[275px] shrink-0 flex flex-col ${colIdx === 0 ? "pl-[2px]" : ""}`}
-                        style={colIdx === 0 ? { paddingLeft: "2px" } : undefined}
-                      >
-                        <div className="rounded-xl bg-accent/15 py-2.5 text-center font-head text-sm font-bold uppercase tracking-wide text-accent ring-1 ring-accent/30 shadow-xs">
-                          {roundTitle}
-                        </div>
-
-                        <div
-                          className={`mt-4 flex flex-1 flex-col justify-around gap-6 ${colIdx === 0 ? "pl-0" : ""}`}
-                          style={colIdx === 0 ? { paddingLeft: "0px" } : undefined}
-                        >
-                          {list.map((m) => (
-                            <KoCard
-                              key={m.id}
-                              m={m}
-                              nameA={nameOf(m.aId)}
-                              nameB={nameOf(m.bId)}
-                              entryA={state.entries.find((e) => e.id === m.aId)}
-                              entryB={state.entries.find((e) => e.id === m.bId)}
-                              activePlayerNames={activePlayerNames}
-                              isLiveA={isEntryActive(m.aId)}
-                              isLiveB={isEntryActive(m.bId)}
-                              onScore={(k, v) => setScore(m, k, v)}
-                              onStatus={(s) => updateMatch(m.id, { status: s })}
-                              onReset={() => resetMatch(m)}
-                              onDropTeam={(side) => dropTeam(m, side)}
-                              onViewNote={(n) => setViewNoteText(n)}
-                              referees={state.referees}
-                              onReferee={(r) => updateMatch(m.id, { referee: r })}
-                              onAddReferee={handleAddReferee}
-                            />
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Đường cong Sigma kết nối các vòng kế tiếp nhau */}
-                      {colIdx < koRounds.length - 1 && (
-                        <BracketConnectors
-                          count={Math.max(1, Math.floor(list.length / 2))}
-                          isFirst={colIdx === 0}
-                        />
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-
-                {/* Trận tranh hạng 3 */}
-                {thirdMatch && (
-                  <div className="w-[275px] shrink-0 flex flex-col justify-end ml-6">
-                    <div className="rounded-xl bg-court/15 py-2.5 text-center font-head text-sm font-bold uppercase tracking-wide text-courtdeep ring-1 ring-court/30">
-                      Tranh hạng 3
-                    </div>
-                    <div className="mt-4">
-                      <KoCard
-                        m={thirdMatch}
-                        nameA={nameOf(thirdMatch.aId)}
-                        nameB={nameOf(thirdMatch.bId)}
-                        entryA={state.entries.find((e) => e.id === thirdMatch.aId)}
-                        entryB={state.entries.find((e) => e.id === thirdMatch.bId)}
-                        activePlayerNames={activePlayerNames}
-                        isLiveA={isEntryActive(thirdMatch.aId)}
-                        isLiveB={isEntryActive(thirdMatch.bId)}
-                        onScore={(k, v) => setScore(thirdMatch, k, v)}
-                        onStatus={(s) => updateMatch(thirdMatch.id, { status: s })}
-                        onReset={() => resetMatch(thirdMatch)}
-                        onDropTeam={(side) => dropTeam(thirdMatch, side)}
-                        onViewNote={(n) => setViewNoteText(n)}
-                        referees={state.referees}
-                        onReferee={(r) => updateMatch(thirdMatch.id, { referee: r })}
-                        onAddReferee={handleAddReferee}
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
+              renderKoBracketTree()
             )}
           </div>
 
-          {/* Cột kéo thả VĐV vào nhánh KO - Bật/tắt linh hoạt & Phân chia theo từng bảng */}
+          {/* Cột kéo thả VĐV vào nhánh KO - GHIM CỐ ĐỊNH CHẠY THEO TRANG KHI CUỘN (Sticky Sidebar) */}
           {showManualSeeding && (
-            <div className="lg:col-span-3 panel p-3.5 rounded-2xl">
-              <div className="flex items-center justify-between border-b border-line/10 pb-2">
-                <p className="eyebrow">Xếp thủ công vào nhánh</p>
+            <div className="lg:col-span-3 panel p-3.5 rounded-2xl sticky top-4 self-start max-h-[calc(100vh-2rem)] flex flex-col shadow-xl ring-1 ring-line/20 z-20">
+              <div className="flex items-center justify-between border-b border-line/10 pb-2 shrink-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-sm">📌</span>
+                  <p className="eyebrow !text-ink">Xếp thủ công vào nhánh</p>
+                </div>
                 <button
                   type="button"
                   className="text-[11px] font-bold text-line/50 hover:text-ink cursor-pointer"
@@ -2173,16 +3159,18 @@ function ManagePage() {
                   ✕ Đóng
                 </button>
               </div>
-              <p className="mt-1 text-xs text-line/60">
-                Kéo tên đội bên dưới thả trực tiếp vào ô trong nhánh để tự chọn cặp đấu (phân chia theo từng bảng).
+              <p className="mt-1 text-xs text-line/60 shrink-0">
+                Kéo tên đội bên dưới thả trực tiếp vào ô trong nhánh. Danh sách luôn ghim cố định khi cuộn màn hình.
               </p>
 
-              <div className="mt-3 max-h-[560px] space-y-3 overflow-y-auto pr-1">
+              <div className="mt-3 flex-1 space-y-3 overflow-y-auto pr-1">
                 {(ev.groups.length
                   ? ev.groups
                   : [{ name: "Tất cả đội", entryIds: entries.map((e) => e.id) }]
                 ).map((g) => {
-                  const groupEntries = entries.filter((e) => g.entryIds.includes(e.id));
+                  const gM = groupMatches.filter((x) => x.groupName === g.name);
+                  const standings = computeStandings(g.entryIds, gM, ev);
+                  const cleanGName = g.name.replace(/^Bảng\s+/i, "").trim();
                   const c = groupColor(g.name);
                   return (
                     <div key={g.name} className="rounded-xl border border-line/15 bg-card/60 p-2.5 space-y-2">
@@ -2191,25 +3179,36 @@ function ManagePage() {
                           className="font-head text-xs font-bold px-2 py-0.5 rounded-md"
                           style={{ backgroundColor: c.bg, color: c.text }}
                         >
-                          {g.name} ({groupEntries.length} đội)
+                          {g.name} ({g.entryIds.length} đội)
                         </span>
                       </div>
                       <div className="space-y-1.5">
-                        {groupEntries.map((e: Entry) => (
-                          <div
-                            key={e.id}
-                            draggable
-                            onDragStart={() => setDragEntry(e.id)}
-                            className="cursor-grab truncate rounded-lg px-2.5 py-2 text-xs font-semibold shadow-xs ring-1 ring-line/10 active:cursor-grabbing bg-secondary text-line/80 hover:bg-secondary/80 flex items-center justify-between transition"
-                          >
-                            <PlayerNameDisplay
-                              entry={e}
-                              fallback={entryName(e)}
-                              activePlayerNames={activePlayerNames}
-                            />
-                            <span className="text-[10px] text-line/40 shrink-0 ml-1">Kéo vào nhánh</span>
-                          </div>
-                        ))}
+                        {standings.map((st, idx) => {
+                          const e = entries.find((x) => x.id === st.entryId);
+                          if (!e) return null;
+                          const rankLabel = `${idx + 1}${cleanGName.replace(/\s+/g, "").toUpperCase()}`;
+                          return (
+                            <div
+                              key={e.id}
+                              draggable
+                              onDragStart={() => setDragEntry(e.id)}
+                              className="cursor-grab truncate rounded-lg px-2 py-1.5 text-xs font-semibold shadow-xs ring-1 ring-line/10 active:cursor-grabbing bg-secondary text-line/80 hover:bg-secondary/80 flex items-center justify-between transition gap-2"
+                              title={`Hạng ${idx + 1} bảng ${cleanGName} (${rankLabel}): Kéo thả vào ô trong nhánh KO`}
+                            >
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <span className="font-mono text-[10px] font-bold text-accent bg-accent/15 px-1.5 py-0.5 rounded shrink-0">
+                                  {rankLabel}
+                                </span>
+                                <PlayerNameDisplay
+                                  entry={e}
+                                  fallback={entryName(e)}
+                                  activePlayerNames={activePlayerNames}
+                                />
+                              </div>
+                              <span className="text-[10px] text-line/40 shrink-0">Kéo ⇲</span>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   );
@@ -2217,6 +3216,113 @@ function ManagePage() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* MODAL TOÀN MÀN HÌNH XEM SƠ ĐỒ NHÁNH LOẠI TRỰC TIẾP */}
+      {isFullscreenKo && (
+        <div className="fixed inset-0 z-50 bg-background/95 backdrop-blur-md flex flex-col p-4 overflow-hidden">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line/15 pb-3 px-2">
+            <div className="flex items-center gap-3">
+              <h2 className="font-head text-base md:text-lg font-bold tracking-tight text-ink flex items-center gap-2">
+                🏆 Sơ đồ Nhánh trực tiếp ({ev.name})
+              </h2>
+              {/* Lựa chọn dạng hiển thị 2 nhánh 2 bên hoặc 1 nhánh thẳng */}
+              <div className="flex items-center gap-1 rounded-lg bg-card p-0.5 ring-1 ring-line/20 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setKoLayout("two_sided")}
+                  className={`px-2.5 py-1 rounded-md font-bold transition cursor-pointer ${
+                    koLayout === "two_sided"
+                      ? "bg-accent text-accent-foreground shadow-2xs"
+                      : "text-line/60 hover:text-ink"
+                  }`}
+                  title="Hiển thị sơ đồ dạng 2 nhánh 2 bên hội tụ về chung kết ở giữa"
+                >
+                  ↔️ 2 nhánh 2 bên
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setKoLayout("single")}
+                  className={`px-2.5 py-1 rounded-md font-bold transition cursor-pointer ${
+                    koLayout === "single"
+                      ? "bg-accent text-accent-foreground shadow-2xs"
+                      : "text-line/60 hover:text-ink"
+                  }`}
+                  title="Hiển thị sơ đồ dạng 1 nhánh thẳng từ trái sang phải"
+                >
+                  ➡️ 1 nhánh thẳng
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {/* Thu phóng */}
+              <div className="flex items-center gap-1 bg-card px-2.5 py-1 rounded-lg ring-1 ring-line/20 text-xs font-medium">
+                <span className="text-line/60">Thu phóng:</span>
+                <button
+                  type="button"
+                  onClick={() => setKoZoom((z) => Math.max(0.3, Number((z - 0.1).toFixed(1))))}
+                  className="size-6 flex items-center justify-center rounded bg-line/10 hover:bg-line/20 font-bold cursor-pointer"
+                  title="Thu nhỏ"
+                >
+                  -
+                </button>
+                <span className="w-12 text-center font-mono font-bold text-accent">{Math.round(koZoom * 100)}%</span>
+                <button
+                  type="button"
+                  onClick={() => setKoZoom((z) => Math.min(2.0, Number((z + 0.1).toFixed(1))))}
+                  className="size-6 flex items-center justify-center rounded bg-line/10 hover:bg-line/20 font-bold cursor-pointer"
+                  title="Phóng to"
+                >
+                  +
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setKoZoom(1)}
+                  className="ml-1 text-[11px] text-line/60 hover:text-ink underline cursor-pointer"
+                >
+                  100%
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (!document.fullscreenElement) {
+                    document.documentElement.requestFullscreen?.().catch(() => {});
+                  } else {
+                    document.exitFullscreen?.().catch(() => {});
+                  }
+                }}
+                className="btn-ghost text-xs !py-1.5 flex items-center gap-1 cursor-pointer"
+                title="Toàn màn hình trình duyệt (F11)"
+              >
+                🖥️ Màn hình rộng
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsFullscreenKo(false)}
+                className="btn-accent text-xs font-bold flex items-center gap-1 px-3 py-1.5 cursor-pointer"
+              >
+                ✕ Đóng (Esc)
+              </button>
+            </div>
+          </div>
+
+          {/* Vùng hiển thị toàn màn hình */}
+          <div className="flex-1 overflow-auto p-6 flex items-start justify-center">
+            <div
+              style={{
+                transform: `scale(${koZoom})`,
+                transformOrigin: "top center",
+                transition: "transform 0.1s ease-out",
+              }}
+            >
+              {renderKoBracketTree()}
+            </div>
+          </div>
         </div>
       )}
 

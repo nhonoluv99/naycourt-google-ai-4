@@ -566,11 +566,11 @@ function PlayersPage() {
 
       {/* Modal Xuất Bảng Đấu (PDF / In) */}
       {showPrintModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs">
-          <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-paper p-6 shadow-2xl ring-1 ring-line/20">
-            <div className="flex items-center justify-between border-b border-line/15 pb-4 print:hidden">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-2 sm:p-4 backdrop-blur-xs">
+          <div className="max-h-[96vh] w-full max-w-[96vw] xl:max-w-7xl overflow-y-auto rounded-2xl bg-paper p-4 sm:p-5 shadow-2xl ring-1 ring-line/20">
+            <div className="flex items-center justify-between border-b border-line/15 pb-3 print:hidden">
               <div>
-                <h2 className="font-head text-2xl font-bold uppercase tracking-tight">
+                <h2 className="font-head text-xl font-bold uppercase tracking-tight">
                   Bảng thi đấu — {ev.name}
                 </h2>
                 <p className="text-xs text-line/60">
@@ -579,13 +579,13 @@ function PlayersPage() {
               </div>
               <div className="flex items-center gap-2">
                 <button
-                  className="btn-accent text-xs"
+                  className="btn-accent text-xs !py-1.5"
                   onClick={() => window.print()}
                 >
                   🖨️ In / Lưu PDF
                 </button>
                 <button
-                  className="btn-ghost text-xs"
+                  className="btn-ghost text-xs !py-1.5"
                   onClick={() => setShowPrintModal(false)}
                 >
                   Đóng
@@ -593,50 +593,43 @@ function PlayersPage() {
               </div>
             </div>
 
-            {/* Vùng chỉ in bảng đấu */}
-            <div className="mt-6 space-y-6 print:m-0 print:p-0">
+            {/* Vùng chỉ in bảng đấu - Dàn 4 bảng một hàng vừa vặn trọn trang */}
+            <div className="mt-4 space-y-4 print:m-0 print:p-0">
               <div className="text-center">
-                <h1 className="font-head text-3xl font-extrabold uppercase tracking-tight">
+                <h1 className="font-head text-2xl font-extrabold uppercase tracking-tight print:text-xl">
                   {state.name || "GIẢI ĐẤU PICKLEBALL"}
                 </h1>
-                <p className="mt-1 text-base font-semibold uppercase tracking-wider text-accent">
+                <p className="mt-0.5 text-sm font-semibold uppercase tracking-wider text-accent print:text-xs">
                   DANH SÁCH CHIA BẢNG — {ev.name}
                 </p>
-                {state.venue && <p className="text-xs text-line/60 mt-0.5">{state.venue}</p>}
+                {state.venue && <p className="text-[11px] text-line/60">{state.venue}</p>}
               </div>
 
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 print:grid-cols-4 print:gap-2">
                 {ev.groups.map((g) => (
                   <div
                     key={g.name}
-                    className="rounded-xl border border-line/20 bg-card p-4 print:border-black"
+                    className="rounded-xl border border-line/20 bg-card p-3 print:p-2 print:border-black shadow-xs"
                   >
-                    <div className="flex items-center justify-between border-b border-line/15 pb-2">
-                      <h3 className="font-head text-lg font-bold uppercase tracking-tight text-accent">
+                    <div className="flex items-center justify-between border-b border-line/15 pb-1.5">
+                      <h3 className="font-head text-base font-bold uppercase tracking-tight text-accent print:text-sm">
                         {g.name}
                       </h3>
-                      <span className="text-xs font-semibold text-line/60">
+                      <span className="text-[11px] font-semibold text-line/60">
                         {g.entryIds.length} đội
                       </span>
                     </div>
-                    <div className="mt-3 divide-y divide-line/10">
+                    <div className="mt-2 divide-y divide-line/10">
                       {g.entryIds.map((id, idx) => {
                         const entry = entries.find((e) => e.id === id);
                         return (
-                          <div key={id} className="flex items-center justify-between py-2 text-sm">
-                            <div className="flex items-center gap-2">
-                              <span className="font-head font-bold text-line/40 w-4">
-                                {idx + 1}.
-                              </span>
-                              <span className="font-medium text-line">
-                                {entryName(entry)}
-                              </span>
-                            </div>
-                            {entry && entry.players.length > 1 && (
-                              <span className="text-xs text-line/60">
-                                {entry.players.map((p) => p.name).filter(Boolean).join(" - ")}
-                              </span>
-                            )}
+                          <div key={id} className="flex items-center py-1.5 text-xs">
+                            <span className="font-head font-bold text-line/40 w-4 shrink-0">
+                              {idx + 1}.
+                            </span>
+                            <span className="font-medium text-line truncate">
+                              {entryName(entry)}
+                            </span>
                           </div>
                         );
                       })}

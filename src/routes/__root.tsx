@@ -100,6 +100,7 @@ function Header() {
             <Link
               key={n.to}
               to={n.to}
+              style={{ fontFamily: "'Space Grotesk', sans-serif" }}
               className="rounded-lg px-3 py-2 text-line/70 hover:text-line"
               activeOptions={{ exact: n.to === "/" }}
               activeProps={{ className: "rounded-lg px-3 py-2 bg-line text-paper" }}

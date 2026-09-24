@@ -166,7 +166,7 @@ function EventsPage() {
               </div>
             </div>
 
-            <div className="mt-5 grid gap-4 sm:grid-cols-3">
+            <div className="mt-5 grid gap-4 sm:grid-cols-2">
               <div>
                 <Lbl>Điểm thắng (vòng bảng)</Lbl>
                 <input
@@ -174,15 +174,6 @@ function EventsPage() {
                   className="field mt-1.5 bg-white border-2 border-line/30 font-bold text-center"
                   value={ev.winPoints}
                   onChange={(e) => updateEvent(ev.id, { winPoints: Number(e.target.value) || 0 })}
-                />
-              </div>
-              <div>
-                <Lbl>Điểm hoà</Lbl>
-                <input
-                  type="number"
-                  className="field mt-1.5 bg-white border-2 border-line/30 font-bold text-center"
-                  value={ev.drawPoints}
-                  onChange={(e) => updateEvent(ev.id, { drawPoints: Number(e.target.value) || 0 })}
                 />
               </div>
               <div>
