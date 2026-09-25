@@ -117,6 +117,10 @@ export type TournamentState = {
   events: TEvent[];
   entries: Entry[];
   matches: Match[];
+  /** ID nội dung đang được chọn hiển thị, duy trì xuyên suốt khi chuyển tab */
+  selectedEventId?: string;
+  /** Trạng thái khóa nhánh KO theo từng nội dung */
+  koLocked?: Record<string, boolean>;
 };
 
 const STORAGE_KEY = "nay-court-tournament-v3";
@@ -149,7 +153,7 @@ const initialState: TournamentState = {
   slotMinutes: 30,
   courts: ["Sân 1", "Sân 2"],
   courtIcons: { "Sân 1": "🎾", "Sân 2": "🏓" },
-  referees: ["Trọng tài chính", "Trọng tài 1", "Trọng tài 2"],
+  referees: [],
   events: [],
   entries: [],
   matches: [],
@@ -160,6 +164,8 @@ type Ctx = {
   update: (patch: Partial<TournamentState>) => void;
   updateEvent: (id: string, patch: Partial<TEvent>) => void;
   updateMatch: (id: string, patch: Partial<Match>) => void;
+  setSelectedEventId: (id: string) => void;
+  toggleKoLock: (eventId: string) => void;
   reset: () => void;
 };
 
@@ -199,6 +205,27 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     [commit],
   );
 
+  const setSelectedEventId = useCallback(
+    (id: string) => update({ selectedEventId: id }),
+    [update],
+  );
+
+  const toggleKoLock = useCallback(
+    (eventId: string) => {
+      setState((prev) => {
+        const current = Boolean(prev.koLocked?.[eventId]);
+        return commit({
+          ...prev,
+          koLocked: {
+            ...(prev.koLocked || {}),
+            [eventId]: !current,
+          },
+        });
+      });
+    },
+    [commit],
+  );
+
   const updateEvent = useCallback(
     (id: string, patch: Partial<TEvent>) =>
       setState((prev) =>
@@ -228,8 +255,8 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ state, update, updateEvent, updateMatch, reset }),
-    [state, update, updateEvent, updateMatch, reset],
+    () => ({ state, update, updateEvent, updateMatch, setSelectedEventId, toggleKoLock, reset }),
+    [state, update, updateEvent, updateMatch, setSelectedEventId, toggleKoLock, reset],
   );
 
   return <TournamentContext.Provider value={value}>{children}</TournamentContext.Provider>;
@@ -537,7 +564,29 @@ export function computeStandings(
   });
   return [...rows.values()]
     .map((r) => ({ ...r, diff: r.pointsFor - r.pointsAgainst }))
-    .sort((x, y) => y.points - x.points || y.diff - x.diff || y.pointsFor - x.pointsFor);
+    .sort((x, y) => {
+      // 1. Tổng điểm
+      if (y.points !== x.points) return y.points - x.points;
+      // 2. Hiệu số
+      if (y.diff !== x.diff) return y.diff - x.diff;
+      // 3. Đối đầu trực tiếp (Head-to-head)
+      const h2h = matches.find(
+        (m) =>
+          m.scoreA !== null &&
+          m.scoreB !== null &&
+          ((m.aId === x.entryId && m.bId === y.entryId) ||
+            (m.aId === y.entryId && m.bId === x.entryId)),
+      );
+      if (h2h && h2h.scoreA !== null && h2h.scoreB !== null && h2h.scoreA !== h2h.scoreB) {
+        const xScore = h2h.aId === x.entryId ? h2h.scoreA : h2h.scoreB;
+        const yScore = h2h.aId === y.entryId ? h2h.scoreA : h2h.scoreB;
+        if (xScore !== yScore) {
+          return yScore - xScore;
+        }
+      }
+      // 4. Tổng điểm ghi được
+      return y.pointsFor - x.pointsFor;
+    });
 }
 
 export const KO_LABEL = (size: number) =>
@@ -905,15 +954,19 @@ export function generateKnockout(
         ];
       } else if (numGroups === 7 && advanceN === 2 && size === 16) {
         // 7 bảng (14 đội vào Vòng 1/8, 2 suất BYE cho Seed 1 & Seed 2):
+        // Ưu tiên tối đa Nhất gặp Nhì, hạn chế Nhất gặp Nhất và Nhì gặp Nhì:
+        // 1(g1) và 1(g2) nhận 2 suất BYE.
+        // Chỉ duy nhất 1 trận Nhì gặp Nhì (2G2 vs 2G6) để đội thắng gặp 1G1 ở Tứ kết.
+        // Toàn bộ 5 trận còn lại đều là Nhất gặp Nhì (tuyệt đối không có Nhất gặp Nhất):
         slots = [
           makeSlot(team1(g1), bye),
           makeSlot(team2(g2), team2(g6)),
           makeSlot(team1(g5), team2(g3)),
           makeSlot(team1(g4), team2(g7)),
           makeSlot(team1(g2), bye),
-          makeSlot(team2(g1), team2(g5)),
           makeSlot(team1(g6), team2(g4)),
-          makeSlot(team1(g3), team1(g7)),
+          makeSlot(team1(g7), team2(g1)),
+          makeSlot(team1(g3), team2(g5)),
         ];
       } else if (numGroups === 8 && advanceN === 2 && size === 16) {
         // 8 bảng (16 đội vào Vòng 1/8, 0 suất BYE):
@@ -928,38 +981,30 @@ export function generateKnockout(
           makeSlot(team1(g2), team2(g7)),
         ];
       } else {
-        // Thuật toán tổng quát cho mọi số bảng khác (kể cả số bảng lẻ lớn hơn 8):
-        // Nửa trên: 1st của topGroups và 2nd của bottomGroups
-        // Nửa dưới: 1st của bottomGroups và 2nd của topGroups
-        const topGroupKeys: string[] = [g1, g4];
-        const bottomGroupKeys: string[] = [g2, g3];
-        for (let g = 4; g < numGroups; g++) {
-          const key = gKeys[g] || String.fromCharCode(65 + g);
-          if (g % 2 === 0) topGroupKeys.push(key);
-          else bottomGroupKeys.push(key);
+        // Thuật toán tổng quát cho mọi số bảng khác:
+        // Luôn ghép 1st với 2nd từ bảng khác!
+        const all1st = gKeys.map((k) => team1(k));
+        const all2nd = [...gKeys.slice(1), gKeys[0]!].map((k) => team2(k)); // Lệch 1 bảng để không trùng bảng
+        let byeCount = Math.max(0, size - (all1st.length + all2nd.length));
+        const pairs: InitialKoSlot[] = [];
+
+        let fIdx = 0;
+        let sIdx = 0;
+        for (let i = 0; i < halfMatches * 2; i++) {
+          if (fIdx < all1st.length && byeCount > 0) {
+            pairs.push(makeSlot(all1st[fIdx++]!, bye));
+            byeCount--;
+          } else if (fIdx < all1st.length && sIdx < all2nd.length) {
+            pairs.push(makeSlot(all1st[fIdx++]!, all2nd[sIdx++]!));
+          } else if (sIdx + 1 < all2nd.length) {
+            pairs.push(makeSlot(all2nd[sIdx++]!, all2nd[sIdx++]!));
+          } else if (fIdx + 1 < all1st.length) {
+            pairs.push(makeSlot(all1st[fIdx++]!, all1st[fIdx++]!));
+          } else {
+            pairs.push(makeSlot(all1st[fIdx++] || all2nd[sIdx++] || bye, bye));
+          }
         }
-
-        const topTeams: Array<{ label: string; entryId: string | null }> = [];
-        topGroupKeys.forEach((k) => topTeams.push(team1(k)));
-        bottomGroupKeys.forEach((k) => topTeams.push(team2(k)));
-
-        const bottomTeams: Array<{ label: string; entryId: string | null }> = [];
-        bottomGroupKeys.forEach((k) => bottomTeams.push(team1(k)));
-        topGroupKeys.forEach((k) => bottomTeams.push(team2(k)));
-
-        let tCursor = 0;
-        for (let i = 0; i < halfMatches; i++) {
-          const tA = topTeams[tCursor++] || bye;
-          const tB = topTeams[tCursor++] || bye;
-          slots.push(makeSlot(tA, tB));
-        }
-
-        let bCursor = 0;
-        for (let i = 0; i < halfMatches; i++) {
-          const tA = bottomTeams[bCursor++] || bye;
-          const tB = bottomTeams[bCursor++] || bye;
-          slots.push(makeSlot(tA, tB));
-        }
+        slots = pairs;
       }
 
       slots.forEach((s, idx) => {

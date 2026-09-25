@@ -62,7 +62,7 @@ function CreateTournamentPage() {
   };
 
   return (
-    <div className="max-w-3xl">
+    <div className="max-w-3xl mx-auto">
       {/* Khung chứa tiêu đề tự động co giãn theo ai_studio_code, không bị che mất dấu tiếng Việt */}
       <div className="title-container min-h-[140px] flex items-center mb-6 overflow-visible">
         <h1

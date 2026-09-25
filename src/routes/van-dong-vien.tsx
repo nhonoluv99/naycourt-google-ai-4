@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
+import * as XLSX from "xlsx";
 import {
   drawPairs,
   entryName,
@@ -39,16 +40,62 @@ function parseCsv(text: string): Array<string[]> {
 }
 
 function PlayersPage() {
-  const { state, update, updateEvent } = useTournament();
-  const [activeId, setActiveId] = useState<string>(state.events[0]?.id ?? "");
+  const { state, update, updateEvent, setSelectedEventId } = useTournament();
+  const activeId =
+    state.selectedEventId && state.events.some((e) => e.id === state.selectedEventId)
+      ? state.selectedEventId
+      : state.events[0]?.id ?? "";
   const fileRef = useRef<HTMLInputElement>(null);
   const [note, setNote] = useState("");
+  const [confirmedMatchEdit, setConfirmedMatchEdit] = useState(false);
+  const [confirmModal, setConfirmModal] = useState<{
+    title: string;
+    message: string;
+    confirmText?: string;
+    cancelText?: string;
+    isDestructive?: boolean;
+    onConfirm: () => void;
+  } | null>(null);
 
   const ev: TEvent | undefined = state.events.find((e) => e.id === activeId) ?? state.events[0];
+
+  useEffect(() => {
+    setConfirmedMatchEdit(false);
+  }, [activeId]);
+
   const entries = useMemo(
     () => state.entries.filter((e) => ev && e.eventId === ev.id),
     [state.entries, ev],
   );
+
+  // Kiểm tra xem nội dung này đã có trận nào diễn ra hoặc có điểm chưa
+  const hasStartedMatches = useMemo(() => {
+    return state.matches.some(
+      (m) =>
+        ev &&
+        m.eventId === ev.id &&
+        (m.scoreA !== null || m.scoreB !== null || m.status === "done" || m.status === "live"),
+    );
+  }, [state.matches, ev]);
+
+  const requireEditConfirmation = (action: () => void, actionDesc?: string) => {
+    if (!hasStartedMatches || confirmedMatchEdit) {
+      action();
+      return;
+    }
+    setConfirmModal({
+      title: "⚠️ Cảnh báo: Trận đấu đã diễn ra",
+      message: `Nội dung "${ev?.name}" đã có các trận đấu đang diễn ra hoặc đã ghi điểm số.\n\n${actionDesc || "Việc chỉnh sửa thông tin VĐV, danh sách hoặc chia lại bảng"}\nsẽ ảnh hưởng trực tiếp đến kết quả và sơ đồ thi đấu các vòng tiếp theo.\n\nBạn có chắc chắn muốn cho phép chỉnh sửa không?`,
+      confirmText: "Xác nhận chỉnh sửa",
+      cancelText: "Hủy bỏ",
+      isDestructive: false,
+      onConfirm: () => {
+        setConfirmedMatchEdit(true);
+        action();
+        setConfirmModal(null);
+      },
+    });
+  };
 
   if (!ev) {
     return (
@@ -69,21 +116,42 @@ function PlayersPage() {
   const setEntries = (next: Entry[]) =>
     update({ entries: [...state.entries.filter((e) => e.eventId !== ev.id), ...next] });
 
-  const addEntry = () =>
-    setEntries([
-      ...entries,
-      {
-        id: uid(),
-        eventId: ev.id,
-        players: Array.from({ length: slots }, () => ({ name: "", rating: null })),
-        paid: false,
-      },
-    ]);
+  const addEntry = () => {
+    requireEditConfirmation(() => {
+      setEntries([
+        ...entries,
+        {
+          id: uid(),
+          eventId: ev.id,
+          players: Array.from({ length: slots }, () => ({ name: "", rating: null })),
+          paid: false,
+        },
+      ]);
+    }, "Thêm VĐV mới vào danh sách");
+  };
 
   const patchEntry = (id: string, patch: Partial<Entry>) =>
     setEntries(entries.map((e) => (e.id === id ? { ...e, ...patch } : e)));
 
-  const patchPlayer = (id: string, idx: number, patch: Partial<Entry["players"][number]>) =>
+  const patchPlayer = (id: string, idx: number, patch: Partial<Entry["players"][number]>) => {
+    if (hasStartedMatches && !confirmedMatchEdit && "name" in patch) {
+      requireEditConfirmation(() => {
+        setEntries(
+          entries.map((e) => {
+            if (e.id !== id) return e;
+            const newPlayers = e.players.map((p, i) => (i === idx ? { ...p, ...patch } : p));
+            const allPaid = newPlayers.length > 0 && newPlayers.every((p) => Boolean(p.paid));
+            return {
+              ...e,
+              players: newPlayers,
+              paid: allPaid,
+            };
+          }),
+        );
+      }, "Thay đổi thông tin VĐV");
+      return;
+    }
+
     setEntries(
       entries.map((e) => {
         if (e.id !== id) return e;
@@ -96,54 +164,222 @@ function PlayersPage() {
         };
       }),
     );
+  };
 
-  const removeEntry = (id: string) => setEntries(entries.filter((e) => e.id !== id));
+  const removeEntry = (id: string) => {
+    const entry = entries.find((e) => e.id === id);
+    const name = entry ? entryName(entry) : "VĐV";
+    setConfirmModal({
+      title: "Xác nhận xóa VĐV",
+      message: `Bạn có chắc chắn muốn xóa "${name}" khỏi nội dung "${ev.name}"?${
+        hasStartedMatches
+          ? " Nội dung này đã có trận đấu diễn ra, việc xóa VĐV có thể ảnh hưởng đến kết quả thi đấu."
+          : ""
+      }`,
+      confirmText: "Xóa VĐV",
+      isDestructive: true,
+      onConfirm: () => {
+        setEntries(entries.filter((e) => e.id !== id));
+        removeFromGroups(id);
+        setConfirmModal(null);
+      },
+    });
+  };
+
+  const clearAllEntries = () => {
+    if (entries.length === 0) return;
+    setConfirmModal({
+      title: "Xác nhận xóa toàn bộ danh sách VĐV",
+      message: `Bạn có chắc chắn muốn xóa TOÀN BỘ ${entries.length} VĐV của nội dung "${ev.name}"?\n\nThao tác này sẽ làm trống danh sách VĐV và xóa họ khỏi các bảng đấu đã xếp.`,
+      confirmText: `Xóa toàn bộ (${entries.length})`,
+      cancelText: "Hủy bỏ",
+      isDestructive: true,
+      onConfirm: () => {
+        setEntries([]);
+        updateEvent(ev.id, {
+          groups: ev.groups.map((g) => ({ ...g, entryIds: [] })),
+        });
+        setNote(`Đã xóa toàn bộ ${entries.length} VĐV.`);
+        setConfirmModal(null);
+      },
+    });
+  };
 
   const onImport = async (file: File) => {
-    const text = await file.text();
-    const rows = parseCsv(text);
-    const imported: Entry[] = [];
-    rows.forEach((cols, i) => {
-      if (i === 0 && /t[eê]n|name/i.test(cols[0] ?? "")) return;
-      const players: Entry["players"] = [];
-      if (slots === 2) {
-        players.push({ name: cols[0] ?? "", rating: num(cols[1]) });
-        players.push({ name: cols[2] ?? "", rating: num(cols[3]) });
+    try {
+      let rows: Array<string[]> = [];
+      const fileName = file.name.toLowerCase();
+
+      if (fileName.endsWith(".xlsx") || fileName.endsWith(".xls")) {
+        const buffer = await file.arrayBuffer();
+        const wb = XLSX.read(buffer, { type: "array" });
+        const firstSheetName = wb.SheetNames[0];
+        if (firstSheetName) {
+          const sheet = wb.Sheets[firstSheetName];
+          const rawJson = XLSX.utils.sheet_to_json<any[]>(sheet, { header: 1, defval: "" });
+          rows = rawJson.map((row) =>
+            Array.isArray(row) ? row.map((c) => String(c ?? "").trim()) : [],
+          );
+        }
       } else {
-        players.push({ name: cols[0] ?? "", rating: num(cols[1]) });
+        const text = await file.text();
+        rows = parseCsv(text);
       }
-      if (players.some((p) => p.name)) {
-        imported.push({ id: uid(), eventId: ev.id, players, paid: false });
+
+      if (!rows.length) {
+        setNote("File không có dữ liệu để import.");
+        return;
       }
-    });
-    setEntries([...entries, ...imported]);
-    setNote(`Đã import ${imported.length} dòng.`);
+
+      // Xác định hàng bắt đầu và thứ tự các cột
+      let startRow = 0;
+      let nameCol = 0;
+      let ratingCol = 1;
+      let name2Col = 2;
+      let rating2Col = 3;
+
+      const firstRowLower = (rows[0] || []).map((c) => c.toLowerCase());
+      const hasHeader = firstRowLower.some((c) =>
+        /stt|tên|ten|name|họ|ho|điểm|diem|rating/i.test(c),
+      );
+
+      if (hasHeader) {
+        startRow = 1;
+        const sttIdx = firstRowLower.findIndex((c) => /stt|no|#|^số$/i.test(c));
+        const nameIdxs = firstRowLower
+          .map((c, idx) => (/t[eê]n|name|v[đd]v|họ\s*t[eê]n/i.test(c) ? idx : -1))
+          .filter((idx) => idx !== -1);
+        const ratingIdxs = firstRowLower
+          .map((c, idx) => (/điểm|diem|tr[iì]nh|rating|point/i.test(c) ? idx : -1))
+          .filter((idx) => idx !== -1);
+
+        if (nameIdxs.length > 0) {
+          nameCol = nameIdxs[0]!;
+          if (nameIdxs.length > 1) name2Col = nameIdxs[1]!;
+        } else if (sttIdx === 0) {
+          nameCol = 1;
+          name2Col = 3;
+        }
+
+        if (ratingIdxs.length > 0) {
+          ratingCol = ratingIdxs[0]!;
+          if (ratingIdxs.length > 1) rating2Col = ratingIdxs[1]!;
+        } else {
+          ratingCol = nameCol + 1;
+          rating2Col = name2Col + 1;
+        }
+      } else {
+        const col0IsStt = rows.slice(0, 5).every((r) => !isNaN(Number(r[0])) && Number(r[0]) > 0);
+        if (col0IsStt) {
+          nameCol = 1;
+          ratingCol = 2;
+          name2Col = 3;
+          rating2Col = 4;
+        }
+      }
+
+      const imported: Entry[] = [];
+      for (let i = startRow; i < rows.length; i++) {
+        const cols = rows[i] || [];
+        if (!cols.some((c) => c.trim())) continue;
+        const players: Entry["players"] = [];
+        const n1 = cols[nameCol]?.trim() || "";
+        const r1 = num(cols[ratingCol]);
+
+        if (slots === 2) {
+          const n2 = cols[name2Col]?.trim() || "";
+          const r2 = num(cols[rating2Col]);
+          if (n1 || n2) {
+            // Nếu người dùng để cả 2 tên trong 1 cột hoặc tên có dấu phân cách (ví dụ: Dung / Trường hoặc Ninh - Loan hoặc Tuấn + Hùng)
+            if (!n2 && n1 && /[/+&–—-]/.test(n1)) {
+              const parts = n1.split(/[/+&–—-]/).map((s) => s.trim()).filter(Boolean);
+              if (parts.length >= 2) {
+                players.push({ name: parts[0]!, rating: r1 });
+                players.push({ name: parts.slice(1).join(" - "), rating: r2 ?? r1 });
+              } else {
+                players.push({ name: n1, rating: r1 });
+                players.push({ name: "", rating: null });
+              }
+            } else {
+              players.push({ name: n1, rating: r1 });
+              players.push({ name: n2, rating: r2 });
+            }
+          }
+        } else {
+          if (n1) {
+            players.push({ name: n1, rating: r1 });
+          }
+        }
+        if (players.some((p) => p.name)) {
+          imported.push({ id: uid(), eventId: ev.id, players, paid: false });
+        }
+      }
+
+      setEntries([...entries, ...imported]);
+      setNote(`Đã import thành công ${imported.length} VĐV.`);
+    } catch (err) {
+      console.error(err);
+      setNote("Lỗi khi đọc file Excel/CSV. Vui lòng kiểm tra lại định dạng file.");
+    }
+  };
+
+  const downloadSampleExcel = () => {
+    try {
+      const isDoubles = slots === 2;
+      const wb = XLSX.utils.book_new();
+      const headers = isDoubles
+        ? ["STT", "Tên VĐV 1", "Điểm trình 1", "Tên VĐV 2", "Điểm trình 2"]
+        : ["STT", "Họ và tên VĐV", "Điểm trình"];
+      const sampleData = isDoubles
+        ? [
+            [1, "VĐV 1", 3.5, "VĐV 2", 3.5],
+            [2, "VĐV 3", 4.0, "VĐV 4", 4.0],
+            [3, "VĐV 5", 3.5, "VĐV 6", 3.5],
+            [4, "VĐV 7", 4.0, "VĐV 8", 4.0],
+          ]
+        : [
+            [1, "VĐV 1", 3.5],
+            [2, "VĐV 2", 4.0],
+            [3, "VĐV 3", 3.5],
+            [4, "VĐV 4", 4.0],
+          ];
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...sampleData]);
+      // Đặt độ rộng các cột
+      ws["!cols"] = isDoubles
+        ? [{ wch: 6 }, { wch: 22 }, { wch: 14 }, { wch: 22 }, { wch: 14 }]
+        : [{ wch: 6 }, { wch: 26 }, { wch: 14 }];
+      XLSX.utils.book_append_sheet(wb, ws, "DanhSachVDV");
+      XLSX.writeFile(wb, `mau_import_${ev.mode === "don" ? "don" : "doi"}.xlsx`);
+      setNote("Đã tải file Excel mẫu (.xlsx) về máy của bạn.");
+    } catch (e) {
+      console.error(e);
+      setNote("Không thể tải file mẫu. Bạn có thể tự tạo file Excel với cột: STT, Tên, Điểm trình.");
+    }
   };
 
   const doDraw = () => {
-    // Điểm trình là tuỳ chọn: ai chưa có điểm sẽ được xem như 0 khi cân bằng cặp.
-    const paired = drawPairs(entries, ev.id);
-    setEntries(paired);
-    setNote(`Đã bốc thăm ${paired.length} đội.`);
+    requireEditConfirmation(() => {
+      const paired = drawPairs(entries, ev.id);
+      setEntries(paired);
+      setNote(`Đã bốc thăm ${paired.length} đội.`);
+    }, "Bốc thăm ghép đôi mới sẽ thay đổi danh sách các cặp đấu.");
   };
 
   const autoGroups = () => {
-    updateEvent(ev.id, { groups: splitGroups(entries, ev.groupCount) });
-    setNote(`Đã chia ${ev.groupCount} bảng tự động.`);
-  };
-
-  const reDrawGroups = () => {
-    const shuffled = [...entries].sort(() => Math.random() - 0.5);
-    const n = Math.max(1, ev.groupCount || 1);
-    const groups = Array.from({ length: n }, (_, i) => ({
-      name: getGroupName(i),
-      entryIds: [] as string[],
-    }));
-    shuffled.forEach((en, i) => {
-      groups[i % n]!.entryIds.push(en.id);
-    });
-    updateEvent(ev.id, { groups });
-    setNote(`Đã chia lại ngẫu nhiên ${n} bảng thành công.`);
+    requireEditConfirmation(() => {
+      // Gộp nút chia bảng tự động và chia lại bảng: vừa chia bảng vừa chia random tiếp được
+      const shuffled = [...entries].sort(() => Math.random() - 0.5);
+      const n = Math.max(1, ev.groupCount || 1);
+      const groups = Array.from({ length: n }, (_, i) => ({
+        name: getGroupName(i),
+        entryIds: [] as string[],
+      }));
+      shuffled.forEach((en, i) => {
+        groups[i % n]!.entryIds.push(en.id);
+      });
+      updateEvent(ev.id, { groups });
+      setNote(`Đã chia tự động ngẫu nhiên ${entries.length} đội vào ${n} bảng.`);
+    }, "Việc chia lại bảng tự động sẽ sắp xếp lại toàn bộ các đội vào các bảng.");
   };
 
   const moveEntry = (entryId: string, toGroup: number) => {
@@ -199,6 +435,7 @@ function PlayersPage() {
 
   const [dragEntryId, setDragEntryId] = useState<string | null>(null);
   const [showPrintModal, setShowPrintModal] = useState(false);
+  const [showExcelGuide, setShowExcelGuide] = useState(false);
 
   return (
     <div>
@@ -218,7 +455,7 @@ function PlayersPage() {
         {state.events.map((e) => (
           <button
             key={e.id}
-            onClick={() => setActiveId(e.id)}
+            onClick={() => setSelectedEventId(e.id)}
             className={
               e.id === ev.id
                 ? "rounded-lg bg-line px-3 py-2 text-sm font-semibold text-paper"
@@ -236,27 +473,106 @@ function PlayersPage() {
             <button className="btn-accent" onClick={addEntry}>
               + Thêm {ev.mode === "don" ? "VĐV" : slots === 2 ? "đội" : "VĐV"}
             </button>
-            <button className="btn-ghost" onClick={() => fileRef.current?.click()}>
-              Import Excel/CSV
+            <button
+              className="btn-ghost"
+              onClick={() => fileRef.current?.click()}
+              title="Hỗ trợ file .xlsx, .xls, .csv, .tsv (cột STT, Tên, Điểm trình)"
+            >
+              📥 Import Excel/CSV
+            </button>
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={downloadSampleExcel}
+              title="Tải file Excel mẫu (.xlsx) chuẩn định dạng của hệ thống"
+            >
+              📋 Tải file mẫu
+            </button>
+            <button
+              type="button"
+              className="btn-ghost text-xs text-line/60 hover:text-ink"
+              onClick={() => setShowExcelGuide((v) => !v)}
+              title="Xem hướng dẫn các cột trong file Excel"
+            >
+              ℹ️ Định dạng file
             </button>
             {ev.mode === "doi" && ev.pairMode === "random" ? (
               <button className="btn-ghost" onClick={doDraw}>
                 🎲 Bốc thăm ghép đôi
               </button>
             ) : null}
+            {entries.length > 0 && (
+              <button
+                type="button"
+                className="btn-ghost text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 border border-red-200 dark:border-red-900/40"
+                onClick={clearAllEntries}
+                title="Xóa nhanh toàn bộ danh sách VĐV của nội dung này"
+              >
+                🗑️ Xóa toàn bộ ({entries.length})
+              </button>
+            )}
             <input
               ref={fileRef}
               type="file"
-              accept=".csv,.txt,.tsv"
+              accept=".xlsx,.xls,.csv,.txt,.tsv"
               className="hidden"
               onChange={(e) => {
                 const f = e.target.files?.[0];
-                if (f) void onImport(f);
+                if (f) {
+                  requireEditConfirmation(() => {
+                    void onImport(f);
+                  }, "Import danh sách mới sẽ thêm các VĐV vào nội dung này.");
+                }
                 e.target.value = "";
               }}
             />
           </div>
           {note ? <p className="mt-2 text-xs font-medium text-court">{note}</p> : null}
+
+          {showExcelGuide && (
+            <div className="mt-3 rounded-xl border border-line/20 bg-secondary/30 p-3.5 text-xs space-y-2">
+              <div className="flex items-center justify-between font-bold text-ink">
+                <span>📖 Hướng dẫn định dạng file Excel / CSV:</span>
+                <button
+                  type="button"
+                  className="text-line/40 hover:text-ink cursor-pointer"
+                  onClick={() => setShowExcelGuide(false)}
+                >
+                  ✕ Đóng
+                </button>
+              </div>
+              <p className="text-line/70">
+                Web hỗ trợ trực tiếp file Excel (<strong>.xlsx</strong>, <strong>.xls</strong>) và <strong>.csv</strong>. Bạn có thể bấm nút <strong>📋 Tải file mẫu</strong> ở trên để có sẵn cấu trúc chuẩn.
+              </p>
+              <div className="overflow-x-auto rounded-lg border border-line/15 bg-card p-2 text-[11px]">
+                <p className="font-bold text-[#0a3320] mb-1">
+                  {slots === 2 ? "Format file nội dung Đôi cố định (2 cách):" : "Format file nội dung Đơn hoặc Đôi bốc thăm ngẫu nhiên:"}
+                </p>
+                {slots === 2 ? (
+                  <ul className="list-disc pl-4 space-y-1 text-line/70">
+                    <li>
+                      <strong>Cách 1 (5 cột chuẩn):</strong> Cột A: <code>STT</code>, Cột B: <code>Tên VĐV 1</code>, Cột C: <code>Điểm trình 1</code>, Cột D: <code>Tên VĐV 2</code>, Cột E: <code>Điểm trình 2</code>.
+                    </li>
+                    <li>
+                      <strong>Cách 2 (2 hoặc 3 cột nhanh):</strong> Cột A: <code>STT</code>, Cột B: <code>Tên cặp VĐV</code> (ghi dạng &quot;VĐV 1 / VĐV 2&quot; hoặc &quot;VĐV 1 - VĐV 2&quot;), Cột C: <code>Điểm trình</code> (tùy chọn, không bắt buộc — có thể tự nhập sau khi đưa lên web).
+                    </li>
+                  </ul>
+                ) : (
+                  <ul className="list-disc pl-4 space-y-1 text-line/70">
+                    <li>
+                      Cột A: <code>STT</code> (1, 2, 3...)
+                    </li>
+                    <li>
+                      Cột B: <code>Họ và tên VĐV</code> (Ví dụ: VĐV 1, VĐV 2...)
+                    </li>
+                    <li>
+                      Cột C: <code>Điểm trình</code> (Ví dụ: 3.5, 4.0 — tùy chọn, có thể nhập sau trên web)
+                    </li>
+                  </ul>
+                )}
+              </div>
+            </div>
+          )}
 
           <div className="panel mt-4 divide-y divide-line/10 overflow-hidden">
             {entries.length === 0 ? (
@@ -301,7 +617,7 @@ function PlayersPage() {
                           title="Tổng điểm trình của cả 2 VĐV cộng lại (đầy đủ số thập phân)"
                         >
                           <span className="text-[10px] uppercase text-accent/70 mr-1">Tổng:</span>
-                          <span>{totalRating > 0 ? Number(totalRating.toFixed(4)) : "—"}</span>
+                          <span>{totalRating > 0 ? (Number.isInteger(totalRating) ? totalRating.toFixed(1) : Number(totalRating.toFixed(4))) : "—"}</span>
                         </div>
                       )}
                     </div>
@@ -346,11 +662,12 @@ function PlayersPage() {
                 onChange={(e) => handleGroupCountChange(Number(e.target.value) || 1)}
               />
             </div>
-            <button className="btn-accent" onClick={autoGroups}>
+            <button
+              className="btn-accent"
+              onClick={autoGroups}
+              title="Tự động chia và xáo trộn ngẫu nhiên các đội vào các bảng"
+            >
               Chia bảng tự động
-            </button>
-            <button className="btn-ghost" onClick={reDrawGroups} title="Chia ngẫu nhiên thêm lần nữa">
-              🎲 Chia lại bảng
             </button>
             <button
               className="btn-ghost"
@@ -536,7 +853,7 @@ function PlayersPage() {
                         <span className="truncate max-w-[140px]">{entryName(e)}</span>
                         {pts > 0 && (
                           <span className="rounded bg-accent/15 px-1 py-0.5 text-[10px] font-bold text-accent">
-                            {Number(pts.toFixed(4))}đ
+                            {Number.isInteger(pts) ? pts.toFixed(1) : Number(pts.toFixed(4))}đ
                           </span>
                         )}
                         <select
@@ -641,8 +958,51 @@ function PlayersPage() {
           </div>
         </div>
       )}
+      {/* Modal xác nhận thao tác / Cảnh báo chỉnh sửa */}
+      {confirmModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-md rounded-2xl bg-card p-5 shadow-2xl ring-1 ring-line/20 border border-line/10 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3">
+              <span className={`text-2xl ${confirmModal.isDestructive ? "text-red-500" : "text-amber-500"}`}>
+                {confirmModal.isDestructive ? "🗑️" : "⚠️"}
+              </span>
+              <h3 className="font-head text-lg font-bold text-ink">
+                {confirmModal.title}
+              </h3>
+            </div>
+            <p className="mt-3 text-xs leading-relaxed text-line/80 whitespace-pre-line">
+              {confirmModal.message}
+            </p>
+            <div className="mt-5 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                className="btn-ghost text-xs !py-2 !px-4 cursor-pointer"
+                onClick={() => setConfirmModal(null)}
+              >
+                {confirmModal.cancelText || "Hủy bỏ"}
+              </button>
+              <button
+                type="button"
+                className={
+                  confirmModal.isDestructive
+                    ? "rounded-xl bg-red-600 hover:bg-red-700 text-white font-semibold text-xs py-2 px-4 shadow-sm transition-all cursor-pointer"
+                    : "btn-accent text-xs !py-2 !px-4 cursor-pointer"
+                }
+                onClick={confirmModal.onConfirm}
+              >
+                {confirmModal.confirmText || "Xác nhận"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+function formatRating(v: number | null | undefined): string {
+  if (v === null || v === undefined || isNaN(v)) return "";
+  return Number.isInteger(v) ? v.toFixed(1) : String(v);
 }
 
 function RatingInput({
@@ -652,17 +1012,30 @@ function RatingInput({
   value: number | null;
   onChange: (v: number | null) => void;
 }) {
-  const [raw, setRaw] = useState(value === null ? "" : String(value));
+  const [raw, setRaw] = useState(formatRating(value));
   useEffect(() => {
-    if (num(raw) !== value) setRaw(value === null ? "" : String(value));
+    if (num(raw) !== value) setRaw(formatRating(value));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
+
+  const handleBlur = () => {
+    const n = num(raw);
+    if (n !== null) {
+      setRaw(formatRating(n));
+      onChange(n);
+    } else {
+      setRaw("");
+      onChange(null);
+    }
+  };
+
   return (
     <input
       className="field w-20 shrink-0 text-center"
       placeholder="—"
       inputMode="decimal"
       value={raw}
+      onBlur={handleBlur}
       onChange={(e) => {
         const t = e.target.value.replace(/[^0-9.,]/g, "");
         setRaw(t);

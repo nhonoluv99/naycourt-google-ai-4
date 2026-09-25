@@ -4,6 +4,7 @@ import {
   Link,
   createRootRouteWithContext,
   useRouter,
+  useRouterState,
 } from "@tanstack/react-router";
 import { useEffect } from "react";
 
@@ -79,7 +80,7 @@ function Header() {
   const { state } = useTournament();
   return (
     <div className="border-b-4 border-line">
-      <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
+      <div className="mx-auto flex w-full max-w-[1920px] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:px-8">
         <Link to="/" className="flex items-center gap-3">
           <div className="grid size-9 place-items-center rounded-lg bg-accent">
             <span className="font-head text-lg font-bold leading-none text-accent-foreground pl-[3px] h-[17px] flex items-center justify-center">
@@ -124,28 +125,44 @@ function Header() {
   );
 }
 
+function RootContent() {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const isWide = pathname.startsWith("/van-dong-vien") || pathname.startsWith("/quan-ly-giai");
+  const containerClass = isWide
+    ? "mx-auto w-full max-w-[1920px] px-4 py-8 sm:px-6 lg:px-8 lg:py-10"
+    : "mx-auto w-full max-w-5xl px-4 py-8 sm:px-6 lg:px-8 lg:py-10";
+
+  return (
+    <div className="min-h-screen bg-paper font-body text-ink">
+      <Header />
+      <div className="courtlines">
+        <div className={containerClass}>
+          {/* Required: nested routes render here. */}
+          <Outlet />
+        </div>
+        <div
+          className={`mx-auto flex w-full items-center gap-2 px-4 pb-8 text-xs font-medium text-line/50 sm:px-6 lg:px-8 ${
+            isWide ? "max-w-[1920px]" : "max-w-5xl"
+          }`}
+        >
+          <span className="size-2 shrink-0 rounded-full bg-accent" />
+          <span>
+            Nảy Court . Hệ thống quản lý điều hành giải chuyên nghiệp, hiện đại, đầy khả ái và
+            ngây ngất lòng người...
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
   return (
     <QueryClientProvider client={queryClient}>
       <TournamentProvider>
-        <div className="min-h-screen bg-paper font-body text-ink">
-          <Header />
-          <div className="courtlines">
-            <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:py-12">
-              {/* Required: nested routes render here. */}
-              <Outlet />
-            </div>
-            <div className="mx-auto flex max-w-7xl items-center gap-2 px-4 pb-8 text-xs font-medium text-line/50 sm:px-6">
-              <span className="size-2 shrink-0 rounded-full bg-accent" />
-              <span>
-                Nảy Court . Hệ thống quản lý điều hành giải chuyên nghiệp, hiện đại, đầy khả ái và
-                ngây ngất lòng người...
-              </span>
-            </div>
-          </div>
-        </div>
+        <RootContent />
       </TournamentProvider>
     </QueryClientProvider>
   );

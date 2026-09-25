@@ -82,11 +82,13 @@ function RefereeSelector({
   referees,
   onSelect,
   onAddReferee,
+  onClearReferees,
 }: {
   value?: string;
   referees: string[];
   onSelect: (r: string) => void;
   onAddReferee?: (r: string) => void;
+  onClearReferees?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState(value || "");
@@ -137,13 +139,26 @@ function RefereeSelector({
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute left-0 bottom-full mb-1 z-50 min-w-[170px] max-h-56 overflow-y-auto rounded-lg border border-line/20 bg-card p-1 shadow-2xl text-xs">
-            <div className="px-2 py-1 text-[10px] font-bold text-line/50 uppercase tracking-wider">
-              Danh sách trọng tài
+          <div className="absolute left-0 bottom-full mb-1 z-50 min-w-[180px] max-h-56 overflow-y-auto rounded-lg border border-line/20 bg-card p-1 shadow-2xl text-xs">
+            <div className="flex items-center justify-between px-2 py-1 text-[10px] font-bold text-line/50 uppercase tracking-wider">
+              <span>Danh sách trọng tài</span>
+              {referees.length > 0 && onClearReferees && (
+                <button
+                  type="button"
+                  className="text-red-500 hover:text-red-700 cursor-pointer font-normal text-[10px] lowercase"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onClearReferees();
+                  }}
+                  title="Xóa toàn bộ bộ nhớ trọng tài của giải này"
+                >
+                  Xóa bộ nhớ
+                </button>
+              )}
             </div>
             {referees.length === 0 ? (
               <div className="px-2 py-1.5 text-[11px] text-line/50 italic">
-                Nhập tên để tự động ghi nhớ
+                Chưa có trọng tài. Nhập tên để ghi nhớ.
               </div>
             ) : (
               referees.map((r) => (
@@ -304,6 +319,7 @@ type CardProps = {
   onCourt: (c: string) => void;
   onReferee: (r: string) => void;
   onAddReferee?: (r: string) => void;
+  onClearReferees?: () => void;
   onRemoveFromTimeline?: () => void;
   onViewNote?: (note: string) => void;
   onDurationChange?: (mins: number, recordHistory?: boolean) => void;
@@ -335,6 +351,7 @@ function MatchCard({
   onCourt,
   onReferee,
   onAddReferee,
+  onClearReferees,
   onRemoveFromTimeline,
   onViewNote,
   onDurationChange,
@@ -344,7 +361,7 @@ function MatchCard({
   hasConflict,
   compact,
   colWidth = 210,
-  rowHeight = 85,
+  rowHeight = 128,
   slotMinutes = 30,
 }: CardProps) {
   const c = groupColor(m.groupName);
@@ -519,6 +536,7 @@ function MatchCard({
               referees={referees}
               onSelect={onReferee}
               onAddReferee={onAddReferee}
+              onClearReferees={onClearReferees}
             />
 
             {hasNote && onViewNote && (
@@ -634,6 +652,7 @@ function KoCard({
   isConflictA,
   isConflictB,
   hasRoundConflict,
+  isKoLocked = false,
   onScore,
   onStatus,
   onReset,
@@ -658,6 +677,7 @@ function KoCard({
   isConflictA?: boolean;
   isConflictB?: boolean;
   hasRoundConflict?: boolean;
+  isKoLocked?: boolean;
   onScore: (k: "scoreA" | "scoreB", v: number | null) => void;
   onStatus: (s: Match["status"]) => void;
   onReset: () => void;
@@ -696,6 +716,35 @@ function KoCard({
   const seedB = seedBadgeB || formatSeed(m.customPlaceholderB);
   const isByeA = seedA === "BYE";
   const isByeB = seedB === "BYE";
+
+  const getSeedBadgeClass = (seed?: string | null, isBye?: boolean) => {
+    if (isBye) return "bg-line/15 text-line/60 border border-dashed border-line/30";
+    if (!seed) return "bg-secondary text-line/70";
+    const s = seed.trim().toLowerCase();
+    // Đội Nhất bảng / Hạt giống 1: màu cam (Ảnh 5)
+    if (
+      s.startsWith("1") ||
+      s.includes("nhất") ||
+      s.includes("nhat") ||
+      /^i\b/i.test(s) ||
+      /seed\s*1\b/i.test(s) ||
+      /hạt\s*giống\s*1\b/i.test(s)
+    ) {
+      return "bg-orange-500/15 text-[#e44c11] dark:bg-orange-500/25 dark:text-orange-300 font-bold border border-orange-500/30";
+    }
+    // Đội Nhì bảng / Hạt giống 2: màu xanh (Ảnh 5)
+    if (
+      s.startsWith("2") ||
+      s.includes("nhì") ||
+      s.includes("nhi") ||
+      /^ii\b/i.test(s) ||
+      /seed\s*2\b/i.test(s) ||
+      /hạt\s*giống\s*2\b/i.test(s)
+    ) {
+      return "bg-[#0a3320]/15 text-[#0a3320] dark:bg-emerald-500/20 dark:text-emerald-300 font-bold border border-[#0a3320]/30";
+    }
+    return "bg-secondary text-line/70 border border-line/20";
+  };
   const isByeMatch = Boolean(
     isByeA ||
     isByeB ||
@@ -774,23 +823,20 @@ function KoCard({
           } ${row(aWin, isLiveA, isConflictA)} ${
             m.aId ? "cursor-grab active:cursor-grabbing hover:bg-muted/40" : ""
           }`}
-          draggable={Boolean(m.aId || (seedA && !isByeA))}
+          draggable={!isKoLocked && Boolean(m.aId || (seedA && !isByeA))}
           onDragStart={(e) => {
+            if (isKoLocked) return;
             e.stopPropagation();
             onStartDragTeam?.("aId");
           }}
           onDragOver={(e) => e.preventDefault()}
-          onDrop={() => onDropTeam("aId")}
-          title={m.aId ? "Nắm kéo đội này để hoán đổi hoặc xếp sang trận khác" : undefined}
+          onDrop={() => !isKoLocked && onDropTeam("aId")}
+          title={!isKoLocked && m.aId ? "Nắm kéo đội này để hoán đổi hoặc xếp sang trận khác" : undefined}
         >
           <div className="flex items-center gap-1.5 min-w-0 flex-1">
             {seedA && (
               <span
-                className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                  isByeA
-                    ? "bg-line/15 text-line/60 border border-dashed border-line/30"
-                    : "bg-accent/15 text-accent"
-                }`}
+                className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold ${getSeedBadgeClass(seedA, isByeA)}`}
                 style={{ fontFamily: "'Space Grotesk', sans-serif" }}
               >
                 {seedA}
@@ -812,7 +858,7 @@ function KoCard({
                 ⚠️ Trùng đội
               </span>
             )}
-            {m.aId && onClearTeam && (
+            {!isKoLocked && m.aId && onClearTeam && (
               <button
                 type="button"
                 className="opacity-0 group-hover/slot:opacity-100 hover:text-red-600 p-0.5 rounded text-line/40 hover:bg-red-50 dark:hover:bg-red-950/40 transition-opacity cursor-pointer shrink-0"
@@ -848,25 +894,22 @@ function KoCard({
               ? "border-[#e44c11]/50 bg-[#e44c11]/10 dark:bg-[#e44c11]/15 shadow-xs"
               : "border-line/25 dark:border-line/30 bg-muted/25 dark:bg-muted/15"
           } ${row(bWin, isLiveB, isConflictB)} ${
-            m.bId ? "cursor-grab active:cursor-grabbing hover:bg-muted/40" : ""
+            !isKoLocked && m.bId ? "cursor-grab active:cursor-grabbing hover:bg-muted/40" : ""
           }`}
-          draggable={Boolean(m.bId || (seedB && !isByeB))}
+          draggable={!isKoLocked && Boolean(m.bId || (seedB && !isByeB))}
           onDragStart={(e) => {
+            if (isKoLocked) return;
             e.stopPropagation();
             onStartDragTeam?.("bId");
           }}
           onDragOver={(e) => e.preventDefault()}
-          onDrop={() => onDropTeam("bId")}
-          title={m.bId ? "Nắm kéo đội này để hoán đổi hoặc xếp sang trận khác" : undefined}
+          onDrop={() => !isKoLocked && onDropTeam("bId")}
+          title={!isKoLocked && m.bId ? "Nắm kéo đội này để hoán đổi hoặc xếp sang trận khác" : undefined}
         >
           <div className="flex items-center gap-1.5 min-w-0 flex-1">
             {seedB && (
               <span
-                className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                  isByeB
-                    ? "bg-line/15 text-line/60 border border-dashed border-line/30"
-                    : "bg-secondary text-line/70"
-                }`}
+                className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold ${getSeedBadgeClass(seedB, isByeB)}`}
                 style={{ fontFamily: "'Space Grotesk', sans-serif" }}
               >
                 {seedB}
@@ -888,7 +931,7 @@ function KoCard({
                 ⚠️ Trùng đội
               </span>
             )}
-            {m.bId && onClearTeam && (
+            {!isKoLocked && m.bId && onClearTeam && (
               <button
                 type="button"
                 className="opacity-0 group-hover/slot:opacity-100 hover:text-red-600 p-0.5 rounded text-line/40 hover:bg-red-50 dark:hover:bg-red-950/40 transition-opacity cursor-pointer shrink-0"
@@ -1192,12 +1235,16 @@ function SingleBridgeConnector({
 /* ---------------- Trang chính Quản lý giải ---------------- */
 
 function ManagePage() {
-  const { state, update, updateEvent, updateMatch } = useTournament();
-  const [activeId, setActiveId] = useState(state.events[0]?.id ?? "");
+  const { state, update, updateEvent, updateMatch, setSelectedEventId, toggleKoLock } = useTournament();
+  const activeId =
+    state.selectedEventId && state.events.some((e) => e.id === state.selectedEventId)
+      ? state.selectedEventId
+      : state.events[0]?.id ?? "";
   const [tab, setTab] = useState<"group" | "timeline" | "ko">("group");
   const [note, setNote] = useState("");
   const [dragMatch, setDragMatch] = useState<string | null>(null);
   const [dragEntry, setDragEntry] = useState<string | null>(null);
+  const [dragRankPlaceholder, setDragRankPlaceholder] = useState<string | null>(null);
 
   // Modal quản lý sân & trọng tài
   const [courtModalOpen, setCourtModalOpen] = useState(false);
@@ -1209,9 +1256,7 @@ function ManagePage() {
 
   // Zoom timeline (infinite range slider)
   const [colWidth, setColWidth] = useState(210);
-  const [rowHeight, setRowHeight] = useState(115);
-  // Chiều cao bảng timeline (kéo thả để mở rộng dọc)
-  const [timelineHeight, setTimelineHeight] = useState(580);
+  const [rowHeight, setRowHeight] = useState(128);
 
   // Toggles for flexible screen space
   const [showStandings, setShowStandings] = useState(true);
@@ -1327,11 +1372,13 @@ function ManagePage() {
     [state.matches, state.entries],
   );
 
-  // Danh sách các trận đang diễn ra trực tiếp
+  // Danh sách các trận đang diễn ra trực tiếp thuộc nội dung hiện tại
   const allLiveMatches = useMemo(
-    () => state.matches.filter((m) => m.status === "live"),
-    [state.matches],
+    () => state.matches.filter((m) => m.status === "live" && ev && m.eventId === ev.id),
+    [state.matches, ev],
   );
+
+  const isKoLocked = Boolean(ev && state.koLocked?.[ev.id]);
 
   if (!ev) {
     return (
@@ -1357,10 +1404,25 @@ function ManagePage() {
   const groupMatches = matches.filter((m) => m.stage === "group");
   const koMatches = matches.filter((m) => m.stage === "ko");
 
+  const hasKoProgress = useMemo(() => {
+    return koMatches.some(
+      (m) => m.aId !== null || m.scoreA !== null || m.status === "done" || m.status === "live",
+    );
+  }, [koMatches]);
+
   const buildGroups = () => {
     if (entries.length < 2) {
       setNote("Cần ít nhất 2 đội.");
       return;
+    }
+    if (hasKoProgress) {
+      if (
+        !window.confirm(
+          "⚠️ CẢNH BÁO QUAN TRỌNG:\nVòng loại trực tiếp đã có nhánh xếp cặp hoặc kết quả thi đấu!\nViệc tạo lại lịch vòng bảng sẽ làm mới danh sách trận đấu và thứ hạng. Bạn có chắc chắn muốn tiếp tục?",
+        )
+      ) {
+        return;
+      }
     }
     const fresh = generateGroupMatches(ev, entries, state.courts);
     update({
@@ -1373,6 +1435,21 @@ function ManagePage() {
   };
 
   const buildKo = () => {
+    if (isKoLocked) {
+      alert(
+        "🔒 Nhánh KO của nội dung này đang được khóa! Vui lòng bấm nút mở khóa kế bên nếu bạn muốn tạo lại nhánh.",
+      );
+      return;
+    }
+    if (koMatches.some((m) => m.scoreA !== null || m.status === "done" || m.status === "live")) {
+      if (
+        !window.confirm(
+          "⚠️ CẢNH BÁO:\nNhánh loại trực tiếp đã có trận đấu diễn ra hoặc có điểm số. Việc tạo lại nhánh KO sẽ xóa toàn bộ kết quả vòng loại trực tiếp này. Bạn có chắc chắn muốn tiếp tục?",
+        )
+      ) {
+        return;
+      }
+    }
     let fresh: Match[] = [];
     if (koType === "total") {
       fresh = generateEmptyKnockout(ev, totalKoTeams, state.courts);
@@ -1389,8 +1466,8 @@ function ManagePage() {
     setTab("ko");
     setNote(
       koType === "total"
-        ? `Đã tạo nhánh KO gồm ${totalKoTeams} đội (bảng trống để kéo thả).`
-        : `Đã tạo ${fresh.length} trận loại trực tiếp.`
+        ? `Đã tạo nhánh KO gồm ${totalKoTeams} đội.`
+        : `Đã tạo ${fresh.length} trận loại trực tiếp.`,
     );
   };
 
@@ -1426,6 +1503,11 @@ function ManagePage() {
       update({ referees: [...current, trimmed] });
       setNote(`Đã ghi nhớ trọng tài "${trimmed}"`);
     }
+  };
+
+  const handleClearReferees = () => {
+    update({ referees: [] });
+    setNote("Đã đặt lại danh sách trọng tài về trống.");
   };
 
   /* Đổi chỗ 2 trận khi kéo đè lên nhau */
@@ -1511,6 +1593,7 @@ function ManagePage() {
     onCourt: (c) => updateMatch(m.id, { court: c }),
     onReferee: (r) => updateMatch(m.id, { referee: r }),
     onAddReferee: handleAddReferee,
+    onClearReferees: handleClearReferees,
     onRemoveFromTimeline: () => {
       recordTimelineState();
       updateMatch(m.id, { timeSlot: undefined });
@@ -1810,6 +1893,10 @@ function ManagePage() {
   }, [koMatches]);
 
   const dropTeam = (targetMatch: Match, targetSide: "aId" | "bId") => {
+    if (isKoLocked) {
+      setNote("🔒 Nhánh KO đang được khóa. Hãy bấm mở khóa để chỉnh sửa vị trí.");
+      return;
+    }
     // TH 1: Kéo thả giữa các ô trong nhánh KO để đổi chỗ / hoán đổi (swap/move)
     if (dragKoSlot) {
       if (dragKoSlot.matchId === targetMatch.id && dragKoSlot.side === targetSide) {
@@ -1846,7 +1933,19 @@ function ManagePage() {
       return;
     }
 
-    // TH 2: Kéo từ bảng danh sách xếp thủ công sang
+    // TH 2: Kéo ký hiệu thứ hạng từ bảng xếp thủ công (khi vòng bảng chưa xong)
+    if (dragRankPlaceholder) {
+      const placeholderKey = targetSide === "aId" ? "customPlaceholderA" : "customPlaceholderB";
+      updateMatch(targetMatch.id, {
+        [targetSide]: null,
+        [placeholderKey]: dragRankPlaceholder,
+      } as Partial<Match>);
+      setDragRankPlaceholder(null);
+      setNote(`Đã xếp vị trí (${dragRankPlaceholder}) vào nhánh.`);
+      return;
+    }
+
+    // TH 3: Kéo từ bảng danh sách xếp thủ công sang
     if (!dragEntry) return;
     const targetGroup = ev.groups.find((g) => g.entryIds.includes(dragEntry));
     let seedBadge = "";
@@ -1919,15 +2018,18 @@ function ManagePage() {
         isConflictA={isConflictA}
         isConflictB={isConflictB}
         hasRoundConflict={hasRoundConflict}
+        isKoLocked={isKoLocked}
         onScore={(k, v) => setScore(m, k, v)}
         onStatus={(s) => updateMatch(m.id, { status: s, startedAt: s === "live" ? Date.now() : undefined } as any)}
         onReset={() => resetMatch(m)}
         onDropTeam={(side) => dropTeam(m, side)}
         onClearTeam={(side) => {
+          if (isKoLocked) return;
           updateMatch(m.id, { [side]: null, scoreA: null, scoreB: null, status: "pending" });
           setNote("Đã xóa đội khỏi ô thi đấu.");
         }}
-        onStartDragTeam={(side) =>
+        onStartDragTeam={(side) => {
+          if (isKoLocked) return;
           setDragKoSlot({
             matchId: m.id,
             side,
@@ -1936,8 +2038,8 @@ function ManagePage() {
               side === "aId"
                 ? m.customPlaceholderA
                 : m.customPlaceholderB,
-          })
-        }
+          });
+        }}
         onViewNote={(n) => setViewNoteText(n)}
         referees={state.referees}
         onReferee={(r) => updateMatch(m.id, { referee: r })}
@@ -2265,7 +2367,7 @@ function ManagePage() {
         {state.events.map((e) => (
           <button
             key={e.id}
-            onClick={() => setActiveId(e.id)}
+            onClick={() => setSelectedEventId(e.id)}
             style={{ fontFamily: "'Space Grotesk', sans-serif" }}
             className={
               e.id === ev.id
@@ -2315,7 +2417,7 @@ function ManagePage() {
                   }`}
                   title="Tạo nhánh KO với tổng số đội và để bảng trống để tự do kéo thả"
                 >
-                  Tổng số đội KO (Bảng trống)
+                  Tổng số đội KO
                 </button>
                 <button
                   type="button"
@@ -2371,9 +2473,31 @@ function ManagePage() {
                 </label>
               )}
 
-              <button className="btn-accent text-xs" onClick={buildKo}>
-                Tạo nhánh KO
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  className={`btn-accent text-xs ${isKoLocked ? "opacity-60 cursor-not-allowed" : ""}`}
+                  onClick={buildKo}
+                  title={isKoLocked ? "Nhánh KO đang khóa (bấm nút ổ khóa để mở khóa trước)" : undefined}
+                >
+                  Tạo nhánh KO
+                </button>
+                <button
+                  type="button"
+                  onClick={() => toggleKoLock(ev.id)}
+                  className={`btn-ghost text-xs font-bold flex items-center gap-1 px-2.5 py-1.5 rounded-lg border transition cursor-pointer ${
+                    isKoLocked
+                      ? "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/40"
+                      : "bg-card text-line/70 border-line/20 hover:text-ink"
+                  }`}
+                  title={
+                    isKoLocked
+                      ? "Nhánh KO đang khóa (bấm để mở khóa chỉnh sửa)"
+                      : "Khóa nhánh KO (sau khi xếp xong bấm khóa lại để không bị chỉnh sửa ngoài ý muốn)"
+                  }
+                >
+                  {isKoLocked ? "🔒 Đã khóa" : "🔓 Mở khóa"}
+                </button>
+              </div>
 
               {/* Lựa chọn dạng hiển thị 2 nhánh 2 bên hoặc 1 nhánh thẳng (Ảnh 4) */}
               <div className="flex items-center gap-1 rounded-lg bg-card p-0.5 ring-1 ring-line/20 text-xs">
@@ -2816,8 +2940,7 @@ function ManagePage() {
             {/* Bảng timeline với sticky headers */}
             <div className={`${showQueue ? "lg:col-span-9" : "lg:col-span-12"} panel overflow-hidden rounded-2xl flex flex-col`}>
               <div
-                className="relative overflow-x-auto overflow-y-auto flex-1"
-                style={{ height: `${timelineHeight}px`, maxHeight: `${timelineHeight}px` }}
+                className="relative overflow-x-auto overflow-y-visible flex-1"
                 ref={timelinePrintRef}
               >
                 {/* Đường chỉ đỏ thời gian thực */}
@@ -2985,65 +3108,12 @@ function ManagePage() {
                   })}
                 </div>
               </div>
-
-              {/* Thanh nắm kéo mở rộng bảng timeline theo chiều dọc (Drag to resize container height) */}
-              <div
-                className="flex items-center justify-center py-1.5 cursor-ns-resize bg-secondary/50 hover:bg-accent/20 border-t border-line/15 select-none transition-colors group"
-                title="Nắm và kéo xuống để mở rộng chiều cao bảng timeline, kéo lên để thu gọn"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  let currentClientY = e.clientY;
-                  let startY = e.clientY;
-                  let startH = timelineHeight;
-                  let animId: number | null = null;
-
-                  const scrollLoop = () => {
-                    const distFromBottom = window.innerHeight - currentClientY;
-                    const distFromTop = currentClientY;
-
-                    if (distFromBottom < 70 && distFromBottom >= -30) {
-                      const speed = Math.min(25, Math.max(6, Math.floor((70 - distFromBottom) / 2)));
-                      window.scrollBy({ top: speed, behavior: "auto" });
-                      setTimelineHeight((h) => Math.min(3000, h + speed));
-                    } else if (distFromTop < 70 && distFromTop >= -30) {
-                      const speed = Math.min(25, Math.max(6, Math.floor((70 - distFromTop) / 2)));
-                      window.scrollBy({ top: -speed, behavior: "auto" });
-                      setTimelineHeight((h) => Math.max(200, h - speed));
-                    }
-                    animId = requestAnimationFrame(scrollLoop);
-                  };
-
-                  animId = requestAnimationFrame(scrollLoop);
-
-                  const onMouseMove = (moveEvent: MouseEvent) => {
-                    currentClientY = moveEvent.clientY;
-                    const deltaY = moveEvent.clientY - startY;
-                    setTimelineHeight(Math.max(200, Math.min(3000, startH + deltaY)));
-                  };
-
-                  const onMouseUp = () => {
-                    if (animId !== null) cancelAnimationFrame(animId);
-                    window.removeEventListener("mousemove", onMouseMove);
-                    window.removeEventListener("mouseup", onMouseUp);
-                  };
-
-                  window.addEventListener("mousemove", onMouseMove);
-                  window.addEventListener("mouseup", onMouseUp);
-                }}
-              >
-                <div className="flex items-center gap-2 text-[11px] font-bold text-line/50 group-hover:text-accent">
-                  <span className="text-xs">⇕</span>
-                  <span>Nắm kéo để mở rộng / thu hẹp chiều dọc bảng timeline ({timelineHeight}px)</span>
-                  <span className="text-xs">⇕</span>
-                </div>
-              </div>
             </div>
 
-            {/* Cột trận chờ xếp lịch bên phải - bật/tắt linh hoạt */}
+            {/* Cột trận chờ xếp lịch bên phải - ghim cố định chạy theo màn hình khi cuộn */}
             {showQueue && (
               <div
-                className="lg:col-span-3 panel p-3 flex flex-col rounded-2xl"
-                style={{ maxHeight: `${timelineHeight + 35}px` }}
+                className="lg:col-span-3 panel p-3 flex flex-col rounded-2xl sticky top-4 self-start max-h-[calc(100vh-2rem)] z-20 shadow-md"
               >
                 <div className="flex items-center justify-between border-b border-line/10 pb-2">
                   <p className="eyebrow">Trận chờ xếp ({unassignedMatches.length})</p>
@@ -3429,7 +3499,18 @@ function ManagePage() {
 
             {/* Quản lý trọng tài */}
             <div className="border-t border-line/10 pt-4">
-              <p className="eyebrow">Danh sách trọng tài ({state.referees?.length ?? 0})</p>
+              <div className="flex items-center justify-between">
+                <p className="eyebrow">Danh sách trọng tài ({state.referees?.length ?? 0})</p>
+                {(state.referees ?? []).length > 0 && (
+                  <button
+                    type="button"
+                    className="text-xs text-red-500 hover:underline cursor-pointer"
+                    onClick={() => update({ referees: [] })}
+                  >
+                    Xóa tất cả trọng tài
+                  </button>
+                )}
+              </div>
               <div className="mt-2.5 max-h-36 space-y-1.5 overflow-y-auto pr-1">
                 {(state.referees ?? []).length === 0 ? (
                   <p className="text-xs text-line/50">Chưa có trọng tài nào được thêm.</p>

@@ -63,8 +63,8 @@ function Chip({
       onClick={onClick}
       className={
         active
-          ? "rounded-xl bg-emerald-50/90 px-4 py-3 text-sm font-bold text-emerald-900 ring-2 ring-emerald-500 border border-emerald-500 shadow-sm transition-all"
-          : "rounded-xl bg-card px-4 py-3 text-sm font-semibold text-line/80 ring-1 ring-line/20 hover:bg-card/80 transition-all"
+          ? "rounded-xl bg-[#0a3320]/10 px-4 py-3 text-sm font-bold text-[#0a3320] border border-[#0a3320] shadow-2xs transition-all"
+          : "rounded-xl bg-card px-4 py-3 text-sm font-semibold text-line/80 border border-line/20 hover:bg-card/80 transition-all"
       }
     >
       {children}
@@ -72,8 +72,22 @@ function Chip({
   );
 }
 
-const Lbl = ({ children }: { children: ReactNode }) => (
-  <p className="mt-5 text-xs font-semibold uppercase tracking-[0.15em] text-line/60">{children}</p>
+const Lbl = ({
+  children,
+  center = true,
+  className = "",
+}: {
+  children: ReactNode;
+  center?: boolean;
+  className?: string;
+}) => (
+  <p
+    className={`mt-5 text-xs font-semibold uppercase tracking-[0.15em] text-line/60 ${
+      center ? "text-center" : ""
+    } ${className}`}
+  >
+    {children}
+  </p>
 );
 
 function LiveScoringPage() {
@@ -168,25 +182,13 @@ function LiveScoringPage() {
   if (!started) {
     return (
       <div className="mx-auto max-w-lg p-4">
-        <div className="mb-4 flex items-center justify-between border-b border-line/10 pb-3">
-          <button
-            type="button"
-            onClick={() => {
-              if (match.status !== "live") {
-                updateMatch(match.id, { status: "live" });
-              }
-              setStarted(true);
-            }}
-            className="rounded-lg bg-courtdeep text-paper px-3.5 py-2 text-xs font-bold shadow-xs hover:bg-courtdeep/90 transition flex items-center gap-1.5 cursor-pointer"
-          >
-            ▶ Vào chấm điểm trực tiếp {live.a > 0 || live.b > 0 ? `(${live.a} - ${live.b})` : ""}
-          </button>
+        <div className="mb-4 flex items-center justify-center border-b border-line/10 pb-3">
           <span className="text-xs font-semibold text-line/50">Cài đặt trận đấu</span>
         </div>
-        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-line/60">
+        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-line/60 text-center">
           Chấm điểm trực tiếp
         </p>
-        <h1 className="mt-1 font-head text-2xl font-bold uppercase tracking-tight">
+        <h1 className="mt-1 font-head text-2xl font-bold uppercase tracking-tight text-center">
           {entryName(teamA)} <span className="text-line/40">vs</span> {entryName(teamB)}
         </h1>
 
@@ -265,7 +267,7 @@ function LiveScoringPage() {
         </div>
 
         <Lbl>Chọn đội giao bóng trước</Lbl>
-        <p className="text-xs text-line/60">Bấm chọn trực tiếp hoặc tung đồng xu ngẫu nhiên:</p>
+        <p className="text-xs text-line/60 text-center">Bấm chọn trực tiếp hoặc tung đồng xu ngẫu nhiên:</p>
         <div className="mt-2 grid grid-cols-2 gap-2">
           {[entryName(teamA), entryName(teamB)].map((n, i) => {
             const highlight = tossing ? tossFlash === i : tossed && live.serveTeam === i;
@@ -281,8 +283,8 @@ function LiveScoringPage() {
                 }}
                 className={
                   highlight
-                    ? "rounded-xl bg-accent/20 p-4 text-center font-head text-base font-bold text-accent ring-2 ring-accent"
-                    : "rounded-xl bg-card p-4 text-center font-head text-base font-bold text-line/70 ring-1 ring-line/20 hover:bg-card/80"
+                    ? "rounded-xl bg-[#0a3320]/10 p-4 text-center font-head text-base font-bold text-[#0a3320] border border-[#0a3320]"
+                    : "rounded-xl bg-card p-4 text-center font-head text-base font-bold text-line/70 border border-line/20 hover:bg-card/80"
                 }
               >
                 <div className="truncate py-1 text-center font-bold text-base">{n}</div>
@@ -336,11 +338,11 @@ function LiveScoringPage() {
                     tabIndex={0}
                     className={`cursor-pointer rounded-xl p-3 text-center transition-all select-none ${
                       isSelected
-                        ? "bg-emerald-50/90 ring-2 ring-emerald-500 border border-emerald-500 shadow-sm"
-                        : "bg-card ring-1 ring-line/20 hover:bg-card/80"
+                        ? "bg-[#0a3320]/10 border border-[#0a3320] shadow-2xs"
+                        : "bg-card border border-line/20 hover:bg-card/80"
                     }`}
                   >
-                    <div className={`truncate py-1 text-center font-bold text-sm ${isSelected ? "text-emerald-950 font-bold" : "text-line/80"}`}>
+                    <div className={`truncate py-1 text-center font-bold text-sm ${isSelected ? "text-[#0a3320] font-bold" : "text-line/80"}`}>
                       {n}
                     </div>
                     <input
@@ -349,7 +351,7 @@ function LiveScoringPage() {
                       value={live.playerIcons?.[n] ?? ""}
                       onClick={(e) => e.stopPropagation()}
                       onChange={(e) => setPlayerIcon(n, e.target.value)}
-                      className="mt-1.5 w-full rounded-md border border-line/20 bg-paper px-2 py-1 text-center text-xs outline-none hover:border-accent focus:border-accent"
+                      className="mt-1.5 w-full rounded-md border border-line/20 bg-paper px-2 py-1 text-center text-xs outline-none hover:border-[#0a3320] focus:border-[#0a3320]"
                     />
                   </div>
                 );
@@ -371,11 +373,11 @@ function LiveScoringPage() {
                     tabIndex={0}
                     className={`cursor-pointer rounded-xl p-3 text-center transition-all select-none ${
                       isSelected
-                        ? "bg-emerald-50/90 ring-2 ring-emerald-500 border border-emerald-500 shadow-sm"
-                        : "bg-card ring-1 ring-line/20 hover:bg-card/80"
+                        ? "bg-[#0a3320]/10 border border-[#0a3320] shadow-2xs"
+                        : "bg-card border border-line/20 hover:bg-card/80"
                     }`}
                   >
-                    <div className={`truncate py-1 text-center font-bold text-sm ${isSelected ? "text-emerald-950 font-bold" : "text-line/80"}`}>
+                    <div className={`truncate py-1 text-center font-bold text-sm ${isSelected ? "text-[#0a3320] font-bold" : "text-line/80"}`}>
                       {n}
                     </div>
                     <input
@@ -384,7 +386,7 @@ function LiveScoringPage() {
                       value={live.playerIcons?.[n] ?? ""}
                       onClick={(e) => e.stopPropagation()}
                       onChange={(e) => setPlayerIcon(n, e.target.value)}
-                      className="mt-1.5 w-full rounded-md border border-line/20 bg-paper px-2 py-1 text-center text-xs outline-none hover:border-accent focus:border-accent"
+                      className="mt-1.5 w-full rounded-md border border-line/20 bg-paper px-2 py-1 text-center text-xs outline-none hover:border-[#0a3320] focus:border-[#0a3320]"
                     />
                   </div>
                 );
