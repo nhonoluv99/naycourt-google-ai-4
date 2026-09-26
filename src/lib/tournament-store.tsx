@@ -171,11 +171,39 @@ type Ctx = {
 
 const TournamentContext = createContext<Ctx | null>(null);
 
+const DEFAULT_OLD_REFEREES = new Set(["Trọng tài chính", "Trọng tài 1", "Trọng tài 2"]);
+
+function sanitizeLoadedState(rawState: TournamentState): TournamentState {
+  const merged = { ...initialState, ...rawState };
+  const matches = (merged.matches || []).map((m) => ({
+    ...m,
+    customPlaceholderA:
+      m.customPlaceholderA && /^Hạt\s*giống\s*\d+$/i.test(m.customPlaceholderA.trim())
+        ? ""
+        : m.customPlaceholderA,
+    customPlaceholderB:
+      m.customPlaceholderB && /^Hạt\s*giống\s*\d+$/i.test(m.customPlaceholderB.trim())
+        ? ""
+        : m.customPlaceholderB,
+  }));
+
+  const hasAnyMatchReferee = matches.some((m) => Boolean(m.referee && m.referee.trim()));
+  const cleanedRefs = (merged.referees || []).filter(
+    (r) => r && r.trim() && !DEFAULT_OLD_REFEREES.has(r.trim()),
+  );
+
+  return {
+    ...merged,
+    matches,
+    referees: hasAnyMatchReferee ? cleanedRefs : [],
+  };
+}
+
 export function TournamentProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<TournamentState>(() => {
     try {
       const raw = typeof window !== "undefined" ? localStorage.getItem(STORAGE_KEY) : null;
-      if (raw) return { ...initialState, ...(JSON.parse(raw) as TournamentState) };
+      if (raw) return sanitizeLoadedState(JSON.parse(raw) as TournamentState);
     } catch {
       /* ignore */
     }
@@ -185,7 +213,7 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) setState({ ...initialState, ...(JSON.parse(raw) as TournamentState) });
+      if (raw) setState(sanitizeLoadedState(JSON.parse(raw) as TournamentState));
     } catch {
       /* ignore */
     }
@@ -797,6 +825,7 @@ export function generateKnockout(
       // - Khi đã hoàn thành toàn bộ vòng bảng: tự động điền đúng tên đội thực tế theo kết quả bảng xếp hạng.
 
       // Xếp hạng các đội Nhất bảng:
+      const hasAnyGroupScore = groupMatches.some((m) => m.scoreA !== null && m.scoreB !== null);
       const ranked1st = groups.map((g, idx) => {
         const clean = cleanGName(g.name) || String.fromCharCode(65 + idx);
         const stRow = byGroup[idx]?.rows[0];
@@ -811,7 +840,7 @@ export function generateKnockout(
         };
       });
 
-      if (allGroupMatchesDone) {
+      if (allGroupMatchesDone || hasAnyGroupScore) {
         ranked1st.sort((a, b) => {
           if (b.points !== a.points) return b.points - a.points;
           if (b.diff !== a.diff) return b.diff - a.diff;
@@ -835,7 +864,7 @@ export function generateKnockout(
         };
       });
 
-      if (allGroupMatchesDone) {
+      if (allGroupMatchesDone || hasAnyGroupScore) {
         ranked2nd.sort((a, b) => {
           if (b.points !== a.points) return b.points - a.points;
           if (b.diff !== a.diff) return b.diff - a.diff;
@@ -846,6 +875,15 @@ export function generateKnockout(
 
       const get1stByGroup = (gKey: string) => ranked1st.find((t) => t.groupKey === gKey) || ranked1st[0]!;
       const get2ndByGroup = (gKey: string) => ranked2nd.find((t) => t.groupKey === gKey) || ranked2nd[0]!;
+
+      // Thứ hạng thực tế của đội Nhì bảng (0 là Nhì xuất sắc nhất, numGroups - 1 là Nhì thấp nhất)
+      const getRank2Order = (gKey: string) => {
+        const idx = ranked2nd.findIndex((t) => t.groupKey === gKey);
+        return idx >= 0 ? idx : 999;
+      };
+      // Sắp xếp danh sách mã bảng theo thứ hạng thực tế của đội Nhì bảng (từ cao xuống thấp)
+      const sortGroupKeysBy2ndRank = (keys: string[]) =>
+        [...keys].sort((kA, kB) => getRank2Order(kA) - getRank2Order(kB));
 
       const bye = { label: "BYE", entryId: null };
       const team1 = (gKey: string) => ({
@@ -883,102 +921,138 @@ export function generateKnockout(
         ];
       } else if (numGroups === 3 && advanceN === 2 && size === 8) {
         // 3 bảng (6 đội vào Tứ kết, 2 suất BYE cho 2 hạt giống dẫn đầu g1 và g2):
-        // Top half:
-        // TK1: 1G1 vs BYE (Hạt giống 1)
-        // TK2: 2G2 vs 2G3
-        // Bottom half:
-        // TK3: 1G3 vs 2G1 (Hạt giống 3)
-        // TK4: 1G2 vs BYE (Hạt giống 2)
+        const [r2Best, r2Worst] = sortGroupKeysBy2ndRank([g2, g3]);
         slots = [
           makeSlot(team1(g1), bye),
-          makeSlot(team2(g2), team2(g3)),
+          makeSlot(team2(r2Best!), team2(r2Worst!)),
           makeSlot(team1(g3), team2(g1)),
           makeSlot(team1(g2), bye),
         ];
       } else if (numGroups === 4 && advanceN === 2 && size === 8) {
         // 4 bảng (8 đội vào Tứ kết, 0 suất BYE):
-        // TK1: 1G1 vs 2G3 (Seed 1)
-        // TK2: 1G4 vs 2G2 (Seed 4)
-        // TK3: 1G3 vs 2G1 (Seed 3)
-        // TK4: 1G2 vs 2G4 (Seed 2)
+        // Nhánh trái có Nhất bảng g1 (cao hơn) và g4 (thấp hơn) -> gặp 2 đội Nhì từ bảng [g2, g3]
+        // Đội Nhì có thứ hạng cao hơn được ưu tiên gặp đội Nhất thấp hơn (g4), tránh đội Nhất cao nhất (g1)!
+        const [leftBest2nd, leftWorst2nd] = sortGroupKeysBy2ndRank([g2, g3]);
+        // Nhánh phải có Nhất bảng g2 (cao hơn) và g3 (thấp hơn) -> gặp 2 đội Nhì từ bảng [g1, g4]
+        // Đội Nhì có thứ hạng cao hơn được ưu tiên gặp đội Nhất thấp hơn (g3), tránh đội Nhất cao hơn (g2)!
+        const [rightBest2nd, rightWorst2nd] = sortGroupKeysBy2ndRank([g1, g4]);
         slots = [
-          makeSlot(team1(g1), team2(g3)),
-          makeSlot(team1(g4), team2(g2)),
-          makeSlot(team1(g3), team2(g1)),
-          makeSlot(team1(g2), team2(g4)),
+          makeSlot(team1(g1), team2(leftWorst2nd!)),
+          makeSlot(team1(g4), team2(leftBest2nd!)),
+          makeSlot(team1(g3), team2(rightBest2nd!)),
+          makeSlot(team1(g2), team2(rightWorst2nd!)),
         ];
       } else if (numGroups === 5 && advanceN === 2 && size === 16) {
-        // 5 bảng (10 đội vào Vòng 1/8, 6 suất BYE cho 6 hạt giống cao nhất):
-        // Phân bổ hạt giống chuẩn theo nguyên tắc người dùng:
-        // Top Half (Nửa trên):
-        // K1: 1G1 vs BYE  -> 1G1 (Seed 1) vào TK1
-        // K2: 2G2 vs 2G5   -> Đội thắng vào TK1 gặp 1G1
-        // K3: 1G4 vs BYE  -> 1G4 (Seed 4) vào TK2
-        // K4: 2G3 vs BYE  -> 2G3 (Seed 5 thực tế sau đổi bảng) vào TK2 gặp 1G4
-        // Bottom Half (Nửa dưới):
-        // K5: 1G2 vs BYE  -> 1G2 (Seed 2) vào TK3
-        // K6: 2G4 vs 2G1   -> Đội thắng vào TK3 gặp 1G2
-        // K7: 1G3 vs BYE  -> 1G3 (Seed 3) vào TK4
-        // K8: 1G5 vs BYE  -> 1G5 (Seed 6 thực tế sau đổi bảng) vào TK4 gặp 1G3
+        // 5 bảng (10 đội vào Vòng 1/8, 6 suất BYE cho 5 đội Nhất bảng + 1 đội Nhì bảng có thứ hạng cao nhất):
+        // BƯỚC 1 (Cố định 4 hạt giống dẫn đầu vào 4 nhánh Tứ kết khác nhau):
+        // - Nhánh lớn bên Trái (Bán kết 1): Hạt giống 1 (1[g1] ở TK1/K1) và Hạt giống 4 (1[g4] ở TK2/K3)
+        // - Nhánh lớn bên Phải (Bán kết 2): Hạt giống 2 (1[g2] ở TK3/K5) và Hạt giống 3 (1[g3] ở TK4/K7)
+        // BƯỚC 2 (Phân 2 suất BYE còn lại là 1[g5] và 2[best2ndKey] vào K4 thuộc TK2 và K8 thuộc TK4):
+        // - Đảm bảo 2[best2ndKey] luôn nằm khác nhánh lớn với đội Nhất cùng bảng 1[best2ndKey]:
+        const best2ndKey = ranked2nd[0]?.groupKey ?? g3;
+
+        let k4Slot: { label: string; entryId: string | null }; // Gặp 1(g4) ở TK2 (Nhánh trái)
+        let k8Slot: { label: string; entryId: string | null }; // Gặp 1(g3) ở TK4 (Nhánh phải)
+        let left1stGroups: string[];
+        let right1stGroups: string[];
+
+        if (best2ndKey === g1 || best2ndKey === g4) {
+          // 1(best2ndKey) đang ở Nhánh trái -> 2(best2ndKey) bắt buộc sang Nhánh phải (K8 gặp 1[g3]), còn 1(g5) vào Nhánh trái (K4 gặp 1[g4])
+          k4Slot = team1(g5);
+          k8Slot = team2(best2ndKey);
+          left1stGroups = [g1, g4, g5];
+          right1stGroups = [g2, g3];
+        } else if (best2ndKey === g2 || best2ndKey === g3) {
+          // 1(best2ndKey) đang ở Nhánh phải -> 2(best2ndKey) bắt buộc sang Nhánh trái (K4 gặp 1[g4]), còn 1(g5) vào Nhánh phải (K8 gặp 1[g3])
+          k4Slot = team2(best2ndKey);
+          k8Slot = team1(g5);
+          left1stGroups = [g1, g4];
+          right1stGroups = [g2, g3, g5];
+        } else {
+          // best2ndKey === g5: Đặt 1(g5) ở Nhánh trái (K4 gặp 1[g4]) và 2(g5) ở Nhánh phải (K8 gặp 1[g3]) để 1(g5) và 2(g5) khác nhánh
+          k4Slot = team1(g5);
+          k8Slot = team2(best2ndKey);
+          left1stGroups = [g1, g4, g5];
+          right1stGroups = [g2, g3];
+        }
+
+        // BƯỚC 3 (Phân 4 đội Nhì còn lại vào trận K2 ở Nhánh trái và trận K6 ở Nhánh phải):
+        // - Các đội Nhì thuộc các bảng có đội Nhất nằm ở Nhánh phải (right1stGroups) sẽ sang Nhánh trái (K2)
+        // - Các đội Nhì thuộc các bảng có đội Nhất nằm ở Nhánh trái (left1stGroups) sẽ sang Nhánh phải (K6)
+        // Nhờ vậy mỗi nhánh lớn (Trái / Phải) có đúng 5 đội từ 5 bảng khác nhau, tuyệt đối không trùng bảng!
+        const rem2ndKeys = ranked2nd
+          .slice(1)
+          .map((r) => r.groupKey);
+
+        const forLeftK2 = sortGroupKeysBy2ndRank(
+          rem2ndKeys.filter((k) => right1stGroups.includes(k)),
+        );
+        const forRightK6 = sortGroupKeysBy2ndRank(
+          rem2ndKeys.filter((k) => left1stGroups.includes(k)),
+        );
+
+        const [leftP1 = rem2ndKeys[0]!, leftP2 = rem2ndKeys[1]!] = forLeftK2;
+        const [rightP1 = rem2ndKeys[2]!, rightP2 = rem2ndKeys[3]!] = forRightK6;
+
         slots = [
           makeSlot(team1(g1), bye),
-          makeSlot(team2(g2), team2(g5)),
+          makeSlot(team2(leftP1), team2(leftP2)),
           makeSlot(team1(g4), bye),
-          makeSlot(team2(g3), bye),
+          makeSlot(k4Slot, bye),
           makeSlot(team1(g2), bye),
-          makeSlot(team2(g4), team2(g1)),
+          makeSlot(team2(rightP1), team2(rightP2)),
           makeSlot(team1(g3), bye),
-          makeSlot(team1(g5), bye),
+          makeSlot(k8Slot, bye),
         ];
       } else if (numGroups === 6 && advanceN === 2 && size === 16) {
-        // 6 bảng (12 đội vào Vòng 1/8, 4 suất BYE cho top 4 hạt giống):
-        // Top Half:
-        // K1: 1G1 vs BYE
-        // K2: 2G2 vs 2G6
-        // K3: 1G5 vs 2G3
-        // K4: 1G4 vs BYE
-        // Bottom Half:
-        // K5: 1G2 vs BYE
-        // K6: 2G1 vs 2G5
-        // K7: 1G6 vs 2G4
-        // K8: 1G3 vs BYE
+        // 6 bảng (12 đội vào Vòng 1/8, 4 suất BYE cho top 4 hạt giống Nhất bảng):
+        // Nhánh trái có Nhất: g1, g4, g5 -> nhận 3 đội Nhì từ bảng [g2, g3, g6]
+        const [l2_1, l2_2, l2_3] = sortGroupKeysBy2ndRank([g2, g3, g6]);
+        // Nhánh phải có Nhất: g2, g3, g6 -> nhận 3 đội Nhì từ bảng [g1, g4, g5]
+        const [r2_1, r2_2, r2_3] = sortGroupKeysBy2ndRank([g1, g4, g5]);
+        // Đội Nhì cao nhất mỗi nhánh (l2_1, r2_1) gặp đội Nhất thấp nhất nhánh đó (g5, g6); 2 đội Nhì thấp hơn đấu nhau
         slots = [
           makeSlot(team1(g1), bye),
-          makeSlot(team2(g2), team2(g6)),
-          makeSlot(team1(g5), team2(g3)),
+          makeSlot(team2(l2_2!), team2(l2_3!)),
+          makeSlot(team1(g5), team2(l2_1!)),
           makeSlot(team1(g4), bye),
           makeSlot(team1(g2), bye),
-          makeSlot(team2(g1), team2(g5)),
-          makeSlot(team1(g6), team2(g4)),
+          makeSlot(team2(r2_2!), team2(r2_3!)),
+          makeSlot(team1(g6), team2(r2_1!)),
           makeSlot(team1(g3), bye),
         ];
       } else if (numGroups === 7 && advanceN === 2 && size === 16) {
         // 7 bảng (14 đội vào Vòng 1/8, 2 suất BYE cho Seed 1 & Seed 2):
-        // Ưu tiên tối đa Nhất gặp Nhì, hạn chế Nhất gặp Nhất và Nhì gặp Nhì:
-        // 1(g1) và 1(g2) nhận 2 suất BYE.
-        // Chỉ duy nhất 1 trận Nhì gặp Nhì (2G2 vs 2G6) để đội thắng gặp 1G1 ở Tứ kết.
-        // Toàn bộ 5 trận còn lại đều là Nhất gặp Nhì (tuyệt đối không có Nhất gặp Nhất):
+        // Nhánh trái có Nhất: g1 (BYE ở TK1), g4 & g5 (ở TK2) -> nhận 4 đội Nhì từ [g2, g3, g6, g7]
+        const [l2_1, l2_2, l2_3, l2_4] = sortGroupKeysBy2ndRank([g2, g3, g6, g7]);
+        // Nhánh phải có Nhất: g2 (BYE ở TK3) & g7 (TK3), g3 & g6 (ở TK4) -> nhận 3 đội Nhì từ [g1, g4, g5]
+        const [r2_1, r2_2, r2_3] = sortGroupKeysBy2ndRank([g1, g4, g5]);
         slots = [
           makeSlot(team1(g1), bye),
-          makeSlot(team2(g2), team2(g6)),
-          makeSlot(team1(g5), team2(g3)),
-          makeSlot(team1(g4), team2(g7)),
+          makeSlot(team2(l2_3!), team2(l2_4!)),
+          makeSlot(team1(g5), team2(l2_1!)),
+          makeSlot(team1(g4), team2(l2_2!)),
           makeSlot(team1(g2), bye),
-          makeSlot(team1(g6), team2(g4)),
-          makeSlot(team1(g7), team2(g1)),
-          makeSlot(team1(g3), team2(g5)),
+          makeSlot(team1(g7), team2(r2_1!)),
+          makeSlot(team1(g6), team2(r2_2!)),
+          makeSlot(team1(g3), team2(r2_3!)),
         ];
       } else if (numGroups === 8 && advanceN === 2 && size === 16) {
         // 8 bảng (16 đội vào Vòng 1/8, 0 suất BYE):
+        // Nhánh trái có Nhất: g1 & g8 (TK1), g4 & g5 (TK2) -> gặp 4 đội Nhì từ [g2, g3, g6, g7]
+        const [l2_1, l2_2, l2_3, l2_4] = sortGroupKeysBy2ndRank([g2, g3, g6, g7]);
+        // Nhánh phải có Nhất: g2 & g7 (TK3), g3 & g6 (TK4) -> gặp 4 đội Nhì từ [g1, g4, g5, g8]
+        const [r2_1, r2_2, r2_3, r2_4] = sortGroupKeysBy2ndRank([g1, g4, g5, g8]);
+        // Đội Nhì hạng cao hơn luôn ưu tiên gặp đội Nhất hạng thấp hơn trong nhánh:
         slots = [
-          makeSlot(team1(g1), team2(g8)),
-          makeSlot(team1(g8), team2(g2)),
-          makeSlot(team1(g5), team2(g3)),
-          makeSlot(team1(g4), team2(g6)),
-          makeSlot(team1(g3), team2(g5)),
-          makeSlot(team1(g6), team2(g4)),
-          makeSlot(team1(g7), team2(g1)),
-          makeSlot(team1(g2), team2(g7)),
+          makeSlot(team1(g1), team2(l2_4!)),
+          makeSlot(team1(g8), team2(l2_1!)),
+          makeSlot(team1(g5), team2(l2_2!)),
+          makeSlot(team1(g4), team2(l2_3!)),
+          makeSlot(team1(g2), team2(r2_4!)),
+          makeSlot(team1(g7), team2(r2_1!)),
+          makeSlot(team1(g6), team2(r2_2!)),
+          makeSlot(team1(g3), team2(r2_3!)),
         ];
       } else {
         // Thuật toán tổng quát cho mọi số bảng khác:
@@ -1115,8 +1189,8 @@ export function generateEmptyKnockout(
       const isFirst = current === size;
       const seedA = isFirst ? seedOrder[2 * i] : undefined;
       const seedB = isFirst ? seedOrder[2 * i + 1] : undefined;
-      const pA = seedA ? (seedA <= totalTeams ? `Hạt giống ${seedA}` : "BYE") : "";
-      const pB = seedB ? (seedB <= totalTeams ? `Hạt giống ${seedB}` : "BYE") : "";
+      const pA = seedA ? (seedA <= totalTeams ? "" : "BYE") : "";
+      const pB = seedB ? (seedB <= totalTeams ? "" : "BYE") : "";
 
       matches.push({
         id: uid(),
@@ -1160,7 +1234,173 @@ export function generateEmptyKnockout(
     });
   }
 
-  return matches;
+  return propagateKnockout(matches, ev.id, ev);
+}
+
+/**
+ * Tự động xếp nhánh loại trực tiếp theo quy luật thứ hạng chữ cái bảng (A, B, C, D...):
+ * - Không xét điểm số hay hiệu số giữa các bảng trên BXH, mà cố định theo vị trí chữ cái bảng:
+ *   + Nhánh trái (nửa đầu vòng 1): 1A vs 2B, 1C vs 2D, 1E vs 2F, 1G vs 2H...
+ *   + Nhánh phải (nửa sau vòng 1): 1B vs 2A, 1D vs 2C, 1F vs 2E, 1H vs 2G...
+ * - Nếu vòng bảng chưa kết thúc hoàn toàn: chỉ hiển thị ký hiệu thứ hạng bảng (1A, 2B...), để trống tên đội.
+ * - Khi toàn bộ vòng bảng kết thúc: tự động điền tên đội tương ứng vào vị trí thứ hạng bảng.
+ */
+export function generateAlphabeticalKnockout(
+  ev: TEvent,
+  entries: Entry[],
+  groupMatches: Match[],
+  totalTeams: number,
+  courts: string[],
+): Match[] {
+  const groups =
+    ev.groups.length > 0
+      ? ev.groups
+      : [{ name: "Bảng A", entryIds: entries.map((e) => e.id) }];
+
+  const cleanGName = (name: string, idx: number) =>
+    name.replace(/^Bảng\s+/i, "").trim().toUpperCase() || String.fromCharCode(65 + idx);
+
+  const byGroup = groups.map((g, idx) => ({
+    key: cleanGName(g.name, idx),
+    rows: computeStandings(
+      g.entryIds,
+      groupMatches.filter((m) => m.groupName === g.name),
+      ev,
+    ),
+  }));
+
+  const allGroupMatchesDone =
+    groupMatches.length > 0 && groupMatches.every((m) => m.status === "done");
+
+  const numGroups = byGroup.length;
+  const targetTeams = Math.max(2, numGroups >= 2 ? numGroups * 2 : totalTeams);
+  let size = 2;
+  while (size < targetTeams) {
+    size *= 2;
+  }
+
+  const numMatchesR1 = size / 2;
+  const halfMatches = Math.max(1, Math.floor(numMatchesR1 / 2));
+
+  interface SlotPair {
+    aId: string | null;
+    bId: string | null;
+    placeholderA: string;
+    placeholderB: string;
+  }
+
+  const firstRoundSlots: SlotPair[] = Array.from({ length: numMatchesR1 }, () => ({
+    aId: null,
+    bId: null,
+    placeholderA: "",
+    placeholderB: "",
+  }));
+
+  const numGroupPairs = Math.floor(numGroups / 2);
+  for (let p = 0; p < numGroupPairs; p++) {
+    const gOdd = byGroup[2 * p]!; // A, C, E, G...
+    const gEven = byGroup[2 * p + 1]!; // B, D, F, H...
+
+    // Nhánh trái: 1A vs 2B, 1C vs 2D, 1E vs 2F, 1G vs 2H...
+    if (p < halfMatches) {
+      firstRoundSlots[p] = {
+        aId: allGroupMatchesDone ? (gOdd.rows[0]?.entryId ?? null) : null,
+        bId: allGroupMatchesDone ? (gEven.rows[1]?.entryId ?? null) : null,
+        placeholderA: `1${gOdd.key}`,
+        placeholderB: `2${gEven.key}`,
+      };
+    }
+
+    // Nhánh phải: 1B vs 2A, 1D vs 2C, 1F vs 2E, 1H vs 2G...
+    const rightIdx = halfMatches + p;
+    if (rightIdx < numMatchesR1) {
+      firstRoundSlots[rightIdx] = {
+        aId: allGroupMatchesDone ? (gEven.rows[0]?.entryId ?? null) : null,
+        bId: allGroupMatchesDone ? (gOdd.rows[1]?.entryId ?? null) : null,
+        placeholderA: `1${gEven.key}`,
+        placeholderB: `2${gOdd.key}`,
+      };
+    }
+  }
+
+  // Nếu có bảng lẻ dư ra (trường hợp số bảng lẻ)
+  if (numGroups % 2 === 1) {
+    const gLast = byGroup[numGroups - 1]!;
+    const leftExtraIdx = numGroupPairs;
+    const rightExtraIdx = halfMatches + numGroupPairs;
+    if (leftExtraIdx < halfMatches) {
+      firstRoundSlots[leftExtraIdx] = {
+        aId: allGroupMatchesDone ? (gLast.rows[0]?.entryId ?? null) : null,
+        bId: null,
+        placeholderA: `1${gLast.key}`,
+        placeholderB: "BYE",
+      };
+    }
+    if (rightExtraIdx < numMatchesR1) {
+      firstRoundSlots[rightExtraIdx] = {
+        aId: allGroupMatchesDone ? (gLast.rows[1]?.entryId ?? null) : null,
+        bId: null,
+        placeholderA: `2${gLast.key}`,
+        placeholderB: "BYE",
+      };
+    }
+  }
+
+  const courtList = courts.length ? courts : ["Sân 1"];
+  let courtCursor = 0;
+  const matches: Match[] = [];
+  let roundIdx = 1;
+  let current = size;
+
+  while (current >= 2) {
+    const label = KO_LABEL(current);
+    const matchCount = current / 2;
+    for (let i = 0; i < matchCount; i++) {
+      const isFirst = current === size;
+      const slotData = isFirst ? firstRoundSlots[i] : null;
+      matches.push({
+        id: uid(),
+        eventId: ev.id,
+        stage: "ko",
+        groupName: label,
+        round: roundIdx,
+        koRound: label,
+        slot: i,
+        aId: slotData?.aId ?? null,
+        bId: slotData?.bId ?? null,
+        customPlaceholderA: slotData?.placeholderA ?? "",
+        customPlaceholderB: slotData?.placeholderB ?? "",
+        scoreA: null,
+        scoreB: null,
+        court: courtList[courtCursor++ % courtList.length]!,
+        referee: "",
+        status: "pending",
+      });
+    }
+    roundIdx++;
+    current /= 2;
+  }
+
+  if (ev.thirdPlace && size >= 4) {
+    matches.push({
+      id: uid(),
+      eventId: ev.id,
+      stage: "ko",
+      groupName: "Tranh hạng 3",
+      round: roundIdx - 1,
+      koRound: "Tranh hạng 3",
+      slot: 99,
+      aId: null,
+      bId: null,
+      scoreA: null,
+      scoreB: null,
+      court: courtList[courtCursor++ % courtList.length]!,
+      referee: "",
+      status: "pending",
+    });
+  }
+
+  return propagateKnockout(matches, ev.id, ev, groupMatches);
 }
 
 /** Đẩy đội thắng/thua sang vòng kế tiếp trong nhánh loại trực tiếp & cập nhật bảng 3 đội / vòng bảng. */
@@ -1203,9 +1443,13 @@ export function propagateKnockout(
 
     groupNames.forEach((gn) => {
       const thisGroupMatches = gMatches.filter((m) => m.groupName === gn);
-      const entryIds = Array.from(
-        new Set(thisGroupMatches.flatMap((m) => [m.aId, m.bId]).filter((id): id is string => Boolean(id))),
-      );
+      const govGroup = ev?.groups.find((g) => g.name === gn);
+      const entryIds =
+        govGroup && govGroup.entryIds.length > 0
+          ? govGroup.entryIds
+          : Array.from(
+              new Set(thisGroupMatches.flatMap((m) => [m.aId, m.bId]).filter((id): id is string => Boolean(id))),
+            );
       if (entryIds.length > 0) {
         const eventConfig = ev ?? {
           id: eventId,
@@ -1226,6 +1470,12 @@ export function propagateKnockout(
     });
 
     const allGroupDone = gMatches.length > 0 && gMatches.every((m) => m.status === "done");
+
+    const isRankToken = (placeholder?: string) => {
+      if (!placeholder) return false;
+      const clean = placeholder.trim();
+      return /^(?:Nhất|Nhì|Ba|Tư|I|II|III|IV|[1-4])\s*(?:bảng\s*)?([A-Za-z0-9]+)$/i.test(clean);
+    };
 
     const resolveTeam = (placeholder?: string) => {
       if (!placeholder) return null;
@@ -1265,6 +1515,13 @@ export function propagateKnockout(
           if (resolvedA) m.aId = resolvedA;
           const resolvedB = resolveTeam(m.customPlaceholderB);
           if (resolvedB) m.bId = resolvedB;
+        }
+      });
+    } else {
+      updated.forEach((m) => {
+        if (m.eventId === eventId && m.stage === "ko" && m.round === 1 && m.scoreA === null && m.scoreB === null) {
+          if (isRankToken(m.customPlaceholderA)) m.aId = null;
+          if (isRankToken(m.customPlaceholderB)) m.bId = null;
         }
       });
     }

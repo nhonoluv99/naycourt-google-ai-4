@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState, useRef } from "react";
+import { createPortal } from "react-dom";
 import * as React from "react";
 import html2canvas from "html2canvas";
 import {
@@ -8,6 +9,7 @@ import {
   buildTimeline,
   computeStandings,
   entryName,
+  generateAlphabeticalKnockout,
   generateEmptyKnockout,
   generateGroupMatches,
   generateKnockout,
@@ -46,10 +48,12 @@ function ScoreBox({
   value,
   onCommit,
   isWinning,
+  compact,
 }: {
   value: number | null;
   onCommit: (v: number | null) => void;
   isWinning?: boolean;
+  compact?: boolean;
 }) {
   const [raw, setRaw] = useState(value === null ? "" : String(value));
   useEffect(() => {
@@ -57,7 +61,9 @@ function ScoreBox({
   }, [value]);
   return (
     <input
-      className={`w-11 rounded-md px-1 py-1 text-center text-sm font-bold ring-1 outline-none focus:ring-2 focus:ring-[#e44c11] transition-all ${
+      className={`${
+        compact ? "w-9 px-1 py-0.5 text-xs" : "w-11 px-1 py-1 text-sm"
+      } rounded-md text-center font-bold ring-1 outline-none focus:ring-2 focus:ring-[#e44c11] transition-all shrink-0 ${
         isWinning
           ? "bg-[#e44c11]/15 text-[#e44c11] ring-2 ring-[#e44c11] font-bold shadow-xs"
           : "bg-card text-ink ring-line/20"
@@ -83,19 +89,62 @@ function RefereeSelector({
   onSelect,
   onAddReferee,
   onClearReferees,
+  compactWidth,
 }: {
   value?: string;
   referees: string[];
   onSelect: (r: string) => void;
   onAddReferee?: (r: string) => void;
   onClearReferees?: () => void;
+  compactWidth?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState(value || "");
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
 
   useEffect(() => {
     setText(value || "");
   }, [value]);
+
+  const updatePosition = () => {
+    const el = triggerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const menuWidth = Math.max(200, rect.width);
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8));
+
+    if (spaceBelow < 230 && rect.top > 230) {
+      setDropdownStyle({
+        position: "fixed",
+        left: `${left}px`,
+        bottom: `${window.innerHeight - rect.top + 4}px`,
+        width: `${menuWidth}px`,
+        zIndex: 9999,
+      });
+    } else {
+      setDropdownStyle({
+        position: "fixed",
+        left: `${left}px`,
+        top: `${rect.bottom + 4}px`,
+        width: `${menuWidth}px`,
+        zIndex: 9999,
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    updatePosition();
+    const handleScrollOrResize = () => updatePosition();
+    window.addEventListener("scroll", handleScrollOrResize, true);
+    window.addEventListener("resize", handleScrollOrResize);
+    return () => {
+      window.removeEventListener("scroll", handleScrollOrResize, true);
+      window.removeEventListener("resize", handleScrollOrResize);
+    };
+  }, [open]);
 
   const commit = (name: string) => {
     const trimmed = name.trim();
@@ -106,11 +155,13 @@ function RefereeSelector({
   };
 
   return (
-    <div className="relative inline-block text-left">
+    <div ref={triggerRef} className="relative inline-block text-left">
       <div className="flex items-center rounded-md bg-card ring-1 ring-line/20 focus-within:ring-accent">
         <input
           type="text"
-          className="w-24 px-1.5 py-0.5 text-[11px] outline-none bg-transparent"
+          className={`${
+            compactWidth ? "w-[68px]" : "w-24"
+          } px-1.5 py-0.5 text-[11px] outline-none bg-transparent truncate`}
           placeholder="Trọng tài..."
           value={text}
           onChange={(e) => {
@@ -129,70 +180,82 @@ function RefereeSelector({
         <button
           type="button"
           tabIndex={-1}
-          className="px-1 text-[10px] text-line/50 hover:text-ink cursor-pointer"
+          className="px-1 text-[10px] text-line/50 hover:text-ink cursor-pointer shrink-0"
           onClick={() => setOpen((prev) => !prev)}
         >
           ▾
         </button>
       </div>
 
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute left-0 bottom-full mb-1 z-50 min-w-[180px] max-h-56 overflow-y-auto rounded-lg border border-line/20 bg-card p-1 shadow-2xl text-xs">
-            <div className="flex items-center justify-between px-2 py-1 text-[10px] font-bold text-line/50 uppercase tracking-wider">
-              <span>Danh sách trọng tài</span>
-              {referees.length > 0 && onClearReferees && (
-                <button
-                  type="button"
-                  className="text-red-500 hover:text-red-700 cursor-pointer font-normal text-[10px] lowercase"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onClearReferees();
-                  }}
-                  title="Xóa toàn bộ bộ nhớ trọng tài của giải này"
-                >
-                  Xóa bộ nhớ
-                </button>
-              )}
-            </div>
-            {referees.length === 0 ? (
-              <div className="px-2 py-1.5 text-[11px] text-line/50 italic">
-                Chưa có trọng tài. Nhập tên để ghi nhớ.
+      {open &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <>
+            <div className="fixed inset-0 z-[9998]" onClick={() => setOpen(false)} />
+            <div
+              style={dropdownStyle}
+              className="max-h-60 overflow-y-auto rounded-xl border border-line/25 bg-card p-1.5 shadow-2xl ring-1 ring-black/10 text-xs"
+            >
+              <div className="flex items-center justify-between px-2 py-1 text-[10px] font-bold text-line/60 uppercase tracking-wider border-b border-line/10 mb-1">
+                <span>Danh sách trọng tài</span>
+                {referees.length > 0 && onClearReferees && (
+                  <button
+                    type="button"
+                    className="text-red-500 hover:text-red-700 cursor-pointer font-semibold text-[10px] normal-case"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onClearReferees();
+                    }}
+                    title="Xóa toàn bộ bộ nhớ trọng tài của giải này"
+                  >
+                    Xóa bộ nhớ
+                  </button>
+                )}
               </div>
-            ) : (
-              referees.map((r) => (
+              {referees.length === 0 ? (
+                <div className="px-2 py-2 text-[11px] text-line/50 italic">
+                  Chưa có trọng tài. Nhập tên để ghi nhớ cho giải này.
+                </div>
+              ) : (
+                <div className="space-y-0.5">
+                  {referees.map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      className={`w-full text-left px-2 py-1.5 rounded-lg text-xs hover:bg-accent/15 transition truncate cursor-pointer flex items-center justify-between ${
+                        r === value ? "font-bold text-accent bg-accent/10" : "text-ink"
+                      }`}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setText(r);
+                        commit(r);
+                        setOpen(false);
+                      }}
+                    >
+                      <span className="truncate">{r}</span>
+                      {r === value && <span className="text-[10px] text-accent shrink-0 ml-1">✓</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {text.trim() && !referees.includes(text.trim()) && (
                 <button
-                  key={r}
                   type="button"
-                  className={`w-full text-left px-2 py-1.5 rounded text-[11px] hover:bg-accent/10 transition truncate cursor-pointer ${
-                    r === value ? "font-bold text-accent bg-accent/10" : "text-ink"
-                  }`}
-                  onClick={() => {
-                    setText(r);
-                    commit(r);
+                  className="w-full text-left px-2 py-1.5 rounded-lg text-xs text-accent font-bold hover:bg-accent/15 transition border-t border-line/10 mt-1 cursor-pointer"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    commit(text);
                     setOpen(false);
                   }}
                 >
-                  {r}
+                  + Thêm "{text.trim()}"
                 </button>
-              ))
-            )}
-            {text.trim() && !referees.includes(text.trim()) && (
-              <button
-                type="button"
-                className="w-full text-left px-2 py-1.5 rounded text-[11px] text-accent font-semibold hover:bg-accent/10 transition border-t border-line/10 mt-1 cursor-pointer"
-                onClick={() => {
-                  commit(text);
-                  setOpen(false);
-                }}
-              >
-                + Thêm "{text.trim()}"
-              </button>
-            )}
-          </div>
-        </>
-      )}
+              )}
+            </div>
+          </>,
+          document.body,
+        )}
     </div>
   );
 }
@@ -379,25 +442,31 @@ function MatchCard({
 
   return (
     <div
-      className={`group relative rounded-xl ring-1 transition-all select-none flex flex-col justify-between overflow-hidden ${
-        compact ? "cursor-grab active:cursor-grabbing" : ""
+      className={`group relative rounded-xl transition-all select-none flex flex-col justify-between box-border ${
+        compact ? "cursor-grab active:cursor-grabbing overflow-hidden" : "ring-1"
       } ${
-        compact ? (isUltraCompact ? "p-1" : isMidCompact ? "p-1.5" : "p-2") : "p-2.5"
+        compact ? (isUltraCompact ? "p-1" : isMidCompact ? "p-1" : "p-1.5") : "p-2.5"
       } ${
         hasConflict
-          ? "ring-1 ring-red-500 border border-red-500 shadow-sm"
+          ? compact
+            ? "border-2 border-red-500 shadow-sm"
+            : "ring-1 ring-red-500 border border-red-500 shadow-sm"
           : m.status === "live"
-            ? "ring-2 ring-red-500 shadow-md bg-red-50/70 dark:bg-red-950/20"
-            : "ring-line/15"
+            ? compact
+              ? "border-2 border-red-500 shadow-md bg-red-50/70 dark:bg-red-950/20"
+              : "ring-2 ring-red-500 shadow-md bg-red-50/70 dark:bg-red-950/20"
+            : compact
+              ? "border border-line/15"
+              : "ring-line/15"
       }`}
       style={{
         backgroundColor: m.status === "live" ? undefined : m.status === "done" ? "var(--muted)" : c.bg,
         height: compact ? "100%" : undefined,
-        maxHeight: compact ? `${Math.max(40, rowHeight - 6)}px` : undefined,
+        maxHeight: compact ? "100%" : undefined,
       }}
       title={compact ? "Nắm giữ thẻ trận đấu để kéo thả sang sân khác hoặc đổi giờ thi đấu" : undefined}
     >
-      <div className="flex items-center justify-between gap-1">
+      <div className="flex items-center justify-between gap-1 shrink-0">
         <div className="flex items-center gap-1.5 min-w-0">
           <span
             className="rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide shrink-0"
@@ -449,9 +518,9 @@ function MatchCard({
         </div>
       </div>
 
-      <div className="mt-2 space-y-1.5">
+      <div className={compact ? "mt-1 space-y-1 min-h-0" : "mt-2 space-y-1.5"}>
         <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1 min-w-0 flex-1">
+          <div className={`flex items-center gap-1 min-w-0 flex-1 ${compact ? "text-xs" : ""}`}>
             <PlayerNameDisplay
               entry={entryA}
               fallback={nameA}
@@ -460,11 +529,11 @@ function MatchCard({
               isMatchLive={m.status === "live"}
             />
           </div>
-          <ScoreBox value={m.scoreA} onCommit={(v) => onScore("scoreA", v)} isWinning={aWin} />
+          <ScoreBox value={m.scoreA} onCommit={(v) => onScore("scoreA", v)} isWinning={aWin} compact={compact} />
         </div>
 
         <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1 min-w-0 flex-1">
+          <div className={`flex items-center gap-1 min-w-0 flex-1 ${compact ? "text-xs" : ""}`}>
             <PlayerNameDisplay
               entry={entryB}
               fallback={nameB}
@@ -473,7 +542,7 @@ function MatchCard({
               isMatchLive={m.status === "live"}
             />
           </div>
-          <ScoreBox value={m.scoreB} onCommit={(v) => onScore("scoreB", v)} isWinning={bWin} />
+          <ScoreBox value={m.scoreB} onCommit={(v) => onScore("scoreB", v)} isWinning={bWin} compact={compact} />
         </div>
       </div>
 
@@ -481,11 +550,11 @@ function MatchCard({
       {compact ? (
         /* Trên Timeline: thanh thao tác hiển thị rõ chữ bắt đầu và chấm điểm */
         rowHeight >= 65 ? (
-          <div className="mt-1 flex items-center justify-between gap-1 border-t border-line/10 pt-1 text-[10px]">
-            <div className="flex items-center gap-1">
+          <div className="mt-1 flex items-center justify-between gap-1 border-t border-line/10 pt-1 text-[10px] shrink-0">
+            <div className="flex items-center gap-1 shrink-0">
               {m.status === "done" ? (
                 <button
-                  className="btn-ghost !px-1.5 !py-0.5 text-[9px] whitespace-nowrap cursor-pointer"
+                  className="btn-ghost !px-1.5 !py-0.5 text-[10px] whitespace-nowrap cursor-pointer"
                   style={{ fontFamily: "'Space Grotesk', sans-serif" }}
                   onClick={onReset}
                 >
@@ -493,7 +562,7 @@ function MatchCard({
                 </button>
               ) : (
                 <button
-                  className={`btn-ghost !px-1.5 !py-0.5 text-[9px] whitespace-nowrap cursor-pointer ${
+                  className={`btn-ghost !px-1.5 !py-0.5 text-[10px] whitespace-nowrap cursor-pointer ${
                     m.status === "live" ? "text-red-600 font-bold" : ""
                   }`}
                   style={{ fontFamily: "'Space Grotesk', sans-serif" }}
@@ -507,7 +576,7 @@ function MatchCard({
               to="/cham-diem/$matchId"
               params={{ matchId: m.id } as any}
               style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-              className="btn-ghost !px-1.5 !py-0.5 text-[9px] flex items-center gap-0.5 whitespace-nowrap font-medium cursor-pointer"
+              className="btn-ghost !px-1.5 !py-0.5 text-[10px] flex items-center gap-0.5 whitespace-nowrap font-medium cursor-pointer shrink-0"
             >
               ⚡ Chấm điểm
             </Link>
@@ -613,7 +682,7 @@ function MatchCard({
               if (newDur !== currentDur) {
                 currentDur = newDur;
                 if (wrapper) {
-                  const newW = Math.max(36, Math.round((newDur / slotMins) * (colWidth || 210) - 6));
+                  const newW = Math.max(36, Math.round((newDur / slotMins) * (colWidth || 210) - 9));
                   wrapper.style.width = `${newW}px`;
                 }
               }
@@ -663,6 +732,7 @@ function KoCard({
   referees = [],
   onReferee,
   onAddReferee,
+  onClearReferees,
 }: {
   m: Match;
   nameA: string;
@@ -688,6 +758,7 @@ function KoCard({
   referees?: string[];
   onReferee?: (r: string) => void;
   onAddReferee?: (r: string) => void;
+  onClearReferees?: () => void;
   key?: React.Key;
 }) {
   const aWin = m.scoreA !== null && m.scoreB !== null && m.scoreA > m.scoreB;
@@ -697,6 +768,7 @@ function KoCard({
   const formatSeed = (str?: string | null) => {
     if (!str) return null;
     const clean = str.trim();
+    if (!clean || /^Hạt\s*giống\s*\d+$/i.test(clean)) return null;
     if (/^bye$/i.test(clean)) return "BYE";
     return clean
       .replace(/^Nhất\s+/i, "1")
@@ -776,7 +848,7 @@ function KoCard({
 
   return (
     <div
-      className={`relative rounded-xl ${matchFrameBorder} bg-card shadow-xs overflow-hidden transition-all`}
+      className={`relative rounded-xl ${matchFrameBorder} bg-card shadow-xs transition-all`}
       style={{ borderWidth: "1.2px" }}
     >
       <div
@@ -858,11 +930,11 @@ function KoCard({
                 ⚠️ Trùng đội
               </span>
             )}
-            {!isKoLocked && m.aId && onClearTeam && (
+            {!isKoLocked && (m.aId || (seedA && !isByeA)) && onClearTeam && (
               <button
                 type="button"
                 className="opacity-0 group-hover/slot:opacity-100 hover:text-red-600 p-0.5 rounded text-line/40 hover:bg-red-50 dark:hover:bg-red-950/40 transition-opacity cursor-pointer shrink-0"
-                title="Xóa đội khỏi ô này (Ảnh 1)"
+                title="Xóa đội / thứ hạng khỏi ô này"
                 onClick={(e) => {
                   e.stopPropagation();
                   onClearTeam("aId");
@@ -931,11 +1003,11 @@ function KoCard({
                 ⚠️ Trùng đội
               </span>
             )}
-            {!isKoLocked && m.bId && onClearTeam && (
+            {!isKoLocked && (m.bId || (seedB && !isByeB)) && onClearTeam && (
               <button
                 type="button"
                 className="opacity-0 group-hover/slot:opacity-100 hover:text-red-600 p-0.5 rounded text-line/40 hover:bg-red-50 dark:hover:bg-red-950/40 transition-opacity cursor-pointer shrink-0"
-                title="Xóa đội khỏi ô này (Ảnh 1)"
+                title="Xóa đội / thứ hạng khỏi ô này"
                 onClick={(e) => {
                   e.stopPropagation();
                   onClearTeam("bId");
@@ -959,11 +1031,11 @@ function KoCard({
         </div>
       </div>
 
-      <div className="flex items-center justify-between gap-1.5 bg-secondary/50 px-2 py-1.5 border-t border-line/10 rounded-b-xl">
-        <div className="flex items-center gap-1">
+      <div className="flex items-center justify-between gap-1 bg-secondary/50 px-1.5 py-1.5 border-t border-line/10 rounded-b-xl whitespace-nowrap">
+        <div className="flex items-center gap-1 shrink-0">
           {m.status === "done" ? (
             <button
-              className="btn-ghost !px-1.5 !py-0.5 text-[10px]"
+              className="btn-ghost !px-1.5 !py-0.5 text-[10px] whitespace-nowrap shrink-0 cursor-pointer"
               style={{ fontFamily: "'Space Grotesk', sans-serif" }}
               onClick={onReset}
             >
@@ -972,7 +1044,7 @@ function KoCard({
           ) : (
             <button
               disabled={isByeA || isByeB}
-              className={`btn-ghost !px-1.5 !py-0.5 text-[10px] ${
+              className={`btn-ghost !px-1.5 !py-0.5 text-[10px] whitespace-nowrap shrink-0 cursor-pointer ${
                 m.status === "live" ? "text-red-600 font-bold" : ""
               } ${isByeA || isByeB ? "opacity-40 cursor-not-allowed" : ""}`}
               style={{ fontFamily: "'Space Grotesk', sans-serif" }}
@@ -985,19 +1057,21 @@ function KoCard({
 
         {/* Nút chọn trọng tài nằm giữa nút bắt đầu và nút chấm điểm */}
         {onReferee && (
-          <div className="shrink-0 max-w-[110px]">
+          <div className="shrink-0">
             <RefereeSelector
               value={m.referee}
               referees={referees}
               onSelect={onReferee}
               onAddReferee={onAddReferee}
+              onClearReferees={onClearReferees}
+              compactWidth
             />
           </div>
         )}
 
         {isByeA || isByeB ? (
           <span
-            className="text-[10px] font-bold text-accent px-1.5 py-0.5 rounded bg-accent/10"
+            className="text-[10px] font-bold text-accent px-1.5 py-0.5 rounded bg-accent/10 whitespace-nowrap shrink-0"
             style={{ fontFamily: "'Space Grotesk', sans-serif" }}
           >
             Vào thẳng
@@ -1006,7 +1080,7 @@ function KoCard({
           <Link
             to="/cham-diem/$matchId"
             params={{ matchId: m.id } as any}
-            className="btn-ghost !px-1.5 !py-0.5 text-[10px] flex items-center gap-1"
+            className="btn-ghost !px-1.5 !py-0.5 text-[10px] flex items-center gap-0.5 whitespace-nowrap shrink-0"
             style={{ fontFamily: "'Space Grotesk', sans-serif" }}
           >
             ⚡ Chấm điểm
@@ -1256,7 +1330,22 @@ function ManagePage() {
 
   // Zoom timeline (infinite range slider)
   const [colWidth, setColWidth] = useState(210);
-  const [rowHeight, setRowHeight] = useState(128);
+  const [rowHeight, setRowHeight] = useState(145);
+
+  // Xác nhận chỉnh sửa vòng bảng khi vòng KO đã bắt đầu
+  const [confirmedGroupEdit, setConfirmedGroupEdit] = useState(false);
+  const [confirmModal, setConfirmModal] = useState<{
+    title: string;
+    message: string;
+    confirmText?: string;
+    cancelText?: string;
+    isDestructive?: boolean;
+    onConfirm: () => void;
+  } | null>(null);
+
+  useEffect(() => {
+    setConfirmedGroupEdit(false);
+  }, [activeId]);
 
   // Toggles for flexible screen space
   const [showStandings, setShowStandings] = useState(true);
@@ -1410,89 +1499,216 @@ function ManagePage() {
     );
   }, [koMatches]);
 
+  // Kiểm tra vòng loại trực tiếp đã bắt đầu (có trận đang đấu, đã xong hoặc có điểm)
+  const hasKoStarted = useMemo(() => {
+    return koMatches.some(
+      (m) => m.scoreA !== null || m.scoreB !== null || m.status === "done" || m.status === "live",
+    );
+  }, [koMatches]);
+
+  const requireGroupEditConfirmation = (action: () => void, actionDesc?: string) => {
+    if (!hasKoStarted || confirmedGroupEdit) {
+      action();
+      return;
+    }
+    setConfirmModal({
+      title: "⚠️ Cảnh báo: Vòng loại trực tiếp đã bắt đầu",
+      message: `Vòng loại trực tiếp của nội dung "${ev.name}" đã có trận đấu diễn ra hoặc đã ghi điểm số.\n\n${
+        actionDesc || "Việc chỉnh sửa kết quả hoặc lịch thi đấu ở vòng bảng"
+      } sẽ làm thay đổi bảng xếp hạng và ảnh hưởng trực tiếp đến nhánh đấu loại trực tiếp.\n\nBạn có chắc chắn muốn tiếp tục chỉnh sửa không?`,
+      confirmText: "Xác nhận chỉnh sửa",
+      cancelText: "Hủy bỏ",
+      isDestructive: false,
+      onConfirm: () => {
+        setConfirmedGroupEdit(true);
+        action();
+        setConfirmModal(null);
+      },
+    });
+  };
+
   const buildGroups = () => {
     if (entries.length < 2) {
       setNote("Cần ít nhất 2 đội.");
       return;
     }
-    if (hasKoProgress) {
-      if (
-        !window.confirm(
-          "⚠️ CẢNH BÁO QUAN TRỌNG:\nVòng loại trực tiếp đã có nhánh xếp cặp hoặc kết quả thi đấu!\nViệc tạo lại lịch vòng bảng sẽ làm mới danh sách trận đấu và thứ hạng. Bạn có chắc chắn muốn tiếp tục?",
-        )
-      ) {
-        return;
-      }
+    const doBuildGroups = () => {
+      const fresh = generateGroupMatches(ev, entries, state.courts);
+      update({
+        matches: [
+          ...state.matches.filter((m) => !(m.eventId === ev.id && m.stage === "group")),
+          ...fresh,
+        ],
+      });
+      setNote(`Đã tạo ${fresh.length} trận vòng bảng.`);
+    };
+
+    if (hasKoProgress || hasKoStarted) {
+      setConfirmModal({
+        title: "⚠️ Cảnh báo: Vòng loại trực tiếp đã bắt đầu",
+        message:
+          "Vòng loại trực tiếp đã có nhánh xếp cặp hoặc kết quả thi đấu!\n\nViệc tạo lại lịch vòng bảng sẽ làm mới danh sách trận đấu và thứ hạng vòng bảng. Bạn có chắc chắn muốn tiếp tục?",
+        confirmText: "Tạo lại vòng bảng",
+        cancelText: "Hủy bỏ",
+        isDestructive: true,
+        onConfirm: () => {
+          setConfirmedGroupEdit(true);
+          doBuildGroups();
+          setConfirmModal(null);
+        },
+      });
+      return;
     }
-    const fresh = generateGroupMatches(ev, entries, state.courts);
-    update({
-      matches: [
-        ...state.matches.filter((m) => !(m.eventId === ev.id && m.stage === "group")),
-        ...fresh,
-      ],
-    });
-    setNote(`Đã tạo ${fresh.length} trận vòng bảng.`);
+    doBuildGroups();
   };
 
   const buildKo = () => {
     if (isKoLocked) {
-      alert(
+      setNote(
         "🔒 Nhánh KO của nội dung này đang được khóa! Vui lòng bấm nút mở khóa kế bên nếu bạn muốn tạo lại nhánh.",
       );
       return;
     }
-    if (koMatches.some((m) => m.scoreA !== null || m.status === "done" || m.status === "live")) {
-      if (
-        !window.confirm(
-          "⚠️ CẢNH BÁO:\nNhánh loại trực tiếp đã có trận đấu diễn ra hoặc có điểm số. Việc tạo lại nhánh KO sẽ xóa toàn bộ kết quả vòng loại trực tiếp này. Bạn có chắc chắn muốn tiếp tục?",
-        )
-      ) {
+    const doBuildKo = () => {
+      let fresh: Match[] = [];
+      if (koType === "total") {
+        fresh = generateEmptyKnockout(ev, totalKoTeams, state.courts);
+      } else {
+        fresh = generateKnockout(ev, entries, groupMatches, state.courts);
+      }
+      if (!fresh.length) {
+        setNote("Chưa đủ dữ liệu để tạo nhánh loại trực tiếp.");
         return;
       }
-    }
-    let fresh: Match[] = [];
-    if (koType === "total") {
-      fresh = generateEmptyKnockout(ev, totalKoTeams, state.courts);
-    } else {
-      fresh = generateKnockout(ev, entries, groupMatches, state.courts);
-    }
-    if (!fresh.length) {
-      setNote("Chưa đủ dữ liệu để tạo nhánh loại trực tiếp.");
+      update({
+        matches: [...state.matches.filter((m) => !(m.eventId === ev.id && m.stage === "ko")), ...fresh],
+      });
+      setTab("ko");
+      setNote(
+        koType === "total"
+          ? `Đã tạo nhánh KO gồm ${totalKoTeams} đội.`
+          : `Đã tạo ${fresh.length} trận loại trực tiếp.`,
+      );
+    };
+
+    if (koMatches.some((m) => m.scoreA !== null || m.status === "done" || m.status === "live")) {
+      setConfirmModal({
+        title: "⚠️ Cảnh báo tạo lại nhánh KO",
+        message:
+          "Nhánh loại trực tiếp đã có trận đấu diễn ra hoặc có điểm số.\n\nViệc tạo lại nhánh KO sẽ xóa toàn bộ kết quả vòng loại trực tiếp hiện tại. Bạn có chắc chắn muốn tiếp tục?",
+        confirmText: "Tạo lại nhánh KO",
+        cancelText: "Hủy bỏ",
+        isDestructive: true,
+        onConfirm: () => {
+          doBuildKo();
+          setConfirmModal(null);
+        },
+      });
       return;
     }
-    update({
-      matches: [...state.matches.filter((m) => !(m.eventId === ev.id && m.stage === "ko")), ...fresh],
-    });
-    setTab("ko");
-    setNote(
-      koType === "total"
-        ? `Đã tạo nhánh KO gồm ${totalKoTeams} đội.`
-        : `Đã tạo ${fresh.length} trận loại trực tiếp.`,
-    );
+    doBuildKo();
+  };
+
+  const autoFillKoByAlphabet = () => {
+    if (isKoLocked) {
+      setNote(
+        "🔒 Nhánh KO của nội dung này đang được khóa! Vui lòng bấm nút mở khóa kế bên trước khi xếp tự động.",
+      );
+      return;
+    }
+    const doAutoFill = () => {
+      const fresh = generateAlphabeticalKnockout(ev, entries, groupMatches, totalKoTeams, state.courts);
+      if (!fresh.length) {
+        setNote("Chưa đủ dữ liệu bảng đấu để tự động xếp.");
+        return;
+      }
+      update({
+        matches: [...state.matches.filter((m) => !(m.eventId === ev.id && m.stage === "ko")), ...fresh],
+      });
+      setTab("ko");
+      setNote(
+        allGroupStageDone
+          ? "Đã tự động xếp các đội vào 2 nhánh KO theo thứ tự bảng chữ cái."
+          : "Đã tự động xếp ký hiệu thứ hạng bảng (1A, 2B, 1C, 2D...) vào 2 nhánh KO. Tên đội sẽ tự động hiển thị khi xong vòng bảng.",
+      );
+    };
+
+    if (koMatches.some((m) => m.scoreA !== null || m.status === "done" || m.status === "live")) {
+      setConfirmModal({
+        title: "⚠️ Cảnh báo xếp lại nhánh KO",
+        message:
+          "Nhánh loại trực tiếp đã có trận đấu diễn ra hoặc có điểm số.\n\nViệc tự động xếp lại nhánh KO sẽ làm mới kết quả vòng loại trực tiếp hiện tại. Bạn có chắc chắn muốn tiếp tục?",
+        confirmText: "Xác nhận xếp tự động",
+        cancelText: "Hủy bỏ",
+        isDestructive: true,
+        onConfirm: () => {
+          doAutoFill();
+          setConfirmModal(null);
+        },
+      });
+      return;
+    }
+    doAutoFill();
   };
 
   const setScore = (m: Match, key: "scoreA" | "scoreB", v: number | null) => {
-    const patched = state.matches.map((x) =>
-      x.id === m.id
-        ? {
-            ...x,
-            [key]: v,
-            status: (v !== null && (key === "scoreA" ? x.scoreB : x.scoreA) !== null
-              ? "done"
-              : x.status) as Match["status"],
-          }
-        : x,
-    );
-    update({ matches: propagateKnockout(patched, ev.id) });
+    const applyScore = () => {
+      const patched = state.matches.map((x) =>
+        x.id === m.id
+          ? {
+              ...x,
+              [key]: v,
+              status: (v !== null && (key === "scoreA" ? x.scoreB : x.scoreA) !== null
+                ? "done"
+                : x.status) as Match["status"],
+            }
+          : x,
+      );
+      if (m.stage === "group" && koType === "advance" && koMatches.length > 0 && !hasKoStarted && !isKoLocked) {
+        const updatedGroupMatches = patched.filter((x) => x.eventId === ev.id && x.stage === "group");
+        const reseededKo = generateKnockout(ev, entries, updatedGroupMatches, state.courts);
+        const merged = [
+          ...patched.filter((x) => !(x.eventId === ev.id && x.stage === "ko")),
+          ...reseededKo,
+        ];
+        update({ matches: propagateKnockout(merged, ev.id, ev) });
+        return;
+      }
+      update({ matches: propagateKnockout(patched, ev.id, ev) });
+    };
+
+    if (m.stage === "group") {
+      requireGroupEditConfirmation(applyScore, "Thay đổi tỉ số trận đấu ở vòng bảng");
+      return;
+    }
+    applyScore();
   };
 
   const resetMatch = (m: Match) => {
-    const patched: Match[] = state.matches.map((x) => {
-      if (x.id !== m.id) return x;
-      const { live: _live, ...rest } = x;
-      return { ...rest, scoreA: null, scoreB: null, status: "pending" as const, startedAt: undefined } as any;
-    });
-    update({ matches: propagateKnockout(patched, ev.id) });
+    const applyReset = () => {
+      const patched: Match[] = state.matches.map((x) => {
+        if (x.id !== m.id) return x;
+        const { live: _live, ...rest } = x;
+        return { ...rest, scoreA: null, scoreB: null, status: "pending" as const, startedAt: undefined } as any;
+      });
+      if (m.stage === "group" && koType === "advance" && koMatches.length > 0 && !hasKoStarted && !isKoLocked) {
+        const updatedGroupMatches = patched.filter((x) => x.eventId === ev.id && x.stage === "group");
+        const reseededKo = generateKnockout(ev, entries, updatedGroupMatches, state.courts);
+        const merged = [
+          ...patched.filter((x) => !(x.eventId === ev.id && x.stage === "ko")),
+          ...reseededKo,
+        ];
+        update({ matches: propagateKnockout(merged, ev.id, ev) });
+        return;
+      }
+      update({ matches: propagateKnockout(patched, ev.id, ev) });
+    };
+
+    if (m.stage === "group") {
+      requireGroupEditConfirmation(applyReset, "Đặt lại (reset) trận đấu ở vòng bảng");
+      return;
+    }
+    applyReset();
   };
 
   const handleAddReferee = (newRef: string) => {
@@ -1582,10 +1798,17 @@ function ManagePage() {
     isLiveB: isEntryActive(m.bId),
     onScore: (k, v) => setScore(m, k, v),
     onStatus: (s) => {
-      updateMatch(m.id, {
-        status: s,
-        startedAt: s === "live" ? Date.now() : undefined,
-      } as any);
+      const doStatus = () => {
+        updateMatch(m.id, {
+          status: s,
+          startedAt: s === "live" ? Date.now() : undefined,
+        } as any);
+      };
+      if (m.stage === "group") {
+        requireGroupEditConfirmation(doStatus, "Thay đổi trạng thái trận đấu ở vòng bảng");
+        return;
+      }
+      doStatus();
     },
     onReset: () => resetMatch(m),
     courts: state.courts,
@@ -1649,6 +1872,27 @@ function ManagePage() {
     () => hasGroupStage && currentGroupMatches.every((m) => m.status === "done"),
     [hasGroupStage, currentGroupMatches],
   );
+
+  // Khi toàn bộ vòng bảng hoàn thành, tự động điền tên đội vào các vị trí thứ hạng bảng (1A, 2B...) trong nhánh KO
+  useEffect(() => {
+    if (!allGroupStageDone || !ev) return;
+    const needsResolve = koMatches.some(
+      (m) =>
+        m.round === 1 &&
+        ((m.customPlaceholderA && !m.aId && m.customPlaceholderA !== "BYE") ||
+          (m.customPlaceholderB && !m.bId && m.customPlaceholderB !== "BYE")),
+    );
+    if (needsResolve) {
+      const propagated = propagateKnockout(state.matches, ev.id, ev);
+      const changed = propagated.some((m, idx) => {
+        const orig = state.matches[idx];
+        return orig && (m.aId !== orig.aId || m.bId !== orig.bId);
+      });
+      if (changed) {
+        update({ matches: propagated });
+      }
+    }
+  }, [allGroupStageDone, ev, koMatches, state.matches, update]);
 
   // Trận chờ xếp lịch (chưa gán timeSlot)
   const unassignedMatches = useMemo(
@@ -1919,27 +2163,52 @@ function ManagePage() {
       const sourceHolderKey = dragKoSlot.side === "aId" ? "customPlaceholderA" : "customPlaceholderB";
       const targetHolderKey = targetSide === "aId" ? "customPlaceholderA" : "customPlaceholderB";
 
-      updateMatch(sourceMatch.id, {
-        [dragKoSlot.side]: targetVal,
-        [sourceHolderKey]: targetHolder,
-      });
-      updateMatch(targetMatch.id, {
-        [targetSide]: sourceVal,
-        [targetHolderKey]: sourceHolder,
+      const patched = state.matches.map((m) => {
+        if (m.id === sourceMatch.id && m.id === targetMatch.id) {
+          return {
+            ...m,
+            [dragKoSlot.side]: targetVal,
+            [sourceHolderKey]: targetHolder,
+            [targetSide]: sourceVal,
+            [targetHolderKey]: sourceHolder,
+          };
+        }
+        if (m.id === sourceMatch.id) {
+          return {
+            ...m,
+            [dragKoSlot.side]: targetVal,
+            [sourceHolderKey]: targetHolder,
+          };
+        }
+        if (m.id === targetMatch.id) {
+          return {
+            ...m,
+            [targetSide]: sourceVal,
+            [targetHolderKey]: sourceHolder,
+          };
+        }
+        return m;
       });
 
+      update({ matches: propagateKnockout(patched, ev.id, ev) });
       setDragKoSlot(null);
-      setNote("Đã hoán đổi / di chuyển vị trí đội trong nhánh loại trực tiếp.");
+      setNote("Đã hoán đổi / di chuyển vị trí trong nhánh loại trực tiếp.");
       return;
     }
 
     // TH 2: Kéo ký hiệu thứ hạng từ bảng xếp thủ công (khi vòng bảng chưa xong)
     if (dragRankPlaceholder) {
       const placeholderKey = targetSide === "aId" ? "customPlaceholderA" : "customPlaceholderB";
-      updateMatch(targetMatch.id, {
-        [targetSide]: null,
-        [placeholderKey]: dragRankPlaceholder,
-      } as Partial<Match>);
+      const patched = state.matches.map((m) =>
+        m.id === targetMatch.id
+          ? {
+              ...m,
+              [targetSide]: null,
+              [placeholderKey]: dragRankPlaceholder,
+            }
+          : m,
+      );
+      update({ matches: propagateKnockout(patched, ev.id, ev) });
       setDragRankPlaceholder(null);
       setNote(`Đã xếp vị trí (${dragRankPlaceholder}) vào nhánh.`);
       return;
@@ -1957,10 +2226,16 @@ function ManagePage() {
       seedBadge = `${rankIdx >= 0 ? rankIdx + 1 : 1}${cleanGName}`;
     }
     const placeholderKey = targetSide === "aId" ? "customPlaceholderA" : "customPlaceholderB";
-    updateMatch(targetMatch.id, {
-      [targetSide]: dragEntry,
-      ...(seedBadge ? { [placeholderKey]: seedBadge } : {}),
-    } as Partial<Match>);
+    const patched = state.matches.map((m) =>
+      m.id === targetMatch.id
+        ? {
+            ...m,
+            [targetSide]: dragEntry,
+            ...(seedBadge ? { [placeholderKey]: seedBadge } : {}),
+          }
+        : m,
+    );
+    update({ matches: propagateKnockout(patched, ev.id, ev) });
     setDragEntry(null);
     setNote(seedBadge ? `Đã xếp đội (${seedBadge}) vào nhánh.` : "Đã xếp đội vào nhánh.");
   };
@@ -1981,7 +2256,9 @@ function ManagePage() {
 
   const getEntrySeedBadge = (entryId?: string | null, customPlaceholder?: string | null): string => {
     if (customPlaceholder && customPlaceholder.trim()) {
-      return customPlaceholder.trim();
+      const clean = customPlaceholder.trim();
+      if (/^Hạt\s*giống\s*\d+$/i.test(clean)) return "";
+      return clean;
     }
     if (!entryId || !ev) return "";
     const grp = ev.groups.find((g) => g.entryIds.includes(entryId));
@@ -2025,8 +2302,21 @@ function ManagePage() {
         onDropTeam={(side) => dropTeam(m, side)}
         onClearTeam={(side) => {
           if (isKoLocked) return;
-          updateMatch(m.id, { [side]: null, scoreA: null, scoreB: null, status: "pending" });
-          setNote("Đã xóa đội khỏi ô thi đấu.");
+          const placeholderKey = side === "aId" ? "customPlaceholderA" : "customPlaceholderB";
+          const patched = state.matches.map((x) =>
+            x.id === m.id
+              ? {
+                  ...x,
+                  [side]: null,
+                  [placeholderKey]: "",
+                  scoreA: null,
+                  scoreB: null,
+                  status: "pending" as const,
+                }
+              : x,
+          );
+          update({ matches: propagateKnockout(patched, ev.id, ev) });
+          setNote("Đã xóa đội / vị trí khỏi ô thi đấu.");
         }}
         onStartDragTeam={(side) => {
           if (isKoLocked) return;
@@ -2044,6 +2334,7 @@ function ManagePage() {
         referees={state.referees}
         onReferee={(r) => updateMatch(m.id, { referee: r })}
         onAddReferee={handleAddReferee}
+        onClearReferees={handleClearReferees}
       />
     );
   };
@@ -2481,6 +2772,18 @@ function ManagePage() {
                 >
                   Tạo nhánh KO
                 </button>
+                {koType === "total" && (
+                  <button
+                    type="button"
+                    onClick={autoFillKoByAlphabet}
+                    className={`btn-ghost text-xs font-bold flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-accent/40 bg-accent/10 text-accent hover:bg-accent/20 transition cursor-pointer ${
+                      isKoLocked ? "opacity-60 cursor-not-allowed" : ""
+                    }`}
+                    title="Tự động xếp các đội vào 2 nhánh KO theo quy luật thứ hạng chữ cái bảng (Nhánh trái: 1A-2B, 1C-2D... / Nhánh phải: 1B-2A, 1D-2C...)"
+                  >
+                    ⚡ Tự động xếp vào
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => toggleKoLock(ev.id)}
@@ -2772,15 +3075,15 @@ function ManagePage() {
                       >
                         {g.name}
                       </p>
-                      <table className="w-full text-xs">
+                      <table className="w-full table-fixed text-xs">
                         <thead>
                           <tr className="border-b border-line/10 text-[10px] uppercase tracking-wide text-line/50">
                             <th className="px-3 py-2 text-left">Đội</th>
-                            <th className="px-1.5 py-2 text-center">Tr</th>
-                            <th className="px-1.5 py-2 text-center">T</th>
-                            <th className="px-1.5 py-2 text-center">B</th>
-                            <th className="px-1.5 py-2 text-center">HS</th>
-                            <th className="px-3 py-2 text-center">Đ</th>
+                            <th className="w-8 py-2 text-center">Tr</th>
+                            <th className="w-8 py-2 text-center">T</th>
+                            <th className="w-8 py-2 text-center">B</th>
+                            <th className="w-11 py-2 text-center">HS</th>
+                            <th className="w-11 py-2 text-center">Đ</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -2788,19 +3091,19 @@ function ManagePage() {
                             const rowEntry = state.entries.find((e) => e.id === r.entryId);
                             return (
                               <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
-                                <td className="max-w-[170px] truncate px-3 py-2">
-                                  <span className="mr-1.5 font-head font-bold text-line/40">{i + 1}</span>
+                                <td className="truncate px-3 py-2">
+                                  <span className="inline-block w-4 font-head font-bold text-line/40 tabular-nums">{i + 1}</span>
                                   <PlayerNameDisplay
                                     entry={rowEntry}
                                     fallback={nameOf(r.entryId)}
                                     activePlayerNames={activePlayerNames}
                                   />
                                 </td>
-                                <td className="px-1.5 py-2 text-center">{r.played}</td>
-                                <td className="px-1.5 py-2 text-center">{r.win}</td>
-                                <td className="px-1.5 py-2 text-center">{r.loss}</td>
-                                <td className="px-1.5 py-2 text-center">{r.diff}</td>
-                                <td className="px-3 py-2 text-center font-bold text-accent">{r.points}</td>
+                                <td className="w-8 py-2 text-center tabular-nums">{r.played}</td>
+                                <td className="w-8 py-2 text-center tabular-nums">{r.win}</td>
+                                <td className="w-8 py-2 text-center tabular-nums">{r.loss}</td>
+                                <td className="w-11 py-2 text-center tabular-nums">{r.diff}</td>
+                                <td className="w-11 py-2 text-center font-bold text-accent tabular-nums">{r.points}</td>
                               </tr>
                             );
                           })}
@@ -2878,15 +3181,15 @@ function ManagePage() {
                         >
                           {g.name}
                         </p>
-                        <table className="w-full text-xs">
+                        <table className="w-full table-fixed text-xs">
                           <thead>
                             <tr className="border-b border-line/10 text-[10px] uppercase tracking-wide text-line/50">
                               <th className="px-3 py-2 text-left">Đội</th>
-                              <th className="px-1 py-2 text-center">Tr</th>
-                              <th className="px-1 py-2 text-center">T</th>
-                              <th className="px-1 py-2 text-center">B</th>
-                              <th className="px-1 py-2 text-center">HS</th>
-                              <th className="px-3 py-2 text-center">Đ</th>
+                              <th className="w-8 py-2 text-center">Tr</th>
+                              <th className="w-8 py-2 text-center">T</th>
+                              <th className="w-8 py-2 text-center">B</th>
+                              <th className="w-10 py-2 text-center">HS</th>
+                              <th className="w-10 py-2 text-center">Đ</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -2894,19 +3197,19 @@ function ManagePage() {
                               const rowEntry = state.entries.find((e) => e.id === r.entryId);
                               return (
                                 <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
-                                  <td className="max-w-[150px] truncate px-3 py-2">
-                                    <span className="mr-1.5 font-head font-bold text-line/40">{i + 1}</span>
+                                  <td className="truncate px-3 py-2">
+                                    <span className="inline-block w-4 font-head font-bold text-line/40 tabular-nums">{i + 1}</span>
                                     <PlayerNameDisplay
                                       entry={rowEntry}
                                       fallback={nameOf(r.entryId)}
                                       activePlayerNames={activePlayerNames}
                                     />
                                   </td>
-                                  <td className="px-1 py-2 text-center">{r.played}</td>
-                                  <td className="px-1 py-2 text-center">{r.win}</td>
-                                  <td className="px-1 py-2 text-center">{r.loss}</td>
-                                  <td className="px-1 py-2 text-center">{r.diff}</td>
-                                  <td className="px-3 py-2 text-center font-bold text-accent">{r.points}</td>
+                                  <td className="w-8 py-2 text-center tabular-nums">{r.played}</td>
+                                  <td className="w-8 py-2 text-center tabular-nums">{r.win}</td>
+                                  <td className="w-8 py-2 text-center tabular-nums">{r.loss}</td>
+                                  <td className="w-10 py-2 text-center tabular-nums">{r.diff}</td>
+                                  <td className="w-10 py-2 text-center font-bold text-accent tabular-nums">{r.points}</td>
                                 </tr>
                               );
                             })}
@@ -2976,7 +3279,7 @@ function ManagePage() {
                     <div
                       key={`h${s}`}
                       data-timeline-hours="true"
-                      className="sticky top-0 z-20 border-b border-l border-line/15 bg-card/95 p-1 text-center text-[11px] font-bold uppercase tracking-wider text-line/70 backdrop-blur-xs shadow-xs flex items-center justify-center h-[34px]"
+                      className="sticky top-0 z-20 border-b border-r border-line/15 bg-card/95 p-1 text-center text-[11px] font-bold uppercase tracking-wider text-line/70 backdrop-blur-xs shadow-xs flex items-center justify-center h-[34px]"
                     >
                       {addMinutes(state.startTime, s * state.slotMinutes)}
                     </div>
@@ -3008,7 +3311,7 @@ function ManagePage() {
                         {slotIdxs.map((s) => (
                           <div
                             key={`${court}-${s}`}
-                            className="relative border-b border-l border-line/10 p-0.5 transition hover:bg-accent/10 group overflow-hidden"
+                            className="relative border-b border-r border-line/10 p-0.5 transition hover:bg-accent/10 group overflow-hidden"
                             style={{
                               gridRow: rowNum,
                               gridColumn: s + 2,
@@ -3065,9 +3368,10 @@ function ManagePage() {
                             const minWidth = Math.max(36, Math.round((5 / slotMins) * colWidth));
                             const cardWidth = Math.max(
                               minWidth,
-                              Math.round(((m.durationMinutes ?? slotMins) / slotMins) * colWidth - 6),
+                              Math.round(((m.durationMinutes ?? slotMins) / slotMins) * colWidth - 9),
                             );
-                            const leftOffset = (((m.timeSlot ?? 0) * slotMins + (m.offsetMinutes ?? 0)) / slotMins) * colWidth;
+                            const leftOffset =
+                              Math.round((((m.timeSlot ?? 0) * slotMins + (m.offsetMinutes ?? 0)) / slotMins) * colWidth) + 4;
 
                             return (
                               <div
@@ -3084,10 +3388,12 @@ function ManagePage() {
                                   setTimeout(() => setDragMatch(m.id), 0);
                                 }}
                                 onDragEnd={() => setDragMatch(null)}
-                                className={`timeline-card-wrapper pointer-events-auto cursor-grab active:cursor-grabbing absolute top-0.5 bottom-0.5 transition-[opacity] ${
+                                className={`timeline-card-wrapper pointer-events-auto cursor-grab active:cursor-grabbing absolute transition-[opacity] ${
                                   dragMatch === m.id ? "opacity-30 !pointer-events-none" : ""
                                 } ${dragMatch && dragMatch !== m.id ? "pointer-events-none" : ""} hover:z-30`}
                                 style={{
+                                  top: "4px",
+                                  bottom: "5px",
                                   width: `${cardWidth}px`,
                                   left: `${leftOffset}px`,
                                   zIndex: 10 + cardIdx * 2,
@@ -3230,18 +3536,23 @@ function ManagePage() {
                 </button>
               </div>
               <p className="mt-1 text-xs text-line/60 shrink-0">
-                Kéo tên đội bên dưới thả trực tiếp vào ô trong nhánh. Danh sách luôn ghim cố định khi cuộn màn hình.
+                {hasGroupStage && !allGroupStageDone
+                  ? "Vòng bảng chưa kết thúc: Kéo thả ký hiệu thứ hạng bảng (1A, 2A, 1B...) vào nhánh KO. Khi có kết quả toàn bộ vòng bảng, tên đội sẽ tự động cập nhật vào đúng thứ hạng!"
+                  : "Kéo tên đội bên dưới thả trực tiếp vào ô trong nhánh. Danh sách luôn ghim cố định khi cuộn màn hình."}
               </p>
 
               <div className="mt-3 flex-1 space-y-3 overflow-y-auto pr-1">
                 {(ev.groups.length
                   ? ev.groups
                   : [{ name: "Tất cả đội", entryIds: entries.map((e) => e.id) }]
-                ).map((g) => {
+                ).map((g, gIdx) => {
                   const gM = groupMatches.filter((x) => x.groupName === g.name);
                   const standings = computeStandings(g.entryIds, gM, ev);
-                  const cleanGName = g.name.replace(/^Bảng\s+/i, "").trim();
+                  const cleanGName =
+                    g.name.replace(/^Bảng\s+/i, "").trim() || String.fromCharCode(65 + gIdx);
                   const c = groupColor(g.name);
+                  const showOnlyRankBadge = hasGroupStage && !allGroupStageDone;
+
                   return (
                     <div key={g.name} className="rounded-xl border border-line/15 bg-card/60 p-2.5 space-y-2">
                       <div className="flex items-center justify-between">
@@ -3251,17 +3562,53 @@ function ManagePage() {
                         >
                           {g.name} ({g.entryIds.length} đội)
                         </span>
+                        {showOnlyRankBadge && (
+                          <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400">
+                            Chờ xong vòng bảng
+                          </span>
+                        )}
                       </div>
                       <div className="space-y-1.5">
                         {standings.map((st, idx) => {
                           const e = entries.find((x) => x.id === st.entryId);
                           if (!e) return null;
                           const rankLabel = `${idx + 1}${cleanGName.replace(/\s+/g, "").toUpperCase()}`;
+
+                          if (showOnlyRankBadge) {
+                            return (
+                              <div
+                                key={rankLabel}
+                                draggable={!isKoLocked}
+                                onDragStart={() => {
+                                  setDragRankPlaceholder(rankLabel);
+                                  setDragEntry(null);
+                                }}
+                                onDragEnd={() => setDragRankPlaceholder(null)}
+                                className="cursor-grab truncate rounded-lg px-2.5 py-1.5 text-xs font-semibold shadow-xs ring-1 ring-line/15 active:cursor-grabbing bg-secondary text-line/80 hover:bg-secondary/80 flex items-center justify-between transition gap-2"
+                                title={`Kéo thả vị trí hạng ${idx + 1} bảng ${cleanGName} (${rankLabel}) vào ô trong nhánh KO`}
+                              >
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="font-mono text-xs font-bold text-accent bg-accent/15 px-2 py-0.5 rounded shrink-0 border border-accent/30">
+                                    {rankLabel}
+                                  </span>
+                                  <span className="text-xs text-line/60 font-medium truncate">
+                                    Hạng {idx + 1} {g.name}
+                                  </span>
+                                </div>
+                                <span className="text-[10px] text-line/40 shrink-0">Kéo ⇲</span>
+                              </div>
+                            );
+                          }
+
                           return (
                             <div
                               key={e.id}
-                              draggable
-                              onDragStart={() => setDragEntry(e.id)}
+                              draggable={!isKoLocked}
+                              onDragStart={() => {
+                                setDragEntry(e.id);
+                                setDragRankPlaceholder(null);
+                              }}
+                              onDragEnd={() => setDragEntry(null)}
                               className="cursor-grab truncate rounded-lg px-2 py-1.5 text-xs font-semibold shadow-xs ring-1 ring-line/10 active:cursor-grabbing bg-secondary text-line/80 hover:bg-secondary/80 flex items-center justify-between transition gap-2"
                               title={`Hạng ${idx + 1} bảng ${cleanGName} (${rankLabel}): Kéo thả vào ô trong nhánh KO`}
                             >
@@ -3587,6 +3934,45 @@ function ManagePage() {
             <div className="mt-4 flex justify-end">
               <button className="btn-accent text-xs" onClick={() => setViewNoteText(null)}>
                 Đóng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL CẢNH BÁO / XÁC NHẬN CHỈNH SỬA */}
+      {confirmModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-md rounded-2xl bg-card p-5 shadow-2xl ring-1 ring-line/20 border border-line/10 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3">
+              <span className={`text-2xl ${confirmModal.isDestructive ? "text-red-500" : "text-amber-500"}`}>
+                {confirmModal.isDestructive ? "🗑️" : "⚠️"}
+              </span>
+              <h3 className="font-head text-lg font-bold text-ink">
+                {confirmModal.title}
+              </h3>
+            </div>
+            <p className="mt-3 text-xs leading-relaxed text-line/80 whitespace-pre-line">
+              {confirmModal.message}
+            </p>
+            <div className="mt-5 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                className="btn-ghost text-xs !py-2 !px-4 cursor-pointer"
+                onClick={() => setConfirmModal(null)}
+              >
+                {confirmModal.cancelText || "Hủy bỏ"}
+              </button>
+              <button
+                type="button"
+                className={
+                  confirmModal.isDestructive
+                    ? "rounded-xl bg-red-600 hover:bg-red-700 text-white font-semibold text-xs py-2 px-4 shadow-sm transition-all cursor-pointer"
+                    : "btn-accent text-xs !py-2 !px-4 cursor-pointer"
+                }
+                onClick={confirmModal.onConfirm}
+              >
+                {confirmModal.confirmText || "Xác nhận"}
               </button>
             </div>
           </div>

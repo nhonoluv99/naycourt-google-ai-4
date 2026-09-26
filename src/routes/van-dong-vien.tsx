@@ -167,23 +167,8 @@ function PlayersPage() {
   };
 
   const removeEntry = (id: string) => {
-    const entry = entries.find((e) => e.id === id);
-    const name = entry ? entryName(entry) : "VĐV";
-    setConfirmModal({
-      title: "Xác nhận xóa VĐV",
-      message: `Bạn có chắc chắn muốn xóa "${name}" khỏi nội dung "${ev.name}"?${
-        hasStartedMatches
-          ? " Nội dung này đã có trận đấu diễn ra, việc xóa VĐV có thể ảnh hưởng đến kết quả thi đấu."
-          : ""
-      }`,
-      confirmText: "Xóa VĐV",
-      isDestructive: true,
-      onConfirm: () => {
-        setEntries(entries.filter((e) => e.id !== id));
-        removeFromGroups(id);
-        setConfirmModal(null);
-      },
-    });
+    setEntries(entries.filter((e) => e.id !== id));
+    removeFromGroups(id);
   };
 
   const clearAllEntries = () => {
@@ -617,7 +602,7 @@ function PlayersPage() {
                           title="Tổng điểm trình của cả 2 VĐV cộng lại (đầy đủ số thập phân)"
                         >
                           <span className="text-[10px] uppercase text-accent/70 mr-1">Tổng:</span>
-                          <span>{totalRating > 0 ? (Number.isInteger(totalRating) ? totalRating.toFixed(1) : Number(totalRating.toFixed(4))) : "—"}</span>
+                          <span>{totalRating > 0 ? formatRating(Number(totalRating.toFixed(4))) : "—"}</span>
                         </div>
                       )}
                     </div>
@@ -774,7 +759,7 @@ function PlayersPage() {
                           </div>
                           {pts > 0 && (
                             <span className="shrink-0 rounded bg-accent/15 px-1 py-0.5 text-[10px] font-bold text-accent">
-                              {Number(pts.toFixed(4))}đ
+                              {formatRating(Number(pts.toFixed(4)))}đ
                             </span>
                           )}
                           <button
@@ -853,7 +838,7 @@ function PlayersPage() {
                         <span className="truncate max-w-[140px]">{entryName(e)}</span>
                         {pts > 0 && (
                           <span className="rounded bg-accent/15 px-1 py-0.5 text-[10px] font-bold text-accent">
-                            {Number.isInteger(pts) ? pts.toFixed(1) : Number(pts.toFixed(4))}đ
+                            {formatRating(Number(pts.toFixed(4)))}đ
                           </span>
                         )}
                         <select
@@ -1002,7 +987,8 @@ function PlayersPage() {
 
 function formatRating(v: number | null | undefined): string {
   if (v === null || v === undefined || isNaN(v)) return "";
-  return Number.isInteger(v) ? v.toFixed(1) : String(v);
+  const rounded = Number(v.toFixed(4));
+  return Number.isInteger(rounded) ? rounded.toFixed(1) : String(rounded);
 }
 
 function RatingInput({

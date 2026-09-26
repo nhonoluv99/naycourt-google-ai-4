@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import {
   BRACKET_LABEL,
   MODE_LABEL,
@@ -8,6 +8,7 @@ import {
   type BracketType,
   type EventMode,
   type PairMode,
+  type TEvent,
 } from "@/lib/tournament-store";
 
 export const Route = createFileRoute("/noi-dung")({
@@ -69,19 +70,55 @@ const Lbl = ({ children }: { children: ReactNode }) => (
 
 function EventsPage() {
   const { state, update, updateEvent } = useTournament();
+  const [confirmDeleteEvent, setConfirmDeleteEvent] = useState<{
+    event: TEvent;
+    details: string[];
+  } | null>(null);
 
   const addEvent = () =>
     update({ events: [...state.events, makeEvent(`Nội dung ${state.events.length + 1}`)] });
 
-  const removeEvent = (id: string) =>
+  const executeRemoveEvent = (id: string) => {
     update({
       events: state.events.filter((e) => e.id !== id),
       entries: state.entries.filter((e) => e.eventId !== id),
       matches: state.matches.filter((m) => m.eventId !== id),
     });
+    setConfirmDeleteEvent(null);
+  };
+
+  const handleRemoveEventClick = (ev: TEvent) => {
+    const evEntries = state.entries.filter((e) => e.eventId === ev.id);
+    const evMatches = state.matches.filter((m) => m.eventId === ev.id);
+    const scoredMatches = evMatches.filter(
+      (m) => m.scoreA !== null || m.scoreB !== null || m.status === "done" || m.status === "live",
+    );
+    const assignedGroups = (ev.groups || []).filter((g) => g.entryIds.length > 0);
+
+    const details: string[] = [];
+    if (evEntries.length > 0) {
+      details.push(`${evEntries.length} ${ev.mode === "don" ? "VĐV" : "cặp/VĐV"} đã tạo trong Danh sách VĐV`);
+    }
+    if (assignedGroups.length > 0) {
+      details.push(`${assignedGroups.length} bảng đấu đã được chia`);
+    }
+    if (evMatches.length > 0) {
+      details.push(`${evMatches.length} trận đấu đã tạo lịch`);
+    }
+    if (scoredMatches.length > 0) {
+      details.push(`${scoredMatches.length} trận đấu đã có điểm số / kết quả`);
+    }
+
+    if (details.length > 0) {
+      setConfirmDeleteEvent({ event: ev, details });
+      return;
+    }
+
+    executeRemoveEvent(ev.id);
+  };
 
   return (
-    <div className="max-w-4xl mx-auto">
+    <div className="w-full">
       <h1 className="text-balance font-head text-4xl font-bold uppercase leading-none tracking-tighter text-[#0a3320]">
         Nội dung thi đấu
       </h1>
@@ -102,9 +139,11 @@ function EventsPage() {
                 onChange={(e) => updateEvent(ev.id, { name: e.target.value })}
               />
               <button
-                className="shrink-0 p-2 text-line/40 hover:text-destructive rounded-lg hover:bg-black/5"
-                onClick={() => removeEvent(ev.id)}
+                type="button"
+                className="shrink-0 p-2 text-line/40 hover:text-destructive rounded-lg hover:bg-black/5 cursor-pointer"
+                onClick={() => handleRemoveEventClick(ev)}
                 aria-label={`Xoá ${ev.name}`}
+                title={`Xoá nội dung ${ev.name}`}
               >
                 ✕
               </button>
@@ -205,6 +244,57 @@ function EventsPage() {
           </Link>
         </div>
       </div>
+
+      {/* Pop-up cảnh báo xác nhận trước khi xóa nội dung đã có dữ liệu ở các tab sau */}
+      {confirmDeleteEvent && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs"
+          onClick={() => setConfirmDeleteEvent(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border-2 border-line/20 bg-paper p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-500/15 text-red-600 text-lg font-bold">
+                ⚠️
+              </div>
+              <div className="flex-1">
+                <h3 className="font-head text-lg font-bold text-ink">
+                  Cảnh báo xóa nội dung thi đấu
+                </h3>
+                <p className="mt-2 text-xs leading-relaxed text-line/80">
+                  Nội dung <strong className="text-ink">“{confirmDeleteEvent.event.name}”</strong> đã có dữ liệu chỉnh sửa ở các tab phía sau:
+                </p>
+                <ul className="mt-2 list-disc space-y-1 pl-5 text-xs font-semibold text-red-600">
+                  {confirmDeleteEvent.details.map((item, idx) => (
+                    <li key={idx}>{item}</li>
+                  ))}
+                </ul>
+                <p className="mt-3 text-xs leading-relaxed text-line/75">
+                  Nếu xóa nội dung này, toàn bộ danh sách VĐV, bảng đấu, lịch thi đấu và kết quả điểm số thuộc nội dung này sẽ bị xóa vĩnh viễn. Bạn có chắc chắn muốn xóa?
+                </p>
+              </div>
+            </div>
+            <div className="mt-6 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                className="btn-ghost !py-2 !px-4 text-xs font-bold cursor-pointer"
+                onClick={() => setConfirmDeleteEvent(null)}
+              >
+                Hủy bỏ
+              </button>
+              <button
+                type="button"
+                className="rounded-xl bg-red-600 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-red-700 transition cursor-pointer"
+                onClick={() => executeRemoveEvent(confirmDeleteEvent.event.id)}
+              >
+                Xác nhận xóa nội dung
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

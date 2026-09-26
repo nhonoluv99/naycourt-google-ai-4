@@ -76,11 +76,15 @@ const NAV = [
   { to: "/quan-ly-giai", label: "Quản lý giải" },
 ] as const;
 
-function Header() {
+function Header({ isWide }: { isWide: boolean }) {
   const { state } = useTournament();
   return (
     <div className="border-b-4 border-line">
-      <div className="mx-auto flex w-full max-w-[1920px] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:px-8">
+      <div
+        className={`mx-auto flex w-full ${
+          isWide ? "max-w-[1920px]" : "max-w-5xl"
+        } flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:px-8`}
+      >
         <Link to="/" className="flex items-center gap-3">
           <div className="grid size-9 place-items-center rounded-lg bg-accent">
             <span className="font-head text-lg font-bold leading-none text-accent-foreground pl-[3px] h-[17px] flex items-center justify-center">
@@ -134,7 +138,7 @@ function RootContent() {
 
   return (
     <div className="min-h-screen bg-paper font-body text-ink">
-      <Header />
+      <Header isWide={isWide} />
       <div className="courtlines">
         <div className={containerClass}>
           {/* Required: nested routes render here. */}
