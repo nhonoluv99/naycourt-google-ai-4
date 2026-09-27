@@ -193,7 +193,7 @@ function RefereeSelector({
           <>
             <div className="fixed inset-0 z-[9998]" onClick={() => setOpen(false)} />
             <div
-              style={dropdownStyle}
+              style={{ ...dropdownStyle, fontFamily: "'Be Vietnam Pro', 'Space Grotesk', sans-serif" }}
               className="max-h-60 overflow-y-auto rounded-xl border border-line/25 bg-card p-1.5 shadow-2xl ring-1 ring-black/10 text-xs"
             >
               <div className="flex items-center justify-between px-2 py-1 text-[10px] font-bold text-line/60 uppercase tracking-wider border-b border-line/10 mb-1">
@@ -214,7 +214,10 @@ function RefereeSelector({
                 )}
               </div>
               {referees.length === 0 ? (
-                <div className="px-2 py-2 text-[11px] text-line/50 italic">
+                <div
+                  className="px-2 py-2 text-[11px] font-normal leading-relaxed text-line/60"
+                  style={{ fontFamily: "'Be Vietnam Pro', 'Space Grotesk', sans-serif" }}
+                >
                   Chưa có trọng tài. Nhập tên để ghi nhớ cho giải này.
                 </div>
               ) : (
@@ -2543,7 +2546,10 @@ function ManagePage() {
       {/* Tiêu đề & Chọn nội dung */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="font-head text-3xl font-extrabold uppercase tracking-tight text-[#0a3320] sm:text-4xl">
+          <h1
+            className="font-head text-3xl font-extrabold uppercase tracking-tight text-[#0a3320] sm:text-4xl"
+            style={{ color: "#0a3320" }}
+          >
             Quản lý giải đấu
           </h1>
           <p className="mt-1 text-xs text-line/60" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
