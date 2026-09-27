@@ -2,7 +2,8 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState, useRef } from "react";
 import { createPortal } from "react-dom";
 import * as React from "react";
-import html2canvas from "html2canvas";
+// @ts-ignore
+import XLSX from "xlsx-js-style";
 import {
   addMinutes,
   autoScheduleTimeline,
@@ -1487,6 +1488,48 @@ function ManagePage() {
   const nameOf = (id: string | null) =>
     id ? entryName(entries.find((e) => e.id === id)) : "Chờ xác định";
 
+  const isActualByeMatch = (m?: Match) => {
+    if (!m || m.stage !== "ko") return false;
+    const pA = m.customPlaceholderA?.trim().toLowerCase();
+    const pB = m.customPlaceholderB?.trim().toLowerCase();
+    return pA === "bye" || pB === "bye";
+  };
+
+  const resolveSideLabel = (m: Match, side: "aId" | "bId"): string => {
+    const id = side === "aId" ? m.aId : m.bId;
+    if (id) return entryName(entries.find((e) => e.id === id));
+    const rawHolder = (side === "aId" ? m.customPlaceholderA : m.customPlaceholderB)?.trim() || "";
+    if (rawHolder && !/^Hạt\s*giống\s*\d+$/i.test(rawHolder)) {
+      return rawHolder;
+    }
+    if (m.stage === "ko" && m.round > 1) {
+      const koList = matches.filter((x) => x.stage === "ko");
+      if (m.slot === 99) {
+        return side === "aId" ? "Thua BK 1" : "Thua BK 2";
+      }
+      const prevSlot = (m.slot ?? 0) * 2 + (side === "aId" ? 0 : 1);
+      const prevMatch = koList.find(
+        (x) => x.round === m.round - 1 && x.slot === prevSlot && x.slot !== 99,
+      );
+      if (prevMatch && isActualByeMatch(prevMatch)) {
+        const advId = prevMatch.aId || prevMatch.bId;
+        if (advId) return entryName(entries.find((e) => e.id === advId));
+        const advHolder =
+          prevMatch.customPlaceholderA?.trim().toLowerCase() !== "bye"
+            ? prevMatch.customPlaceholderA?.trim()
+            : prevMatch.customPlaceholderB?.trim();
+        if (advHolder) return advHolder;
+      }
+      const prevTitle = prevMatch?.koRound || `V${m.round - 1}`;
+      const shortPrev = prevTitle
+        .replace(/^Tứ kết$/i, "TK")
+        .replace(/^Bán kết$/i, "BK")
+        .replace(/^Vòng\s+/i, "");
+      return `Thắng ${shortPrev} ${prevSlot + 1}`;
+    }
+    return "Chờ xác định";
+  };
+
   const isEntryActive = (id: string | null) => {
     if (!id) return false;
     const entry = state.entries.find((e) => e.id === id);
@@ -1792,8 +1835,8 @@ function ManagePage() {
 
   const cardProps = (m: Match, compact?: boolean): CardProps => ({
     m,
-    nameA: nameOf(m.aId),
-    nameB: nameOf(m.bId),
+    nameA: resolveSideLabel(m, "aId"),
+    nameB: resolveSideLabel(m, "bId"),
     entryA: state.entries.find((e) => e.id === m.aId),
     entryB: state.entries.find((e) => e.id === m.bId),
     activePlayerNames,
@@ -1847,7 +1890,7 @@ function ManagePage() {
 
   /* -------- Timeline -------- */
   const timelinePrintRef = useRef<HTMLDivElement>(null);
-  const [exportingImage, setExportingImage] = useState(false);
+  const dragGrabPxRef = useRef<number | null>(null);
 
   const timelineSource = tab === "timeline" ? matches : [];
   const grid = buildTimeline(timelineSource, state.courts);
@@ -1897,35 +1940,45 @@ function ManagePage() {
     }
   }, [allGroupStageDone, ev, koMatches, state.matches, update]);
 
-  // Trận chờ xếp lịch (chưa gán timeSlot)
+  // Trận chờ xếp lịch (chưa gán timeSlot, bỏ qua các trận miễn đấu BYE ở vòng KO)
   const unassignedMatches = useMemo(
-    () => matches.filter((m) => m.timeSlot === undefined),
+    () => matches.filter((m) => m.timeSlot === undefined && !isActualByeMatch(m)),
     [matches],
   );
 
-  // Nhóm các trận chờ theo từng vòng: hiển thị các vòng ở vòng bảng trước, các vòng loại trực tiếp sau cùng
+  // Nhóm các trận chờ theo từng vòng: hiển thị các vòng ở vòng bảng trước, các vòng loại trực tiếp ngay bên dưới
   const unassignedByRound = useMemo(() => {
-    // Nếu có vòng bảng và chưa đấu xong hết -> ẩn KO khỏi hàng chờ xếp lịch
-    const filterMatches = unassignedMatches.filter((m) => {
-      if (m.stage === "ko" && hasGroupStage && !allGroupStageDone) {
-        return false;
-      }
-      return true;
-    });
-
-    const map = new Map<string, { stage: "group" | "ko"; round: number; label: string; matches: Match[] }>();
-    filterMatches.forEach((m) => {
+    const map = new Map<
+      string,
+      { stage: "group" | "ko"; round: number; sortOrder: number; label: string; matches: Match[] }
+    >();
+    unassignedMatches.forEach((m) => {
       let key = "";
       let label = "";
+      let sortOrder = m.round ?? 1;
       if (m.stage === "ko") {
-        key = `ko-${m.round}`;
-        label = m.koRound || `Loại trực tiếp · Vòng ${m.round}`;
+        if (m.slot === 99) {
+          key = `ko-third-${m.round}`;
+          label = m.koRound || "Tranh hạng 3";
+          sortOrder = (m.round ?? 1) - 0.5;
+        } else {
+          key = `ko-${m.round}`;
+          label = m.koRound || `Loại trực tiếp · Vòng ${m.round}`;
+          sortOrder = m.round ?? 1;
+        }
       } else {
         key = `round-${m.round}`;
         label = `Vòng ${m.round}`;
+        sortOrder = m.round ?? 1;
       }
       if (!map.has(key)) {
-        map.set(key, { stage: m.stage, round: m.round ?? 1, label, matches: [] });
+        map.set(key, {
+          stage: m.stage,
+          round: m.round ?? 1,
+          sortOrder,
+          label,
+          matches: [],
+        });
       }
       map.get(key)!.matches.push(m);
     });
@@ -1935,17 +1988,18 @@ function ManagePage() {
         key,
         stage: data.stage,
         round: data.round,
+        sortOrder: data.sortOrder,
         label: data.label,
         matches: data.matches,
       }))
       .sort((a, b) => {
-        // Vòng bảng luôn hiển thị trước, loại trực tiếp sau cùng
+        // Vòng bảng luôn hiển thị trước, loại trực tiếp tiếp theo
         if (a.stage !== b.stage) {
           return a.stage === "group" ? -1 : 1;
         }
-        return a.round - b.round;
+        return a.sortOrder - b.sortOrder;
       });
-  }, [unassignedMatches, hasGroupStage, allGroupStageDone]);
+  }, [unassignedMatches]);
 
   const dropOn = (court: string, slot: number, offsetMinutes = 0) => {
     if (!dragMatch) return;
@@ -1980,17 +2034,31 @@ function ManagePage() {
   /* Xếp riêng từng vòng tự động vào bảng timeline */
   const autoScheduleRound = (roundMatches: Match[]) => {
     if (roundMatches.length === 0) return;
+    recordTimelineState();
     const assigned = state.matches.filter(
       (m) => m.eventId === ev.id && m.court && m.timeSlot !== undefined,
     );
     const usedSlots = new Set(assigned.map((m) => `${m.court}__${m.timeSlot}`));
 
+    // Tìm khung giờ bắt đầu hợp lý (ngay sau các vòng trước đã xếp trên timeline)
+    const targetStage = roundMatches[0]!.stage;
+    const targetRound = roundMatches[0]!.round ?? 1;
+    let minStartSlot = 0;
+    assigned.forEach((m) => {
+      const isEarlier =
+        (targetStage === "ko" && m.stage === "group") ||
+        (m.stage === targetStage && (m.round ?? 1) < targetRound);
+      if (isEarlier && typeof m.timeSlot === "number") {
+        minStartSlot = Math.max(minStartSlot, m.timeSlot + 1);
+      }
+    });
+
     const updatedMatches = [...state.matches];
-    let slotIdx = 0;
+    let slotIdx = minStartSlot;
 
     roundMatches.forEach((m) => {
       let placed = false;
-      while (!placed && slotIdx < 100) {
+      while (!placed && slotIdx < 200) {
         for (const court of state.courts) {
           const key = `${court}__${slotIdx}`;
           if (!usedSlots.has(key)) {
@@ -2001,6 +2069,7 @@ function ManagePage() {
                 ...updatedMatches[matchIdx],
                 court,
                 timeSlot: slotIdx,
+                offsetMinutes: 0,
                 durationMinutes: updatedMatches[matchIdx].durationMinutes || state.slotMinutes,
               };
             }
@@ -2016,49 +2085,105 @@ function ManagePage() {
     setNote(`Đã tự động xếp ${roundMatches.length} trận của vòng vào timeline.`);
   };
 
-  /* Tải ảnh lịch thi đấu toàn bộ (Full HD không bị cắt theo khung nhìn) */
-  const downloadScheduleImage = async () => {
-    const el = timelinePrintRef.current;
-    if (!el || exportingImage) return;
-    setExportingImage(true);
-    setNote("Đang chụp xuất toàn bộ bảng lịch thi đấu...");
-    try {
-      await new Promise((r) => setTimeout(r, 150));
-      const fullWidth = el.scrollWidth;
-      const fullHeight = el.scrollHeight;
+  const exportCsv = () => {
+    const slotMins = state.slotMinutes || 30;
+    const courtOrder = (c: string) => {
+      const idx = state.courts.indexOf(c);
+      return idx >= 0 ? idx : 999;
+    };
 
-      const canvas = await html2canvas(el, {
-        width: fullWidth,
-        height: fullHeight,
-        windowWidth: fullWidth + 100,
-        windowHeight: fullHeight + 100,
-        scrollX: 0,
-        scrollY: 0,
-        scale: 2,
-        useCORS: true,
-        backgroundColor: "#ffffff",
-        logging: false,
+    const sortedMatches = matches
+      .filter((m) => m.timeSlot !== undefined)
+      .sort((a, b) => {
+        const timeA = (a.timeSlot ?? 0) * slotMins + (a.offsetMinutes ?? 0);
+        const timeB = (b.timeSlot ?? 0) * slotMins + (b.offsetMinutes ?? 0);
+        if (timeA !== timeB) return timeA - timeB;
+        const cA = courtOrder(a.court);
+        const cB = courtOrder(b.court);
+        if (cA !== cB) return cA - cB;
+        return a.court.localeCompare(b.court, "vi", { numeric: true });
       });
 
-      const link = document.createElement("a");
-      link.download = `Lich_Thi_Dau_${ev.name.replace(/\s+/g, "_")}.png`;
-      link.href = canvas.toDataURL("image/png");
-      link.click();
-      setNote("Đã tải về trọn vẹn toàn bộ ảnh lịch thi đấu (Full HD)!");
-    } catch (err) {
-      console.error("Lỗi xuất ảnh:", err);
-      setNote("Không thể xuất ảnh lịch thi đấu. Hãy thử lại!");
-    } finally {
-      setExportingImage(false);
-    }
-  };
+    const matchNumberMap = new Map<string, number>();
+    sortedMatches.forEach((m, idx) => {
+      matchNumberMap.set(m.id, idx + 1);
+    });
 
-  const exportCsv = () => {
-    const headers = [
+    const resolveExcelTeamName = (m: Match, side: "aId" | "bId"): string => {
+      const entryId = side === "aId" ? m.aId : m.bId;
+      if (entryId) {
+        return entryName(entries.find((e) => e.id === entryId));
+      }
+      const placeholder =
+        (side === "aId" ? m.customPlaceholderA : m.customPlaceholderB)?.trim() || "";
+
+      if (m.stage === "group") {
+        const v1Match =
+          sortedMatches.find(
+            (x) => x.stage === "group" && x.groupName === m.groupName && x.round === 1,
+          ) ??
+          groupMatches.find((x) => x.groupName === m.groupName && x.round === 1);
+        const v1Num = v1Match ? matchNumberMap.get(v1Match.id) : undefined;
+        if (m.round === 2 || /thua\s*v1/i.test(placeholder)) {
+          return v1Num ? `Lose T${v1Num}` : "Lose V1";
+        }
+        if (m.round === 3 || /thắng\s*v1/i.test(placeholder)) {
+          return v1Num ? `Win T${v1Num}` : "Win V1";
+        }
+      }
+
+      if (m.stage === "ko") {
+        if (placeholder && !/^Hạt\s*giống\s*\d+$/i.test(placeholder)) {
+          return placeholder;
+        }
+        if (m.round > 1) {
+          if (m.slot === 99) {
+            const maxR = Math.max(
+              ...koMatches.filter((x) => x.slot !== 99).map((x) => x.round),
+            );
+            const semiSlot = side === "aId" ? 0 : 1;
+            const semiMatch = koMatches.find(
+              (x) => x.round === maxR - 1 && x.slot === semiSlot,
+            );
+            const semiNum = semiMatch ? matchNumberMap.get(semiMatch.id) : undefined;
+            if (semiNum) return `Lose T${semiNum}`;
+            return `Lose BK${semiSlot + 1}`;
+          } else {
+            const prevSlot = (m.slot ?? 0) * 2 + (side === "aId" ? 0 : 1);
+            const prevMatch = koMatches.find(
+              (x) =>
+                x.round === m.round - 1 && x.slot === prevSlot && x.slot !== 99,
+            );
+            if (prevMatch && isActualByeMatch(prevMatch)) {
+              const advId = prevMatch.aId || prevMatch.bId;
+              if (advId) return entryName(entries.find((e) => e.id === advId));
+              const advHolder =
+                prevMatch.customPlaceholderA?.trim().toLowerCase() !== "bye"
+                  ? prevMatch.customPlaceholderA?.trim()
+                  : prevMatch.customPlaceholderB?.trim();
+              if (advHolder) return advHolder;
+            }
+            const prevNum = prevMatch ? matchNumberMap.get(prevMatch.id) : undefined;
+            if (prevNum) return `Win T${prevNum}`;
+            const prevTitle = prevMatch?.koRound || `V${m.round - 1}`;
+            const shortPrev = prevTitle
+              .replace(/^Tứ kết$/i, "TK")
+              .replace(/^Bán kết$/i, "BK")
+              .replace(/^Vòng\s+/i, "");
+            return `Win ${shortPrev}${prevSlot + 1}`;
+          }
+        }
+      }
+
+      return placeholder || "Chờ xác định";
+    };
+
+    const titleRow = [ev.name, "", "", "", "", "", "", "", "", "", ""];
+    const headerRow = [
+      "Trận",
       "Thời gian",
       "Sân",
-      "Nội dung",
-      "Giai đoạn / Bảng",
+      "Bảng - Vòng",
       "Đội 1",
       "Tỉ số 1",
       "Tỉ số 2",
@@ -2067,44 +2192,125 @@ function ManagePage() {
       "Trạng thái",
       "Ghi chú",
     ];
-    const rows = matches
-      .filter((m) => m.timeSlot !== undefined)
-      .sort((a, b) => (a.timeSlot ?? 0) - (b.timeSlot ?? 0) || a.court.localeCompare(b.court))
-      .map((m) => {
-        const time = addMinutes(state.startTime, (m.timeSlot ?? 0) * state.slotMinutes);
-        const nameA = nameOf(m.aId);
-        const nameB = nameOf(m.bId);
-        const stage =
-          m.stage === "ko"
-            ? m.koRound || `Vòng ${m.round}`
-            : `${m.groupName} - Vòng ${m.round}`;
-        const status =
-          m.status === "done" ? "Đã xong" : m.status === "live" ? "Đang đấu" : "Chờ đấu";
-        return [
-          time,
-          `"${m.court}"`,
-          `"${ev.name}"`,
-          `"${stage}"`,
-          `"${nameA}"`,
-          m.scoreA !== null ? m.scoreA : "",
-          m.scoreB !== null ? m.scoreB : "",
-          `"${nameB}"`,
-          `"${m.referee || ""}"`,
-          `"${status}"`,
-          `"${m.note || m.live?.note || ""}"`,
-        ].join(",");
-      });
 
-    const csv = "\uFEFF" + [headers.join(","), ...rows].join("\r\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `Lich_Thi_Dau_${ev.name.replace(/\s+/g, "_")}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const timeStrings: string[] = [];
+    const dataRows = sortedMatches.map((m, idx) => {
+      const totalOffset = (m.timeSlot ?? 0) * slotMins + (m.offsetMinutes ?? 0);
+      const rawTime = addMinutes(state.startTime, totalOffset);
+      const timeStr = rawTime.replace(/^0(\d:)/, "$1");
+      timeStrings.push(timeStr);
+
+      const stageLabel =
+        m.stage === "ko"
+          ? m.koRound || groupTag(m.groupName) || `V${m.round}`
+          : `${groupTag(m.groupName)} - V${m.round}`;
+
+      const statusLabel =
+        m.status === "done"
+          ? "Đã xong"
+          : m.status === "live"
+            ? "Đang đấu"
+            : "Chờ đấu";
+
+      return [
+        idx + 1,
+        timeStr,
+        m.court || "",
+        stageLabel,
+        resolveExcelTeamName(m, "aId"),
+        m.scoreA !== null ? m.scoreA : "",
+        m.scoreB !== null ? m.scoreB : "",
+        resolveExcelTeamName(m, "bId"),
+        m.referee || "",
+        statusLabel,
+        m.note || m.live?.note || "",
+      ];
+    });
+
+    const merges: Array<{ s: { r: number; c: number }; e: { r: number; c: number } }> = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 10 } },
+    ];
+
+    // Gộp dọc các ô Thời gian (cột B - index 1) có cùng khung giờ liên tiếp
+    let runStart = 0;
+    while (runStart < timeStrings.length) {
+      let runEnd = runStart;
+      while (
+        runEnd + 1 < timeStrings.length &&
+        timeStrings[runEnd + 1] === timeStrings[runStart]
+      ) {
+        runEnd++;
+      }
+      if (runEnd > runStart) {
+        merges.push({
+          s: { r: runStart + 2, c: 1 },
+          e: { r: runEnd + 2, c: 1 },
+        });
+        for (let k = runStart + 1; k <= runEnd; k++) {
+          dataRows[k]![1] = "";
+        }
+      }
+      runStart = runEnd + 1;
+    }
+
+    const allRows = [titleRow, headerRow, ...dataRows];
+    const ws = XLSX.utils.aoa_to_sheet(allRows);
+    ws["!merges"] = merges;
+
+    const thinBorder = {
+      top: { style: "thin", color: { rgb: "000000" } },
+      bottom: { style: "thin", color: { rgb: "000000" } },
+      left: { style: "thin", color: { rgb: "000000" } },
+      right: { style: "thin", color: { rgb: "000000" } },
+    };
+
+    const totalRowCount = allRows.length;
+    const totalColCount = 11;
+
+    for (let r = 0; r < totalRowCount; r++) {
+      for (let c = 0; c < totalColCount; c++) {
+        const cellAddress = XLSX.utils.encode_cell({ r, c });
+        if (!ws[cellAddress]) {
+          ws[cellAddress] = { t: "s", v: "" };
+        }
+        const isTitleRow = r === 0;
+        const isCourtCol = r >= 1 && c === 2;
+        ws[cellAddress].s = {
+          font: {
+            name: "Calibri",
+            sz: 11,
+            bold: isTitleRow,
+            color: { rgb: "000000" },
+          },
+          alignment: {
+            horizontal: isCourtCol ? "left" : "center",
+            vertical: "center",
+          },
+          border: thinBorder,
+        };
+      }
+    }
+
+    ws["!cols"] = [
+      { wch: 8 },  // Trận
+      { wch: 11 }, // Thời gian
+      { wch: 10 }, // Sân
+      { wch: 14 }, // Bảng - Vòng
+      { wch: 20 }, // Đội 1
+      { wch: 10 }, // Tỉ số 1
+      { wch: 10 }, // Tỉ số 2
+      { wch: 20 }, // Đội 2
+      { wch: 12 }, // Trọng tài
+      { wch: 12 }, // Trạng thái
+      { wch: 12 }, // Ghi chú
+    ];
+
+    ws["!rows"] = Array.from({ length: totalRowCount }, () => ({ hpt: 20 }));
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Lịch thi đấu");
+    XLSX.writeFile(wb, `Lich_Thi_Dau_${ev.name.replace(/\s+/g, "_")}.xlsx`);
+    setNote("Đã xuất file Excel lịch thi đấu.");
   };
 
   /* Tính toán vị trí đường kẻ đỏ thời gian hiện tại */
@@ -2686,23 +2892,9 @@ function ManagePage() {
           <span className="mx-1 h-5 w-px bg-line/15" />
 
           {tab === "ko" ? (
-            <div
-              className="flex flex-wrap items-center gap-2"
-              style={{
-                paddingLeft: "3px",
-                paddingBottom: "4px",
-                paddingRight: "0px",
-                marginRight: "0px",
-                marginBottom: "0px",
-                marginTop: "12px",
-                paddingTop: "4px",
-              }}
-            >
+            <div className="flex flex-wrap items-center gap-2">
               {/* Chế độ chọn tổng số đội KO vs Theo đội đi tiếp / bảng */}
-              <div
-                className="flex items-center gap-1 rounded-lg bg-card p-0.5 ring-1 ring-line/20 text-xs"
-                style={{ paddingLeft: "11px" }}
-              >
+              <div className="flex items-center gap-1 rounded-lg bg-card p-0.5 ring-1 ring-line/20 text-xs">
                 <button
                   type="button"
                   onClick={() => setKoType("total")}
@@ -2793,18 +2985,49 @@ function ManagePage() {
                 <button
                   type="button"
                   onClick={() => toggleKoLock(ev.id)}
-                  className={`btn-ghost text-xs font-bold flex items-center gap-1 px-2.5 py-1.5 rounded-lg border transition cursor-pointer ${
+                  aria-label={isKoLocked ? "Mở khóa nhánh KO" : "Khóa nhánh KO"}
+                  className={`grid size-8 place-items-center rounded-lg border transition-all cursor-pointer shadow-2xs ${
                     isKoLocked
-                      ? "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/40"
-                      : "bg-card text-line/70 border-line/20 hover:text-ink"
+                      ? "bg-[#e44c11] text-white border-[#e44c11] hover:bg-[#e44c11]/90"
+                      : "bg-card text-[#0a3320] dark:text-emerald-300 border-line/25 hover:border-[#0a3320]/60 hover:bg-[#0a3320]/5"
                   }`}
                   title={
                     isKoLocked
                       ? "Nhánh KO đang khóa (bấm để mở khóa chỉnh sửa)"
-                      : "Khóa nhánh KO (sau khi xếp xong bấm khóa lại để không bị chỉnh sửa ngoài ý muốn)"
+                      : "Nhánh KO đang mở khóa (bấm để khóa lại tránh chỉnh sửa ngoài ý muốn)"
                   }
                 >
-                  {isKoLocked ? "🔒 Đã khóa" : "🔓 Mở khóa"}
+                  {isKoLocked ? (
+                    <svg
+                      className="size-4"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <rect x="5" y="11" width="14" height="10" rx="2.5" />
+                      <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+                      <circle cx="12" cy="15.5" r="1" fill="currentColor" />
+                      <path d="M12 16.5v2" />
+                    </svg>
+                  ) : (
+                    <svg
+                      className="size-[18px]"
+                      viewBox="0 0 26 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <rect x="2" y="11" width="13" height="10" rx="2.5" />
+                      <path d="M12 11V6.5a4 4 0 0 1 8 0v3.5" />
+                      <circle cx="8.5" cy="15.5" r="1" fill="currentColor" />
+                      <path d="M8.5 16.5v2" />
+                    </svg>
+                  )}
                 </button>
               </div>
 
@@ -3020,17 +3243,9 @@ function ManagePage() {
             <button
               className="btn-ghost text-xs !py-1.5 text-courtdeep font-bold"
               onClick={exportCsv}
-              title="Xuất bảng lịch thi đấu ra file Excel / CSV"
+              title="Xuất bảng lịch thi đấu Timeline ra file Excel (.xlsx)"
             >
               📊 Xuất Excel
-            </button>
-            <button
-              className="btn-ghost text-xs !py-1.5 text-accent font-bold flex items-center gap-1.5"
-              onClick={downloadScheduleImage}
-              disabled={exportingImage}
-              title="Tải toàn bộ bảng lịch thi đấu thành file ảnh PNG đầy đủ chất lượng cao"
-            >
-              🖼️ {exportingImage ? "Đang xuất ảnh..." : "Tải ảnh lịch thi đấu"}
             </button>
           </div>
         )}
@@ -3334,16 +3549,99 @@ function ManagePage() {
                               e.stopPropagation();
                               const draggedId = e.dataTransfer.getData("text/plain") || dragMatch;
                               if (!draggedId) return;
+                              const draggedMatch = state.matches.find((x) => x.id === draggedId);
+                              if (!draggedMatch) return;
+
                               const rect = e.currentTarget.getBoundingClientRect();
-                              const offsetX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
-                              const ratio = offsetX / rect.width;
-                              const numSteps = Math.max(1, Math.floor(slotMins / 5));
-                              const stepIdx = Math.min(numSteps - 1, Math.floor(ratio * numSteps));
-                              const offset = stepIdx * 5;
+                              let targetSlot = s;
+                              let targetOffset = 0;
+
+                              if (dragGrabPxRef.current !== null) {
+                                // Tính vị trí mép trái thực tế của thẻ đang kéo trên trục thời gian
+                                const slot0Left = rect.left - s * colWidth;
+                                const ghostLeftX = e.clientX - dragGrabPxRef.current;
+                                const deltaPx = ghostLeftX - (slot0Left + 4);
+                                const rawTotalMinutes = (deltaPx / colWidth) * slotMins;
+                                const snappedTotalMinutes = Math.max(
+                                  0,
+                                  Math.round(rawTotalMinutes / 5) * 5,
+                                );
+                                targetSlot = Math.floor(snappedTotalMinutes / slotMins);
+                                targetOffset = snappedTotalMinutes % slotMins;
+                              } else {
+                                // Kéo từ danh sách chờ bên phải sang
+                                const offsetX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+                                const ratio = offsetX / rect.width;
+                                const numSteps = Math.max(1, Math.floor(slotMins / 5));
+                                const stepIdx = Math.min(numSteps - 1, Math.floor(ratio * numSteps));
+                                targetOffset = stepIdx * 5;
+                              }
+
+                              const droppedStartMins = targetSlot * slotMins + targetOffset;
+
+                              // Kiểm tra nếu kéo thả chồng khít 100% lên một trận khác trên cùng sân -> Hoán đổi vị trí 2 trận
+                              const exactTargetMatch = matches.find((other) => {
+                                if (other.id === draggedId || other.timeSlot === undefined) return false;
+                                const otherCourt = state.courts.includes(other.court)
+                                  ? other.court
+                                  : state.courts[0];
+                                if (otherCourt !== court) return false;
+                                const otherStartMins =
+                                  (other.timeSlot ?? 0) * slotMins + (other.offsetMinutes ?? 0);
+                                return otherStartMins === droppedStartMins;
+                              });
+
                               recordTimelineState();
-                              updateMatch(draggedId, { court, timeSlot: s, offsetMinutes: offset });
+
+                              if (exactTargetMatch) {
+                                const srcCourt = draggedMatch.court;
+                                const srcSlot = draggedMatch.timeSlot;
+                                const srcOffset = draggedMatch.offsetMinutes ?? 0;
+
+                                const dstCourt = exactTargetMatch.court;
+                                const dstSlot = exactTargetMatch.timeSlot;
+                                const dstOffset = exactTargetMatch.offsetMinutes ?? 0;
+
+                                update({
+                                  matches: state.matches.map((item) => {
+                                    if (item.id === draggedId) {
+                                      return {
+                                        ...item,
+                                        court: dstCourt,
+                                        timeSlot: dstSlot,
+                                        offsetMinutes: dstOffset,
+                                      };
+                                    }
+                                    if (item.id === exactTargetMatch.id) {
+                                      return {
+                                        ...item,
+                                        court: srcCourt,
+                                        timeSlot: srcSlot,
+                                        offsetMinutes: srcSlot !== undefined ? srcOffset : 0,
+                                      };
+                                    }
+                                    return item;
+                                  }),
+                                });
+                                setDragMatch(null);
+                                dragGrabPxRef.current = null;
+                                setNote("Đã hoán đổi vị trí 2 trận đấu trên timeline.");
+                                return;
+                              }
+
+                              updateMatch(draggedId, {
+                                court,
+                                timeSlot: targetSlot,
+                                offsetMinutes: targetOffset,
+                              });
                               setDragMatch(null);
-                              setNote(`Đã chuyển trận sang ${court} (+${offset}p)`);
+                              dragGrabPxRef.current = null;
+                              setNote(
+                                `Đã chuyển trận sang ${court} (${addMinutes(
+                                  state.startTime,
+                                  droppedStartMins,
+                                )})`,
+                              );
                             }}
                           >
                             {/* Vạch chia 5 phút khi hover để kéo thả chính xác (+5p, +10p, +15p...) */}
@@ -3388,12 +3686,17 @@ function ManagePage() {
                                     e.preventDefault();
                                     return;
                                   }
+                                  const rect = e.currentTarget.getBoundingClientRect();
+                                  dragGrabPxRef.current = e.clientX - rect.left;
                                   e.dataTransfer.setData("text/plain", m.id);
                                   e.dataTransfer.effectAllowed = "move";
                                   // Cho phép chuyển sang trạng thái drag ngay sau khi event dragstart được browser khởi tạo
                                   setTimeout(() => setDragMatch(m.id), 0);
                                 }}
-                                onDragEnd={() => setDragMatch(null)}
+                                onDragEnd={() => {
+                                  setDragMatch(null);
+                                  dragGrabPxRef.current = null;
+                                }}
                                 className={`timeline-card-wrapper pointer-events-auto cursor-grab active:cursor-grabbing absolute transition-[opacity] ${
                                   dragMatch === m.id ? "opacity-30 !pointer-events-none" : ""
                                 } ${dragMatch && dragMatch !== m.id ? "pointer-events-none" : ""} hover:z-30`}
@@ -3437,11 +3740,6 @@ function ManagePage() {
                     ✕ Đóng
                   </button>
                 </div>
-                {hasGroupStage && !allGroupStageDone && (
-                  <div className="mt-2 rounded-lg bg-amber-500/10 p-2.5 text-[11px] text-amber-800 dark:text-amber-300 ring-1 ring-amber-500/20 leading-relaxed">
-                    ⏳ <strong>Ưu tiên Vòng bảng:</strong> Các trận vòng loại trực tiếp (KO) sẽ hiển thị vào hàng chờ sau khi kết thúc toàn bộ vòng bảng ({currentGroupMatches.filter((m) => m.status === "done").length}/{currentGroupMatches.length} trận).
-                  </div>
-                )}
                 <p className="mt-2 text-[11px] text-line/60">
                   Kéo thả thẻ trận vào bất kỳ ô giờ nào trên bảng timeline bên trái (vị trí ngang trong ô tương ứng bước 5 phút).
                 </p>
@@ -3475,18 +3773,28 @@ function ManagePage() {
                             <div
                               key={m.id}
                               draggable
-                              onDragStart={() => setDragMatch(m.id)}
-                              onDragEnd={() => setDragMatch(null)}
+                              onDragStart={(e) => {
+                                dragGrabPxRef.current = null;
+                                e.dataTransfer.setData("text/plain", m.id);
+                                e.dataTransfer.effectAllowed = "move";
+                                setTimeout(() => setDragMatch(m.id), 0);
+                              }}
+                              onDragEnd={() => {
+                                setDragMatch(null);
+                                dragGrabPxRef.current = null;
+                              }}
                               className="cursor-grab active:cursor-grabbing rounded-lg bg-card p-2 text-xs ring-1 ring-line/15 hover:ring-accent/50 shadow-xs transition"
                             >
                               <div className="flex items-center justify-between gap-1 text-[10px] text-line/60 pb-1 border-b border-line/10">
-                                <span className="font-bold text-ink">{groupTag(m.groupName)}</span>
+                                <span className="font-bold text-ink">
+                                  {m.stage === "ko" ? m.koRound || groupTag(m.groupName) : groupTag(m.groupName)}
+                                </span>
                               </div>
                               <div className="mt-1 flex items-center justify-between gap-1 text-[11px]">
                                 <div className="truncate flex-1">
                                   <PlayerNameDisplay
                                     entry={state.entries.find((e) => e.id === m.aId)}
-                                    fallback={nameOf(m.aId)}
+                                    fallback={resolveSideLabel(m, "aId")}
                                     activePlayerNames={activePlayerNames}
                                   />
                                 </div>
@@ -3494,7 +3802,7 @@ function ManagePage() {
                                 <div className="truncate flex-1 text-right">
                                   <PlayerNameDisplay
                                     entry={state.entries.find((e) => e.id === m.bId)}
-                                    fallback={nameOf(m.bId)}
+                                    fallback={resolveSideLabel(m, "bId")}
                                     activePlayerNames={activePlayerNames}
                                   />
                                 </div>

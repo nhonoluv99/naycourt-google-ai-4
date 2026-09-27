@@ -111,6 +111,7 @@ function LiveScoringPage() {
   const [coDone, setCoDone] = useState(false);
   const [endAsk, setEndAsk] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [courtFlipped, setCourtFlipped] = useState(false);
   const endDismissed = useRef(false);
 
   useEffect(() => {
@@ -131,10 +132,13 @@ function LiveScoringPage() {
     );
   }
 
+  const ev = state.events.find((e) => e.id === match.eventId);
   const teamA = state.entries.find((e) => e.id === match.aId);
   const teamB = state.entries.find((e) => e.id === match.bId);
-  const namesA = teamA?.players.map((p) => p.name || "VĐV") ?? ["Đội A"];
-  const namesB = teamB?.players.map((p) => p.name || "VĐV") ?? ["Đội B"];
+  const rawNamesA = teamA?.players.map((p) => p.name?.trim()).filter(Boolean) ?? [];
+  const rawNamesB = teamB?.players.map((p) => p.name?.trim()).filter(Boolean) ?? [];
+  const namesA = rawNamesA.length > 0 ? rawNamesA : [entryName(teamA)];
+  const namesB = rawNamesB.length > 0 ? rawNamesB : [entryName(teamB)];
   
   const rawLive = match.live ?? defaultLive();
   const live: LiveState = {
@@ -148,7 +152,7 @@ function LiveScoringPage() {
     playerIcons: rawLive.playerIcons ?? {},
   };
 
-  const doubles = namesA.length > 1;
+  const doubles = (ev ? ev.mode === "doi" : true) && (namesA.length > 1 || namesB.length > 1);
   const isSideout = live.scoring === "sideout";
 
   const posA: [number, number] = live.posA ?? [0, 1];
@@ -276,9 +280,9 @@ function LiveScoringPage() {
                 key={n + i}
                 type="button"
                 onClick={() => {
-                  setLive({ serveTeam: i as 0 | 1 });
-                  setSelectedServerIdx(null);
-                  setSelectedReceiverIdx(null);
+                  setLive({ serveTeam: i as 0 | 1, ...(doubles ? {} : { serverIdx: 0, receiverIdx: 0 }) });
+                  setSelectedServerIdx(doubles ? null : 0);
+                  setSelectedReceiverIdx(doubles ? null : 0);
                   setTossed(true);
                 }}
                 className={
@@ -307,9 +311,9 @@ function LiveScoringPage() {
                 else {
                   const r: 0 | 1 = Math.random() < 0.5 ? 0 : 1;
                   setTossFlash(r);
-                  setLive({ serveTeam: r });
-                  setSelectedServerIdx(null);
-                  setSelectedReceiverIdx(null);
+                  setLive({ serveTeam: r, ...(doubles ? {} : { serverIdx: 0, receiverIdx: 0 }) });
+                  setSelectedServerIdx(doubles ? null : 0);
+                  setSelectedReceiverIdx(doubles ? null : 0);
                   setTossing(false);
                   setTossed(true);
                 }
@@ -322,77 +326,79 @@ function LiveScoringPage() {
         </div>
 
         {tossed ? (
-          <>
-            <Lbl>Ai giao bóng trước?</Lbl>
-            <div className="mt-2 grid grid-cols-2 gap-2">
-              {(live.serveTeam === 0 ? namesA : namesB).map((n, i) => {
-                const isSelected = selectedServerIdx === i;
-                return (
-                  <div
-                    key={n + i}
-                    onClick={() => {
-                      setSelectedServerIdx(i);
-                      setLive({ serverIdx: i });
-                    }}
-                    role="button"
-                    tabIndex={0}
-                    className={`cursor-pointer rounded-xl p-3 text-center transition-all select-none ${
-                      isSelected
-                        ? "bg-[#0a3320]/10 border border-[#0a3320] shadow-2xs"
-                        : "bg-card border border-line/20 hover:bg-card/80"
-                    }`}
-                  >
-                    <div className={`truncate py-1 text-center font-bold text-sm ${isSelected ? "text-[#0a3320] font-bold" : "text-line/80"}`}>
-                      {n}
+          doubles ? (
+            <>
+              <Lbl>Ai giao bóng trước?</Lbl>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                {(live.serveTeam === 0 ? namesA : namesB).map((n, i) => {
+                  const isSelected = selectedServerIdx === i;
+                  return (
+                    <div
+                      key={n + i}
+                      onClick={() => {
+                        setSelectedServerIdx(i);
+                        setLive({ serverIdx: i });
+                      }}
+                      role="button"
+                      tabIndex={0}
+                      className={`cursor-pointer rounded-xl p-3 text-center transition-all select-none ${
+                        isSelected
+                          ? "bg-[#0a3320]/10 border border-[#0a3320] shadow-2xs"
+                          : "bg-card border border-line/20 hover:bg-card/80"
+                      }`}
+                    >
+                      <div className={`truncate py-1 text-center font-bold text-sm ${isSelected ? "text-[#0a3320] font-bold" : "text-line/80"}`}>
+                        {n}
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="Ghi chú..."
+                        value={live.playerIcons?.[n] ?? ""}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => setPlayerIcon(n, e.target.value)}
+                        className="mt-1.5 w-full rounded-md border border-line/20 bg-paper px-2 py-1 text-center text-xs outline-none hover:border-[#0a3320] focus:border-[#0a3320]"
+                      />
                     </div>
-                    <input
-                      type="text"
-                      placeholder="Ghi chú..."
-                      value={live.playerIcons?.[n] ?? ""}
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => setPlayerIcon(n, e.target.value)}
-                      className="mt-1.5 w-full rounded-md border border-line/20 bg-paper px-2 py-1 text-center text-xs outline-none hover:border-[#0a3320] focus:border-[#0a3320]"
-                    />
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
 
-            <Lbl>Ai nhận giao trước?</Lbl>
-            <div className="mt-2 grid grid-cols-2 gap-2">
-              {(live.serveTeam === 0 ? namesB : namesA).map((n, i) => {
-                const isSelected = selectedReceiverIdx === i;
-                return (
-                  <div
-                    key={n + i}
-                    onClick={() => {
-                      setSelectedReceiverIdx(i);
-                      setLive({ receiverIdx: i });
-                    }}
-                    role="button"
-                    tabIndex={0}
-                    className={`cursor-pointer rounded-xl p-3 text-center transition-all select-none ${
-                      isSelected
-                        ? "bg-[#0a3320]/10 border border-[#0a3320] shadow-2xs"
-                        : "bg-card border border-line/20 hover:bg-card/80"
-                    }`}
-                  >
-                    <div className={`truncate py-1 text-center font-bold text-sm ${isSelected ? "text-[#0a3320] font-bold" : "text-line/80"}`}>
-                      {n}
+              <Lbl>Ai nhận giao trước?</Lbl>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                {(live.serveTeam === 0 ? namesB : namesA).map((n, i) => {
+                  const isSelected = selectedReceiverIdx === i;
+                  return (
+                    <div
+                      key={n + i}
+                      onClick={() => {
+                        setSelectedReceiverIdx(i);
+                        setLive({ receiverIdx: i });
+                      }}
+                      role="button"
+                      tabIndex={0}
+                      className={`cursor-pointer rounded-xl p-3 text-center transition-all select-none ${
+                        isSelected
+                          ? "bg-[#0a3320]/10 border border-[#0a3320] shadow-2xs"
+                          : "bg-card border border-line/20 hover:bg-card/80"
+                      }`}
+                    >
+                      <div className={`truncate py-1 text-center font-bold text-sm ${isSelected ? "text-[#0a3320] font-bold" : "text-line/80"}`}>
+                        {n}
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="Ghi chú..."
+                        value={live.playerIcons?.[n] ?? ""}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => setPlayerIcon(n, e.target.value)}
+                        className="mt-1.5 w-full rounded-md border border-line/20 bg-paper px-2 py-1 text-center text-xs outline-none hover:border-[#0a3320] focus:border-[#0a3320]"
+                      />
                     </div>
-                    <input
-                      type="text"
-                      placeholder="Ghi chú..."
-                      value={live.playerIcons?.[n] ?? ""}
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => setPlayerIcon(n, e.target.value)}
-                      className="mt-1.5 w-full rounded-md border border-line/20 bg-paper px-2 py-1 text-center text-xs outline-none hover:border-[#0a3320] focus:border-[#0a3320]"
-                    />
-                  </div>
-                );
-              })}
-            </div>
-          </>
+                  );
+                })}
+              </div>
+            </>
+          ) : null
         ) : (
           <p className="mt-4 text-center text-xs text-line/50">
             Tung đồng xu hoặc bấm chọn đội giao bóng để tiếp tục.
@@ -402,28 +408,22 @@ function LiveScoringPage() {
         <button
           className="mt-6 w-full cursor-pointer rounded-lg bg-courtdeep py-3.5 font-head text-base font-bold uppercase tracking-wide text-paper hover:bg-courtdeep/90 transition shadow-md"
           onClick={() => {
-            const effServerIdx = selectedServerIdx ?? live.serverIdx ?? 0;
-            const effReceiverIdx = selectedReceiverIdx ?? live.receiverIdx ?? 0;
+            const effServerIdx = doubles ? (selectedServerIdx ?? live.serverIdx ?? 0) : 0;
+            const effReceiverIdx = doubles ? (selectedReceiverIdx ?? live.receiverIdx ?? 0) : 0;
             const nextPosA: [number, number] = live.posA ? [...live.posA] : [0, 1];
             const nextPosB: [number, number] = live.posB ? [...live.posB] : [0, 1];
-            // If server is player 1, place player 1 in the Right court (pos[0])
-            if (live.serveTeam === 0) {
-              if (effServerIdx === 1) {
-                nextPosA[0] = 1;
-                nextPosA[1] = 0;
-              }
-              if (effReceiverIdx === 1) {
-                nextPosB[0] = 1;
-                nextPosB[1] = 0;
-              }
-            } else {
-              if (effServerIdx === 1) {
-                nextPosB[0] = 1;
-                nextPosB[1] = 0;
-              }
-              if (effReceiverIdx === 1) {
-                nextPosA[0] = 1;
-                nextPosA[1] = 0;
+            // Đặt người giao đầu tiên và người nhận đầu tiên vào ô Phải (pos[0] - đối diện chéo nhau)
+            if (doubles) {
+              if (live.serveTeam === 0) {
+                nextPosA[0] = effServerIdx;
+                nextPosA[1] = 1 - effServerIdx;
+                nextPosB[0] = effReceiverIdx;
+                nextPosB[1] = 1 - effReceiverIdx;
+              } else {
+                nextPosB[0] = effServerIdx;
+                nextPosB[1] = 1 - effServerIdx;
+                nextPosA[0] = effReceiverIdx;
+                nextPosA[1] = 1 - effReceiverIdx;
               }
             }
             updateMatch(match.id, {
@@ -454,18 +454,6 @@ function LiveScoringPage() {
   }
 
   /* ---------- Màn hình chấm điểm ---------- */
-  const getPlayerDisplay = (name?: string | null) => {
-    if (!name || typeof name !== "string") return name || "—";
-    const icon = live.playerIcons?.[name]?.trim();
-    return icon ? `${icon} ${name}` : name;
-  };
-
-  const currentServeNames = live.serveTeam === 0 ? namesA : namesB;
-  const currentRecvNames = live.serveTeam === 0 ? namesB : namesA;
-  const sIdx = Math.max(0, Math.min(currentServeNames.length - 1, live.serverIdx ?? 0));
-  const rIdx = Math.max(0, Math.min(currentRecvNames.length - 1, live.receiverIdx ?? 0));
-  const serverName = getPlayerDisplay(currentServeNames[sIdx] ?? "—");
-  const receiverName = getPlayerDisplay(currentRecvNames[rIdx] ?? "—");
   const winner =
     Math.max(live.a, live.b) >= live.target &&
     (!live.winBy2 || Math.abs(live.a - live.b) >= 2)
@@ -611,11 +599,111 @@ function LiveScoringPage() {
     });
   };
 
-  // Vị trí trên sân mini:
-  // Đội A ở nửa sân bên trái, Đội B ở nửa sân bên phải.
-  // Đội giao bóng: nếu điểm chẵn giao từ ô Phải (Dưới), điểm lẻ từ ô Trái (Trên).
-  const isScoreEven = (live.serveTeam === 0 ? live.a : live.b) % 2 === 0;
-  const serverBox = isScoreEven ? "right" : "left"; // Phải hoặc Trái
+  // Xác định đội hiển thị bên trái / bên phải sân mini tùy theo trạng thái lật ngang (courtFlipped)
+  const leftTeamIdx: 0 | 1 = courtFlipped ? 1 : 0;
+  const rightTeamIdx: 0 | 1 = courtFlipped ? 0 : 1;
+
+  const getSideCourtPlayers = (teamIdx: 0 | 1, side: "left" | "right") => {
+    const names = teamIdx === 0 ? namesA : namesB;
+    const pos = teamIdx === 0 ? posA : posB;
+
+    if (!doubles) {
+      // Nội dung đơn: điểm chẵn của người giao bóng đứng ô Phải (Chẵn), điểm lẻ đứng ô Trái (Lẻ)
+      const servingScore = live.serveTeam === 0 ? live.a : live.b;
+      const isRightCourtActive = servingScore % 2 === 0;
+      const pName = names[0] || (teamIdx === 0 ? "VĐV A" : "VĐV B");
+      const pNote = live.playerIcons?.[pName]?.trim() || "";
+      const isServ = live.serveTeam === teamIdx;
+      // Nửa sân bên trái: ô Trên là Trái (Lẻ), ô Dưới là Phải (Chẵn)
+      // Nửa sân bên phải: ô Trên là Phải (Chẵn), ô Dưới là Trái (Lẻ)
+      const topIsRightCourt = side === "right";
+      const showInTop = topIsRightCourt ? isRightCourtActive : !isRightCourtActive;
+      return {
+        top: showInTop ? { name: pName, note: pNote, isServ } : { name: "", note: "", isServ: false },
+        bottom: !showInTop ? { name: pName, note: pNote, isServ } : { name: "", note: "", isServ: false },
+      };
+    }
+
+    // Nội dung đôi:
+    // Nửa sân bên trái: ô Trên là Trái (Lẻ - pos[1]), ô Dưới là Phải (Chẵn - pos[0])
+    // Nửa sân bên phải: ô Trên là Phải (Chẵn - pos[0]), ô Dưới là Trái (Lẻ - pos[1])
+    const topPlayerIdx = side === "left" ? (pos[1] ?? 1) : (pos[0] ?? 0);
+    const bottomPlayerIdx = side === "left" ? (pos[0] ?? 0) : (pos[1] ?? 1);
+
+    const topName = names[topPlayerIdx] || names[0] || "";
+    const bottomName = names[bottomPlayerIdx] || names[1] || names[0] || "";
+
+    return {
+      top: {
+        name: topName,
+        note: live.playerIcons?.[topName]?.trim() || "",
+        isServ: live.serveTeam === teamIdx && live.serverIdx === topPlayerIdx,
+      },
+      bottom: {
+        name: bottomName,
+        note: live.playerIcons?.[bottomName]?.trim() || "",
+        isServ: live.serveTeam === teamIdx && live.serverIdx === bottomPlayerIdx,
+      },
+    };
+  };
+
+  const leftSideBoxes = getSideCourtPlayers(leftTeamIdx, "left");
+  const rightSideBoxes = getSideCourtPlayers(rightTeamIdx, "right");
+
+  const ballCount = doubles && isSideout && live.serverNum === 2 ? 2 : 1;
+
+  const renderPickleballIcon = (key: number) => (
+    <svg
+      key={key}
+      className="size-3.5 text-ink/75 shrink-0"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="9.5" />
+      <circle cx="9" cy="8.5" r="1.2" />
+      <circle cx="15" cy="8.5" r="1.2" />
+      <circle cx="12" cy="12" r="1.3" />
+      <circle cx="8.5" cy="14.8" r="1.2" />
+      <circle cx="15.5" cy="14.8" r="1.2" />
+      <circle cx="12" cy="17.5" r="1" />
+      <circle cx="12" cy="6" r="1" />
+    </svg>
+  );
+
+  const renderCourtCell = (
+    cell: { name: string; note: string; isServ: boolean },
+    extraClass = "",
+  ) => {
+    const cleanNote = cell.note.replace(/^\(+|\)+$/g, "").trim();
+    return (
+      <div
+        className={`flex flex-col items-center justify-center px-2 py-1 text-center select-none ${extraClass}`}
+      >
+        {cell.name ? (
+          <>
+            <span className="truncate max-w-full text-sm font-semibold text-ink leading-tight">
+              {cell.name}
+            </span>
+            {cleanNote && (
+              <span className="mt-0.5 truncate max-w-full text-[11px] font-normal text-line/60 leading-tight">
+                ({cleanNote})
+              </span>
+            )}
+            <div className="mt-1 flex h-4 items-center justify-center gap-1.5">
+              {cell.isServ
+                ? Array.from({ length: ballCount }, (_, idx) => renderPickleballIcon(idx))
+                : null}
+            </div>
+          </>
+        ) : null}
+      </div>
+    );
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-paper text-ink overflow-y-auto">
@@ -650,317 +738,103 @@ function LiveScoringPage() {
       </div>
 
       {/* Header điểm số lớn */}
-      <div className="bg-line/5 py-3 text-center border-b border-line/10">
+      <div className="bg-line/5 py-3 text-center border-b border-line/10 shrink-0">
         <div className="flex items-center justify-center gap-3">
           <p className="font-head text-5xl font-extrabold tracking-tight">
             {live.serveTeam === 0 ? live.a : live.b} - {live.serveTeam === 0 ? live.b : live.a}
             {isSideout && doubles ? ` - ${live.serverNum}` : ""}
           </p>
         </div>
-        <p className="mt-1 text-xs font-bold uppercase tracking-wider text-courtdeep">
-          Giao bóng: <span className="underline">{serverName}</span> · Nhận bóng: <span className="underline">{receiverName}</span>
-        </p>
-        <p className="mt-0.5 text-xs text-line/60">
+        <p className="mt-1 text-xs text-line/60">
           {entryName(teamA)} ({live.a}) · {entryName(teamB)} ({live.b})
         </p>
       </div>
 
-      {/* Bảng hiển thị 4 VĐV với trạng thái Giao / Nhận */}
-      <div className="bg-card px-4 py-2.5 border-b border-line/10">
-        <div className="mx-auto max-w-2xl grid grid-cols-2 gap-4">
-          {/* Đội A */}
-          <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="text-xs font-bold uppercase tracking-tight text-accent truncate">
-                Đội A: {entryName(teamA)}
-              </span>
-              <span className="font-head text-sm font-bold">{live.a} điểm</span>
-            </div>
-            <div className="space-y-1.5">
-              {namesA.map((pName, idx) => {
-                const isServ = live.serveTeam === 0 && live.serverIdx === idx;
-                const isRecv = live.serveTeam === 1 && live.receiverIdx === idx;
-                return (
-                  <div
-                    key={pName + idx}
-                    className={`flex items-center justify-between rounded-lg px-2.5 py-1.5 text-xs transition-all ${
-                      isServ
-                        ? "bg-accent/20 border border-accent font-bold text-accent shadow-xs"
-                        : isRecv
-                          ? "bg-court/20 border border-courtdeep font-bold text-courtdeep"
-                          : "bg-paper/70 border border-line/15 text-line/70"
-                    }`}
-                  >
-                    <span className="truncate flex-1 font-medium">{getPlayerDisplay(pName)}</span>
-                    {isServ && (
-                      <span className="shrink-0 rounded bg-accent px-1.5 py-0.5 text-[10px] font-bold text-accent-foreground animate-pulse">
-                        🎾 Giao bóng {isSideout && doubles ? `(${live.serverNum})` : ""}
-                      </span>
-                    )}
-                    {isRecv && (
-                      <span className="shrink-0 rounded bg-courtdeep px-1.5 py-0.5 text-[10px] font-bold text-paper">
-                        🛡️ Nhận bóng
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Đội B */}
-          <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="text-xs font-bold uppercase tracking-tight text-blue-600 dark:text-blue-400 truncate">
-                Đội B: {entryName(teamB)}
-              </span>
-              <span className="font-head text-sm font-bold">{live.b} điểm</span>
-            </div>
-            <div className="space-y-1.5">
-              {namesB.map((pName, idx) => {
-                const isServ = live.serveTeam === 1 && live.serverIdx === idx;
-                const isRecv = live.serveTeam === 0 && live.receiverIdx === idx;
-                return (
-                  <div
-                    key={pName + idx}
-                    className={`flex items-center justify-between rounded-lg px-2.5 py-1.5 text-xs transition-all ${
-                      isServ
-                        ? "bg-accent/20 border border-accent font-bold text-accent shadow-xs"
-                        : isRecv
-                          ? "bg-court/20 border border-courtdeep font-bold text-courtdeep"
-                          : "bg-paper/70 border border-line/15 text-line/70"
-                    }`}
-                  >
-                    <span className="truncate flex-1 font-medium">{getPlayerDisplay(pName)}</span>
-                    {isServ && (
-                      <span className="shrink-0 rounded bg-accent px-1.5 py-0.5 text-[10px] font-bold text-accent-foreground animate-pulse">
-                        🎾 Giao bóng {isSideout && doubles ? `(${live.serverNum})` : ""}
-                      </span>
-                    )}
-                    {isRecv && (
-                      <span className="shrink-0 rounded bg-courtdeep px-1.5 py-0.5 text-[10px] font-bold text-paper">
-                        🛡️ Nhận bóng
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-
-        {/* Sân bóng Mini mô phỏng vị trí VĐV theo ô đứng */}
-        <div className="mx-auto mt-3 max-w-md">
-          {doubles && (
-            <div className="mb-1.5 flex flex-wrap items-center justify-between gap-1 text-[10px] text-line/60">
-              <div className="flex gap-1">
-                <button
-                  type="button"
-                  className="rounded bg-secondary px-1.5 py-0.5 font-bold hover:bg-secondary/80 ring-1 ring-line/15"
-                  onClick={() =>
-                    push({
-                      posA: [posA[1], posA[0]],
-                    })
-                  }
-                  title="Đổi ô đứng của 2 VĐV Đội A"
-                >
-                  ↔️ Đổi ô Đội A
-                </button>
-                <button
-                  type="button"
-                  className="rounded bg-secondary px-1.5 py-0.5 font-bold hover:bg-secondary/80 ring-1 ring-line/15"
-                  onClick={() =>
-                    push({
-                      posB: [posB[1], posB[0]],
-                    })
-                  }
-                  title="Đổi ô đứng của 2 VĐV Đội B"
-                >
-                  ↔️ Đổi ô Đội B
-                </button>
-              </div>
-              <div className="flex gap-1">
-                <button
-                  type="button"
-                  className="rounded bg-secondary px-1.5 py-0.5 font-bold hover:bg-secondary/80 ring-1 ring-line/15"
-                  onClick={() =>
-                    push({
-                      serverIdx: 1 - live.serverIdx,
-                    })
-                  }
-                  title="Đổi quyền giao bóng cho đồng đội"
-                >
-                  🔄 Đổi người giao
-                </button>
-                <button
-                  type="button"
-                  className="rounded bg-secondary px-1.5 py-0.5 font-bold hover:bg-secondary/80 ring-1 ring-line/15"
-                  onClick={() =>
-                    push({
-                      receiverIdx: 1 - live.receiverIdx,
-                    })
-                  }
-                  title="Đổi quyền nhận bóng cho đối thủ"
-                >
-                  🔄 Đổi người nhận
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div className="relative h-32 w-full overflow-hidden rounded-xl border-2 border-white/90 bg-emerald-800 shadow-inner select-none">
-            {/* Vạch lưới chính giữa */}
-            <div className="absolute inset-y-0 left-1/2 w-1.5 -translate-x-1/2 bg-white z-20 shadow-md flex items-center justify-center">
-              <span className="rotate-90 text-[8px] font-extrabold uppercase tracking-widest text-emerald-950 bg-white/95 px-1 py-0.5 rounded shadow-xs">
-                Lưới
-              </span>
-            </div>
-            {/* Kitchen (NVZ) trái */}
-            <div className="absolute inset-y-0 left-[34%] w-0.5 bg-white/60 z-10" />
-            {/* Kitchen (NVZ) phải */}
-            <div className="absolute inset-y-0 right-[34%] w-0.5 bg-white/60 z-10" />
-            {/* Vạch giữa ô giao bóng bên trái */}
-            <div className="absolute left-0 top-1/2 right-[66%] h-0.5 bg-white/60" />
-            {/* Vạch giữa ô giao bóng bên phải */}
-            <div className="absolute left-[66%] top-1/2 right-0 h-0.5 bg-white/60" />
-
-            {/* Vị trí VĐV Đội A (Nửa trái): Ô trên là Trái (Lẻ), Ô dưới là Phải (Chẵn) */}
-            <div className="absolute inset-y-0 left-0 w-[34%] grid grid-rows-2 p-1 gap-1">
-              {/* Ô Trái (Lẻ) - index posA[1] */}
-              {(() => {
-                const idx = doubles ? (posA[1] ?? 1) : 0;
-                const pName = (doubles ? namesA[idx] : namesA[0]) || namesA[0] || "VĐV A";
-                const isServ = live.serveTeam === 0 && live.serverIdx === idx;
-                const isRecv = live.serveTeam === 1 && live.receiverIdx === idx;
-                return (
-                  <div
-                    className={`flex flex-col justify-center rounded px-1 text-[10px] truncate transition ${
-                      isServ
-                        ? "bg-amber-400 text-black font-extrabold shadow-md ring-2 ring-amber-300"
-                        : isRecv
-                          ? "bg-blue-400 text-black font-extrabold ring-2 ring-white"
-                          : "bg-emerald-900/80 text-white/90 border border-white/20"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between text-[8px] opacity-75">
-                      <span>{doubles ? "Trái (Lẻ)" : "A"}</span>
-                      {isServ && <span>🎾</span>}
-                      {isRecv && <span>🛡️</span>}
-                    </div>
-                    <span className="truncate font-bold">{pName}</span>
-                  </div>
-                );
-              })()}
-
-              {/* Ô Phải (Chẵn) - index posA[0] */}
-              {(() => {
-                const idx = doubles ? (posA[0] ?? 0) : 0;
-                const pName = (doubles ? namesA[idx] : namesA[0]) || namesA[0] || "VĐV A";
-                const isServ = live.serveTeam === 0 && live.serverIdx === idx;
-                const isRecv = live.serveTeam === 1 && live.receiverIdx === idx;
-                return (
-                  <div
-                    className={`flex flex-col justify-center rounded px-1 text-[10px] truncate transition ${
-                      isServ
-                        ? "bg-amber-400 text-black font-extrabold shadow-md ring-2 ring-amber-300"
-                        : isRecv
-                          ? "bg-blue-400 text-black font-extrabold ring-2 ring-white"
-                          : "bg-emerald-900/80 text-white/90 border border-white/20"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between text-[8px] opacity-75">
-                      <span>{doubles ? "Phải (Chẵn)" : "A"}</span>
-                      {isServ && <span>🎾</span>}
-                      {isRecv && <span>🛡️</span>}
-                    </div>
-                    <span className="truncate font-bold">{pName}</span>
-                  </div>
-                );
-              })()}
-            </div>
-
-            {/* Vị trí VĐV Đội B (Nửa phải): Ô trên là Phải (Chẵn), Ô dưới là Trái (Lẻ) để chéo qua lưới! */}
-            <div className="absolute inset-y-0 right-0 w-[34%] grid grid-rows-2 p-1 gap-1 text-right">
-              {/* Ô Phải (Chẵn) - index posB[0] */}
-              {(() => {
-                const idx = doubles ? (posB[0] ?? 0) : 0;
-                const pName = (doubles ? namesB[idx] : namesB[0]) || namesB[0] || "VĐV B";
-                const isServ = live.serveTeam === 1 && live.serverIdx === idx;
-                const isRecv = live.serveTeam === 0 && live.receiverIdx === idx;
-                return (
-                  <div
-                    className={`flex flex-col justify-center rounded px-1 text-[10px] truncate transition ${
-                      isServ
-                        ? "bg-amber-400 text-black font-extrabold shadow-md ring-2 ring-amber-300"
-                        : isRecv
-                          ? "bg-blue-400 text-black font-extrabold ring-2 ring-white"
-                          : "bg-emerald-900/80 text-white/90 border border-white/20"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between text-[8px] opacity-75">
-                      {isServ && <span>🎾</span>}
-                      {isRecv && <span>🛡️</span>}
-                      <span className="ml-auto">{doubles ? "Phải (Chẵn)" : "B"}</span>
-                    </div>
-                    <span className="truncate font-bold">{pName}</span>
-                  </div>
-                );
-              })()}
-
-              {/* Ô Trái (Lẻ) - index posB[1] */}
-              {(() => {
-                const idx = doubles ? (posB[1] ?? 1) : 0;
-                const pName = (doubles ? namesB[idx] : namesB[0]) || namesB[0] || "VĐV B";
-                const isServ = live.serveTeam === 1 && live.serverIdx === idx;
-                const isRecv = live.serveTeam === 0 && live.receiverIdx === idx;
-                return (
-                  <div
-                    className={`flex flex-col justify-center rounded px-1 text-[10px] truncate transition ${
-                      isServ
-                        ? "bg-amber-400 text-black font-extrabold shadow-md ring-2 ring-amber-300"
-                        : isRecv
-                          ? "bg-blue-400 text-black font-extrabold ring-2 ring-white"
-                          : "bg-emerald-900/80 text-white/90 border border-white/20"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between text-[8px] opacity-75">
-                      {isServ && <span>🎾</span>}
-                      {isRecv && <span>🛡️</span>}
-                      <span className="ml-auto">{doubles ? "Trái (Lẻ)" : "B"}</span>
-                    </div>
-                    <span className="truncate font-bold">{pName}</span>
-                  </div>
-                );
-              })()}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Hai nút ghi điểm khổng lồ */}
-      <div className="grid flex-1 grid-cols-2 min-h-[160px]">
+      {/* Vùng chính: 2 ô bấm điểm lớn chiếm trọn 2 nửa Trái / Phải + Sân Pickleball Mini thanh mảnh ở giữa */}
+      <div className="relative grid flex-1 grid-cols-2 min-h-[340px]">
+        {/* Ô bấm điểm lớn bên TRÁI */}
         <button
-          className="flex flex-col items-center justify-center bg-court/15 transition hover:bg-court/25 active:scale-[0.99]"
+          type="button"
+          className="flex flex-col items-center justify-end pb-12 sm:pb-16 pt-48 bg-court/15 transition hover:bg-court/20 active:bg-court/25 cursor-pointer select-none"
           onClick={() => (isSideout ? scoreForServing() : pointFor(0))}
         >
-          <span className="font-head text-5xl font-extrabold uppercase tracking-tight text-courtdeep">
+          <span className="font-head text-4xl sm:text-5xl font-extrabold uppercase tracking-tight text-courtdeep">
             +1 Điểm
           </span>
           <span className="mt-2 text-xs font-semibold text-line/70">
             cho {isSideout ? (live.serveTeam === 0 ? entryName(teamA) : entryName(teamB)) : entryName(teamA)}
           </span>
         </button>
+
+        {/* Ô bấm điểm lớn bên PHẢI */}
         <button
-          className="flex flex-col items-center justify-center bg-card transition hover:bg-card/80 active:scale-[0.99] border-l border-line/10"
+          type="button"
+          className="flex flex-col items-center justify-end pb-12 sm:pb-16 pt-48 bg-card transition hover:bg-card/80 active:bg-line/10 border-l border-line/15 cursor-pointer select-none"
           onClick={() => (isSideout ? sideOut() : pointFor(1))}
         >
-          <span className="font-head text-5xl font-extrabold uppercase tracking-tight text-line">
+          <span className="font-head text-4xl sm:text-5xl font-extrabold uppercase tracking-tight text-line">
             {isSideout ? "Mất giao" : "+1 Điểm"}
           </span>
           <span className="mt-2 text-xs font-semibold text-line/70">
             {isSideout ? "Đổi lượt giao (Side-out)" : `cho ${entryName(teamB)}`}
           </span>
         </button>
+
+        {/* Sân Pickleball Mini đặt ở giữa phía trên + nút lật ngang sân */}
+        <div
+          className="pointer-events-none absolute inset-x-0 top-4 sm:top-6 z-10 flex flex-col items-center px-3"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="pointer-events-auto w-full max-w-[440px] overflow-hidden rounded-xl border border-line/35 bg-paper shadow-xs"
+          >
+            <div className="grid h-36 sm:h-40 grid-cols-[1fr_28px_28px_1fr]">
+              {/* Nửa sân bên trái: 2 ô trên / dưới */}
+              <div className="grid grid-rows-2 border-r border-line/30">
+                {renderCourtCell(leftSideBoxes.top, "border-b border-line/30")}
+                {renderCourtCell(leftSideBoxes.bottom)}
+              </div>
+
+              {/* Khu vực Kitchen (NVZ) bên trái lưới */}
+              <div className="border-r border-line/45 bg-line/[0.03]" />
+
+              {/* Khu vực Kitchen (NVZ) bên phải lưới */}
+              <div className="border-r border-line/30 bg-line/[0.03]" />
+
+              {/* Nửa sân bên phải: 2 ô trên / dưới */}
+              <div className="grid grid-rows-2">
+                {renderCourtCell(rightSideBoxes.top, "border-b border-line/30")}
+                {renderCourtCell(rightSideBoxes.bottom)}
+              </div>
+            </div>
+          </div>
+
+          {/* Nút lật ngược sân theo chiều ngang ở giữa bên dưới sân mini */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setCourtFlipped((f) => !f);
+            }}
+            title="Lật ngược sân Pickleball theo chiều ngang"
+            aria-label="Lật ngược sân Pickleball theo chiều ngang"
+            className="pointer-events-auto mt-1.5 flex items-center justify-center rounded-full border border-line/25 bg-paper px-2.5 py-1 text-xs font-semibold text-line/70 shadow-2xs transition hover:border-line/50 hover:text-ink active:scale-95 cursor-pointer"
+          >
+            <svg
+              className="size-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M7 16l-4-4 4-4" />
+              <path d="M17 8l4 4-4 4" />
+              <line x1="3" y1="12" x2="21" y2="12" />
+            </svg>
+          </button>
+        </div>
       </div>
 
       {/* Thanh hội ý & Y tế */}

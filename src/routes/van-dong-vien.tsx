@@ -424,7 +424,10 @@ function PlayersPage() {
 
   return (
     <div>
-      <h1 className="text-balance font-head text-4xl font-bold uppercase leading-none tracking-tighter text-[#0a3320]">
+      <h1
+        className="text-balance font-head text-4xl font-bold uppercase leading-none tracking-tighter text-[#0a3320]"
+        style={{ color: "#0a3320" }}
+      >
         Danh sách VĐV
       </h1>
 
@@ -759,7 +762,7 @@ function PlayersPage() {
                           </div>
                           {pts > 0 && (
                             <span className="shrink-0 rounded bg-accent/15 px-1 py-0.5 text-[10px] font-bold text-accent">
-                              {formatRating(Number(pts.toFixed(4)))}đ
+                              {formatRating(Number(pts.toFixed(4)))}
                             </span>
                           )}
                           <button
@@ -838,7 +841,7 @@ function PlayersPage() {
                         <span className="truncate max-w-[140px]">{entryName(e)}</span>
                         {pts > 0 && (
                           <span className="rounded bg-accent/15 px-1 py-0.5 text-[10px] font-bold text-accent">
-                            {formatRating(Number(pts.toFixed(4)))}đ
+                            {formatRating(Number(pts.toFixed(4)))}
                           </span>
                         )}
                         <select
@@ -1033,6 +1036,7 @@ function RatingInput({
 
 function num(v: string | undefined): number | null {
   if (!v || !v.trim()) return null;
-  const n = Number(v.replace(",", "."));
+  const cleaned = v.replace(/[đd\s]+$/i, "").replace(",", ".");
+  const n = Number(cleaned);
   return Number.isFinite(n) ? n : null;
 }

@@ -1719,23 +1719,15 @@ export function autoScheduleTimeline(
 
   const readyMatches = matches.map((m) => ({ ...m }));
 
-  // Kiểm tra tình trạng vòng bảng:
-  const groupMatches = readyMatches.filter((m) => m.stage === "group");
-  const hasGroup = groupMatches.length > 0;
-  const allGroupDone = hasGroup && groupMatches.every((m) => m.status === "done");
+  // Các trận chưa xếp lịch (bỏ qua các trận KO được miễn đấu BYE ở vòng 1)
+  const isByeKo = (m: Match) =>
+    m.stage === "ko" &&
+    (m.customPlaceholderA?.trim().toLowerCase() === "bye" ||
+      m.customPlaceholderB?.trim().toLowerCase() === "bye");
 
-  // Các trận chưa xếp lịch:
-  // Nếu có vòng bảng và chưa xong hết vòng bảng -> CHỈ xếp các trận vòng bảng!
-  // Tuyệt đối không xếp vòng loại trực tiếp (KO) cho đến khi toàn bộ vòng bảng có kết quả!
-  const unassigned = readyMatches.filter((m) => typeof m.timeSlot !== "number");
-
-  let toSchedule: Match[] = [];
-  if (hasGroup && !allGroupDone) {
-    toSchedule = unassigned.filter((m) => m.stage === "group");
-  } else {
-    // Đã xong vòng bảng hoặc không có vòng bảng -> Xếp vòng bảng còn lại (nếu có) rồi mới đến KO
-    toSchedule = unassigned;
-  }
+  const toSchedule = readyMatches.filter(
+    (m) => typeof m.timeSlot !== "number" && !isByeKo(m),
+  );
 
   // Tách thành các nhóm theo round và stage để xếp tuần tự
   // Nhóm 1: Vòng bảng theo từng Round 1, 2, 3...
@@ -1748,19 +1740,14 @@ export function autoScheduleTimeline(
   );
 
   let currentMinSlot = 0;
-  let courtIdx = 0;
 
   // 1. Xếp các trận vòng bảng theo từng round
   for (const r of groupRounds) {
     const roundMatches = toSchedule.filter((m) => m.stage === "group" && (m.round ?? 1) === r);
     let maxSlotUsedInRound = currentMinSlot;
+    let courtIdx = 0;
 
     for (const m of roundMatches) {
-      // Bỏ qua trận vòng 2, 3 của bảng 3 đội nếu chưa xác định được đối thủ
-      if ((m.round === 2 || m.round === 3) && !m.aId && m.customPlaceholderA) {
-        continue;
-      }
-
       // Tìm court và slot khả dụng từ currentMinSlot trở đi
       let placed = false;
       let slotCheck = currentMinSlot;
@@ -1788,48 +1775,49 @@ export function autoScheduleTimeline(
     currentMinSlot = maxSlotUsedInRound + 1;
   }
 
-  // 2. Nếu đã hoàn thành vòng bảng (hoặc giải thuần loại trực tiếp), xếp các trận KO
-  if (!hasGroup || allGroupDone) {
-    // Đảm bảo KO bắt đầu sau tất cả các trận vòng bảng đã có trên timeline
-    let maxOverallGroupSlot = currentMinSlot - 1;
-    readyMatches
-      .filter((m) => m.stage === "group" && typeof m.timeSlot === "number")
-      .forEach((m) => {
-        if (m.timeSlot! > maxOverallGroupSlot) {
-          maxOverallGroupSlot = m.timeSlot!;
-        }
-      });
-    currentMinSlot = Math.max(currentMinSlot, maxOverallGroupSlot + 1);
-
-    for (const r of koRounds) {
-      const roundMatches = toSchedule.filter((m) => m.stage === "ko" && (m.round ?? 1) === r);
-      let maxSlotUsedInRound = currentMinSlot;
-
-      for (const m of roundMatches) {
-        let placed = false;
-        let slotCheck = currentMinSlot;
-        while (!placed && slotCheck < 200) {
-          for (let cOffset = 0; cOffset < courtList.length; cOffset++) {
-            const court = courtList[(courtIdx + cOffset) % courtList.length]!;
-            const usage = courtUsage.get(court) ?? new Set<number>();
-            if (!usage.has(slotCheck)) {
-              usage.add(slotCheck);
-              courtUsage.set(court, usage);
-              m.court = court;
-              m.timeSlot = slotCheck;
-              courtIdx = (courtIdx + cOffset + 1) % courtList.length;
-              if (slotCheck > maxSlotUsedInRound) {
-                maxSlotUsedInRound = slotCheck;
-              }
-              placed = true;
-              break;
-            }
-          }
-          if (!placed) slotCheck++;
-        }
+  // 2. Xếp tiếp các trận vòng loại trực tiếp (KO) ngay sau vòng bảng
+  let maxOverallGroupSlot = currentMinSlot - 1;
+  readyMatches
+    .filter((m) => m.stage === "group" && typeof m.timeSlot === "number")
+    .forEach((m) => {
+      if (m.timeSlot! > maxOverallGroupSlot) {
+        maxOverallGroupSlot = m.timeSlot!;
       }
-      currentMinSlot = maxSlotUsedInRound + 1;
+    });
+  currentMinSlot = Math.max(currentMinSlot, maxOverallGroupSlot + 1);
+
+  for (const r of koRounds) {
+    // Trong cùng 1 round KO, xếp trận tranh hạng 3 trước hoặc cùng đợt với chung kết
+    const roundMatches = toSchedule
+      .filter((m) => m.stage === "ko" && (m.round ?? 1) === r)
+      .sort((a, b) => (a.slot ?? 0) - (b.slot ?? 0));
+    let maxSlotUsedInRound = currentMinSlot;
+    let courtIdx = 0;
+
+    for (const m of roundMatches) {
+      let placed = false;
+      let slotCheck = currentMinSlot;
+      while (!placed && slotCheck < 200) {
+        for (let cOffset = 0; cOffset < courtList.length; cOffset++) {
+          const court = courtList[(courtIdx + cOffset) % courtList.length]!;
+          const usage = courtUsage.get(court) ?? new Set<number>();
+          if (!usage.has(slotCheck)) {
+            usage.add(slotCheck);
+            courtUsage.set(court, usage);
+            m.court = court;
+            m.timeSlot = slotCheck;
+            courtIdx = (courtIdx + cOffset + 1) % courtList.length;
+            if (slotCheck > maxSlotUsedInRound) {
+              maxSlotUsedInRound = slotCheck;
+            }
+            placed = true;
+            break;
+          }
+        }
+        if (!placed) slotCheck++;
+      }
     }
+    currentMinSlot = maxSlotUsedInRound + 1;
   }
 
   return readyMatches;

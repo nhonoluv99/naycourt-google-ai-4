@@ -119,7 +119,10 @@ function EventsPage() {
 
   return (
     <div className="w-full">
-      <h1 className="text-balance font-head text-4xl font-bold uppercase leading-none tracking-tighter text-[#0a3320]">
+      <h1
+        className="text-balance font-head text-4xl font-bold uppercase leading-none tracking-tighter text-[#0a3320]"
+        style={{ color: "#0a3320" }}
+      >
         Nội dung thi đấu
       </h1>
       <p className="mt-2 max-w-xl text-sm text-line/60">
