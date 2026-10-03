@@ -3,6 +3,8 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as React from "react";
 import {
   entryName,
+  getMatchEntryA,
+  getMatchEntryB,
   propagateKnockout,
   useTournament,
   type LiveState,
@@ -133,8 +135,8 @@ function LiveScoringPage() {
   }
 
   const ev = state.events.find((e) => e.id === match.eventId);
-  const teamA = state.entries.find((e) => e.id === match.aId);
-  const teamB = state.entries.find((e) => e.id === match.bId);
+  const teamA = getMatchEntryA(match, state.entries);
+  const teamB = getMatchEntryB(match, state.entries);
   const rawNamesA = teamA?.players.map((p) => p.name?.trim()).filter(Boolean) ?? [];
   const rawNamesB = teamB?.players.map((p) => p.name?.trim()).filter(Boolean) ?? [];
   const namesA = rawNamesA.length > 0 ? rawNamesA : [entryName(teamA)];

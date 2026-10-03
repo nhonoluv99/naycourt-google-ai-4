@@ -72,6 +72,10 @@ export type Match = {
   slot?: number;
   aId: string | null;
   bId: string | null;
+  /** Danh sách 2 ID VĐV cá nhân cho đội A trong nội dung đôi đổi partner ngẫu nhiên */
+  aEntryIds?: [string, string];
+  /** Danh sách 2 ID VĐV cá nhân cho đội B trong nội dung đôi đổi partner ngẫu nhiên */
+  bEntryIds?: [string, string];
   customPlaceholderA?: string;
   customPlaceholderB?: string;
   scoreA: number | null;
@@ -304,6 +308,52 @@ export function entryName(e: Entry | undefined | null): string {
   return names.length ? names.join(" & ") : "Chưa đặt tên";
 }
 
+/** Kiểm tra xem nội dung có phải là Đôi đấu vòng tròn đổi partner ngẫu nhiên không */
+export function isRotatingDoubles(ev: TEvent | undefined | null): boolean {
+  if (!ev) return false;
+  return ev.bracket === "rr" && ev.mode === "doi" && ev.pairMode === "random";
+}
+
+/** Lấy thông tin đội A của trận đấu (hỗ trợ cả cặp cố định lẫn cặp ghép ngẫu nhiên theo trận) */
+export function getMatchEntryA(m: Match | undefined | null, entries: Entry[]): Entry | undefined {
+  if (!m) return undefined;
+  if (m.aEntryIds && m.aEntryIds.length === 2) {
+    const e1 = entries.find((e) => e.id === m.aEntryIds![0]);
+    const e2 = entries.find((e) => e.id === m.aEntryIds![1]);
+    const p1 = e1?.players[0];
+    const p2 = e2?.players[0];
+    if (p1 || p2) {
+      return {
+        id: `${m.aEntryIds[0]}_${m.aEntryIds[1]}`,
+        eventId: m.eventId,
+        players: [p1 || { name: "VĐV 1", rating: null }, p2 || { name: "VĐV 2", rating: null }],
+        paid: Boolean(p1?.paid && p2?.paid),
+      };
+    }
+  }
+  return entries.find((e) => e.id === m.aId);
+}
+
+/** Lấy thông tin đội B của trận đấu (hỗ trợ cả cặp cố định lẫn cặp ghép ngẫu nhiên theo trận) */
+export function getMatchEntryB(m: Match | undefined | null, entries: Entry[]): Entry | undefined {
+  if (!m) return undefined;
+  if (m.bEntryIds && m.bEntryIds.length === 2) {
+    const e1 = entries.find((e) => e.id === m.bEntryIds![0]);
+    const e2 = entries.find((e) => e.id === m.bEntryIds![1]);
+    const p1 = e1?.players[0];
+    const p2 = e2?.players[0];
+    if (p1 || p2) {
+      return {
+        id: `${m.bEntryIds[0]}_${m.bEntryIds[1]}`,
+        eventId: m.eventId,
+        players: [p1 || { name: "VĐV 1", rating: null }, p2 || { name: "VĐV 2", rating: null }],
+        paid: Boolean(p1?.paid && p2?.paid),
+      };
+    }
+  }
+  return entries.find((e) => e.id === m.bId);
+}
+
 export function entryRating(e: Entry): number {
   const rs = e.players.map((p) => p.rating).filter((r): r is number => typeof r === "number" && !isNaN(r));
   return rs.length ? Math.round(rs.reduce((a, b) => a + b, 0) * 10000) / 10000 : 0;
@@ -442,8 +492,299 @@ function roundRobinRounds(ids: string[]): Array<Array<[string, string]>> {
   return rounds;
 }
 
+/**
+ * Tính số trận mỗi VĐV thi đấu trong nội dung đôi đổi partner ngẫu nhiên sao cho:
+ * 1. Số trận của tất cả VĐV bằng nhau tuyệt đối.
+ * 2. Không bao giờ bị trùng lặp partner.
+ */
+export function getRotatingMatchesPerPlayer(n: number): number {
+  if (n < 4) return 0;
+  for (let k = n - 1; k >= 2; k--) {
+    if ((n * k) % 4 === 0) return k;
+  }
+  return 0;
+}
+
+/**
+ * Sinh danh sách chỉ số cặp [ [pA1, pA2], [pB1, pB2] ] cho n người chơi:
+ * Đảm bảo:
+ * 1. Mọi VĐV đều đánh số trận bằng nhau tuyệt đối (playCounts[i] === targetK).
+ * 2. Không một cặp partner nào bị trùng lặp lại (mỗi cặp [p1, p2] xuất hiện tối đa 1 lần).
+ */
+export function getRotatingScheduleIndices(n: number): [[number, number], [number, number]][] {
+  if (n < 4) return [];
+
+  // Mẫu kiểm định chuẩn tối ưu cho các số lượng phổ biến:
+  if (n === 4) {
+    return [
+      [[0, 1], [2, 3]],
+      [[0, 2], [1, 3]],
+      [[0, 3], [1, 2]],
+    ];
+  }
+
+  if (n === 5) {
+    return [
+      [[0, 1], [2, 3]],
+      [[0, 2], [1, 4]],
+      [[0, 3], [2, 4]],
+      [[0, 4], [1, 3]],
+      [[1, 2], [3, 4]],
+    ];
+  }
+
+  // 6 người: Mỗi người đánh đúng 4 trận (tổng 6 trận), 12 cặp partner đều phân biệt, không ai trùng partner!
+  if (n === 6) {
+    return [
+      [[0, 1], [2, 3]],
+      [[0, 2], [4, 5]],
+      [[0, 3], [1, 2]],
+      [[1, 4], [3, 5]],
+      [[0, 4], [2, 5]],
+      [[1, 5], [3, 4]],
+    ];
+  }
+
+  // 7 người: Mỗi người đánh đúng 4 trận (tổng 7 trận), 14 cặp partner đều phân biệt, không ai trùng partner!
+  if (n === 7) {
+    return [
+      [[0, 1], [2, 3]],
+      [[0, 2], [1, 3]],
+      [[0, 3], [1, 4]],
+      [[0, 4], [5, 6]],
+      [[1, 5], [2, 6]],
+      [[2, 5], [4, 6]],
+      [[3, 6], [4, 5]],
+    ];
+  }
+
+  // Thuật toán vòng tròn (Circle method) cho n chia hết cho 4 (8, 12, 16...):
+  // n - 1 vòng, mỗi vòng n/4 trận. Mọi VĐV đánh đúng n - 1 trận, gặp đủ tất cả partner khác nhau!
+  if (n % 4 === 0) {
+    const k = n / 4;
+    const numRounds = n - 1;
+    const numPairs = n / 2;
+    const fixed = 0;
+    let rotating = Array.from({ length: n - 1 }, (_, i) => i + 1);
+    const matches: [[number, number], [number, number]][] = [];
+    for (let r = 0; r < numRounds; r++) {
+      const list = [fixed, ...rotating];
+      const pairs: [number, number][] = [];
+      for (let i = 0; i < numPairs; i++) {
+        pairs.push([list[i]!, list[n - 1 - i]!]);
+      }
+      for (let m = 0; m < k; m++) {
+        matches.push([pairs[m * 2]!, pairs[m * 2 + 1]!]);
+      }
+      rotating = [rotating[rotating.length - 1]!, ...rotating.slice(0, rotating.length - 1)];
+    }
+    return matches;
+  }
+
+  // Thuật toán vành cyclic cho n = 4k + 1 (9, 13, 17...):
+  // n vòng, mỗi vòng k trận. Mọi VĐV đánh đúng n - 1 trận, không trùng partner!
+  if (n % 4 === 1) {
+    const k = (n - 1) / 4;
+    const matches: [[number, number], [number, number]][] = [];
+    for (let r = 0; r < n; r++) {
+      const pairs: [number, number][] = [];
+      for (let d = 1; d <= 2 * k; d++) {
+        const p1 = (r + d) % n;
+        const p2 = (r - d + n) % n;
+        pairs.push([p1, p2]);
+      }
+      for (let m = 0; m < k; m++) {
+        matches.push([pairs[m * 2]!, pairs[m * 2 + 1]!]);
+      }
+    }
+    return matches;
+  }
+
+  // Thuật toán tìm kiếm ràng buộc chính xác cho các giá trị n khác (ví dụ: 10, 11, 14, 15...):
+  const targetK = getRotatingMatchesPerPlayer(n);
+  if (targetK === 0) return [];
+  const totalMatches = (n * targetK) / 4;
+
+  const allPairs: [number, number][] = [];
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      allPairs.push([i, j]);
+    }
+  }
+
+  const possibleMatches: [[number, number], [number, number]][] = [];
+  for (let i = 0; i < allPairs.length; i++) {
+    for (let j = i + 1; j < allPairs.length; j++) {
+      const pA = allPairs[i]!;
+      const pB = allPairs[j]!;
+      if (pA[0] !== pB[0] && pA[0] !== pB[1] && pA[1] !== pB[0] && pA[1] !== pB[1]) {
+        possibleMatches.push([pA, pB]);
+      }
+    }
+  }
+
+  for (let attempt = 0; attempt < 1000; attempt++) {
+    const partnerUsed = new Set<string>();
+    const playCounts = new Array(n).fill(0);
+    const selected: [[number, number], [number, number]][] = [];
+    const shuffled = [...possibleMatches].sort(() => Math.random() - 0.5);
+
+    for (const [pA, pB] of shuffled) {
+      const kA = `${pA[0]}_${pA[1]}`;
+      const kB = `${pB[0]}_${pB[1]}`;
+      if (partnerUsed.has(kA) || partnerUsed.has(kB)) continue;
+      if (
+        playCounts[pA[0]] >= targetK ||
+        playCounts[pA[1]] >= targetK ||
+        playCounts[pB[0]] >= targetK ||
+        playCounts[pB[1]] >= targetK
+      ) {
+        continue;
+      }
+
+      partnerUsed.add(kA);
+      partnerUsed.add(kB);
+      playCounts[pA[0]]++;
+      playCounts[pA[1]]++;
+      playCounts[pB[0]]++;
+      playCounts[pB[1]]++;
+      selected.push([pA, pB]);
+      if (selected.length === totalMatches) break;
+    }
+
+    if (selected.length === totalMatches && playCounts.every((c) => c === targetK)) {
+      return selected;
+    }
+  }
+
+  return [];
+}
+
+/**
+ * Sinh lịch đấu vòng tròn đổi partner ngẫu nhiên cho nội dung đôi:
+ * - Sau mỗi trận/vòng, các VĐV sẽ đổi partner sao cho:
+ *   1. Mọi VĐV đều đánh SỐ TRẬN BẰNG NHAU TUYỆT ĐỐI.
+ *   2. KHÔNG BAO GIỜ BỊ TRÙNG LẶP PARTNER.
+ *   3. Phân chia theo từng vòng đấu hợp lý để không bị trùng giờ trên sân.
+ */
+export function generateRotatingDoublesMatches(
+  ev: TEvent,
+  entries: Entry[],
+  courts: string[],
+): Match[] {
+  const n = entries.length;
+  if (n < 4) return [];
+
+  const courtList = courts.length ? courts : ["Sân 1"];
+  const schedulePairs = getRotatingScheduleIndices(n);
+  if (schedulePairs.length === 0) return [];
+
+  // Phân chia các trận vào từng Round sao cho trong cùng 1 round không VĐV nào phải đánh cùng lúc 2 sân
+  const maxMatchesPerRound = Math.max(1, Math.floor(n / 4));
+  const remaining = new Set<number>(schedulePairs.keys());
+  const roundMap = new Map<number, number>();
+  const courtMap = new Map<number, string>();
+
+  let round = 1;
+  while (remaining.size > 0) {
+    const playersInRound = new Set<number>();
+    let courtIdx = 0;
+    for (const mIdx of [...remaining]) {
+      if (courtIdx >= maxMatchesPerRound) break;
+      const [pA, pB] = schedulePairs[mIdx]!;
+      const players = [...pA, ...pB];
+      if (players.some((p) => playersInRound.has(p))) continue;
+
+      players.forEach((p) => playersInRound.add(p));
+      roundMap.set(mIdx, round);
+      courtMap.set(mIdx, courtList[courtIdx % courtList.length]!);
+      remaining.delete(mIdx);
+      courtIdx++;
+    }
+    round++;
+    if (round > 250) break;
+  }
+
+  const matches: Match[] = [];
+  schedulePairs.forEach(([pairA, pairB], mIdx) => {
+    const pA1 = entries[pairA[0]]!;
+    const pA2 = entries[pairA[1]]!;
+    const pB1 = entries[pairB[0]]!;
+    const pB2 = entries[pairB[1]]!;
+
+    matches.push({
+      id: uid(),
+      eventId: ev.id,
+      stage: "group",
+      groupName: "Vòng tròn",
+      round: roundMap.get(mIdx) ?? 1,
+      aId: pA1.id,
+      bId: pB1.id,
+      aEntryIds: [pA1.id, pA2.id],
+      bEntryIds: [pB1.id, pB2.id],
+      scoreA: null,
+      scoreB: null,
+      court: courtMap.get(mIdx) ?? courtList[0]!,
+      referee: "",
+      status: "pending",
+    });
+  });
+
+  // Sắp xếp các trận theo số thứ tự round tăng dần để lịch hiển thị tuần tự và tự nhiên
+  matches.sort((a, b) => a.round - b.round);
+
+  return matches;
+}
+
+/**
+ * Sinh lịch đấu vòng tròn cố định: Toàn bộ các đội đấu với nhau (không chia bảng).
+ * Ví dụ 8 đội -> mỗi đội đấu 7 trận, mỗi vòng 4 trận.
+ */
+export function generateFixedRoundRobinMatches(
+  ev: TEvent,
+  entries: Entry[],
+  courts: string[],
+): Match[] {
+  if (entries.length < 2) return [];
+  const courtList = courts.length ? courts : ["Sân 1"];
+  let courtCursor = 0;
+  const matches: Match[] = [];
+
+  const rounds = roundRobinRounds(entries.map((e) => e.id));
+  rounds.forEach((pairs, r) => {
+    pairs.forEach(([a, b]) => {
+      matches.push({
+        id: uid(),
+        eventId: ev.id,
+        stage: "group",
+        groupName: "Vòng tròn",
+        round: r + 1,
+        aId: a,
+        bId: b,
+        scoreA: null,
+        scoreB: null,
+        court: courtList[courtCursor++ % courtList.length]!,
+        referee: "",
+        status: "pending",
+      });
+    });
+  });
+
+  return matches;
+}
+
 /** Sinh lịch vòng bảng cho một nội dung, phân sân theo số sân của giải. */
 export function generateGroupMatches(ev: TEvent, entries: Entry[], courts: string[]): Match[] {
+  // 1. Trường hợp Đấu vòng tròn thuần túy (ev.bracket === "rr"):
+  // Không chia bảng, toàn bộ các đội đấu với nhau
+  if (ev.bracket === "rr") {
+    if (isRotatingDoubles(ev)) {
+      return generateRotatingDoublesMatches(ev, entries, courts);
+    }
+    return generateFixedRoundRobinMatches(ev, entries, courts);
+  }
+
+  // 2. Trường hợp Chia bảng loại trực tiếp (ev.bracket === "rr_ko"):
   const groups: Group[] =
     ev.groups.length > 0
       ? ev.groups
@@ -542,6 +883,105 @@ export type StandingRow = {
   diff: number;
   points: number;
 };
+
+export type IndividualStandingRow = {
+  entryId: string;
+  playerName: string;
+  rating: number | null;
+  paid: boolean;
+  played: number;
+  win: number;
+  draw: number;
+  loss: number;
+  pointsFor: number;
+  pointsAgainst: number;
+  diff: number;
+  points: number;
+};
+
+/**
+ * Tính điểm xếp hạng cá nhân tích lũy cho nội dung đôi đổi partner ngẫu nhiên qua từng trận.
+ * Ưu tiên: 1. Tổng điểm tích lũy -> 2. Hiệu số điểm -> 3. Tổng điểm ghi được -> 4. Số trận thắng
+ */
+export function computeIndividualStandings(
+  entries: Entry[],
+  matches: Match[],
+  ev: Pick<TEvent, "winPoints" | "lossPoints" | "drawPoints">,
+): IndividualStandingRow[] {
+  const rows = new Map<string, IndividualStandingRow>();
+  entries.forEach((e) => {
+    const p = e.players[0];
+    rows.set(e.id, {
+      entryId: e.id,
+      playerName: p?.name?.trim() || "VĐV",
+      rating: p?.rating ?? null,
+      paid: Boolean(p?.paid ?? e.paid),
+      played: 0,
+      win: 0,
+      draw: 0,
+      loss: 0,
+      pointsFor: 0,
+      pointsAgainst: 0,
+      diff: 0,
+      points: 0,
+    });
+  });
+
+  matches.forEach((m) => {
+    if (m.scoreA === null || m.scoreB === null) return;
+    const teamAIds = m.aEntryIds ? m.aEntryIds : m.aId ? [m.aId] : [];
+    const teamBIds = m.bEntryIds ? m.bEntryIds : m.bId ? [m.bId] : [];
+
+    teamAIds.forEach((id) => {
+      const row = rows.get(id);
+      if (!row) return;
+      row.played++;
+      row.pointsFor += m.scoreA!;
+      row.pointsAgainst += m.scoreB!;
+      if (m.scoreA! > m.scoreB!) {
+        row.win++;
+        row.points += ev.winPoints;
+      } else if (m.scoreB! > m.scoreA!) {
+        row.loss++;
+        row.points += ev.lossPoints;
+      } else {
+        row.draw++;
+        row.points += ev.drawPoints;
+      }
+    });
+
+    teamBIds.forEach((id) => {
+      const row = rows.get(id);
+      if (!row) return;
+      row.played++;
+      row.pointsFor += m.scoreB!;
+      row.pointsAgainst += m.scoreA!;
+      if (m.scoreB! > m.scoreA!) {
+        row.win++;
+        row.points += ev.winPoints;
+      } else if (m.scoreA! > m.scoreB!) {
+        row.loss++;
+        row.points += ev.lossPoints;
+      } else {
+        row.draw++;
+        row.points += ev.drawPoints;
+      }
+    });
+  });
+
+  return [...rows.values()]
+    .map((r) => ({ ...r, diff: r.pointsFor - r.pointsAgainst }))
+    .sort((x, y) => {
+      // 1. Tổng điểm
+      if (y.points !== x.points) return y.points - x.points;
+      // 2. Hiệu số
+      if (y.diff !== x.diff) return y.diff - x.diff;
+      // 3. Tổng điểm ghi được
+      if (y.pointsFor !== x.pointsFor) return y.pointsFor - x.pointsFor;
+      // 4. Số trận thắng
+      return y.win - x.win;
+    });
+}
 
 export function computeStandings(
   entryIds: string[],

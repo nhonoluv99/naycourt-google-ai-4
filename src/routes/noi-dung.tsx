@@ -172,40 +172,69 @@ function EventsPage() {
                     { id: "rr", label: BRACKET_LABEL.rr },
                     { id: "rr_ko", label: BRACKET_LABEL.rr_ko },
                   ]}
-                  onChange={(bracket) => updateEvent(ev.id, { bracket })}
+                  onChange={(bracket) =>
+                    updateEvent(ev.id, {
+                      bracket,
+                      ...(bracket === "rr"
+                        ? { groupCount: 1, groups: [{ name: "Vòng tròn", entryIds: [] }] }
+                        : {}),
+                    })
+                  }
                 />
               </div>
               {ev.mode === "doi" ? (
-                <div>
+                <div className="sm:col-span-2">
                   <Lbl>Cơ chế ghép đội</Lbl>
                   <Seg<PairMode>
                     value={ev.pairMode}
-                    options={[
-                      { id: "random", label: "Bốc thăm ngẫu nhiên" },
-                      { id: "fixed", label: "Tự bắt cặp từ đầu" },
-                    ]}
+                    options={
+                      ev.bracket === "rr"
+                        ? [
+                            { id: "fixed", label: "Bắt cặp cố định" },
+                            { id: "random", label: "Bắt cặp ngẫu nhiên" },
+                          ]
+                        : [
+                            { id: "fixed", label: "Tự bắt cặp từ đầu" },
+                            { id: "random", label: "Bốc thăm ngẫu nhiên" },
+                          ]
+                    }
                     onChange={(pairMode) => updateEvent(ev.id, { pairMode })}
                   />
+                  {ev.bracket === "rr" && (
+                    <div className="mt-2.5 rounded-xl border border-line/20 bg-secondary/30 p-3 text-xs leading-relaxed text-line/80">
+                      {ev.pairMode === "fixed" ? (
+                        <p>
+                          🎯 <strong>Bắt cặp cố định:</strong> Chỉ có 1 partner duy nhất suốt giải. Toàn bộ các đội lần lượt đấu vòng tròn với nhau (không chia bảng, ví dụ 8 cặp thì mỗi đội đấu đủ 7 trận). Xếp hạng ưu tiên theo: <strong>Tổng điểm → Hiệu số → Đối đầu trực tiếp</strong>.
+                        </p>
+                      ) : (
+                        <p>
+                          🎲 <strong>Bắt cặp ngẫu nhiên:</strong> Mỗi VĐV đăng ký 1 dòng cá nhân. Sau mỗi trận hệ thống sẽ đổi partner ngẫu nhiên sao cho tất cả VĐV đều được ghép cặp và đối đầu nhau đủ lượt đều nhau. <strong>Điểm số được tính cá nhân tích lũy qua từng trận đấu</strong>.
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
               ) : null}
-              <div>
-                <Lbl>Tuỳ chọn</Lbl>
-                <label
-                  className={`mt-1.5 flex w-fit items-center gap-2.5 rounded-xl border-2 px-4 py-2.5 text-sm font-['Space_Grotesk',sans-serif] font-bold cursor-pointer transition-all ${
-                    ev.thirdPlace
-                      ? "border-[#FF5C00] bg-orange-50/80 text-[#FF5C00] shadow-[0_0_16px_rgba(255,92,0,0.35)] ring-2 ring-[#FF5C00]/30"
-                      : "border-line/35 bg-white text-line/85 hover:border-line/60"
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    className="size-4 accent-[#FF5C00]"
-                    checked={ev.thirdPlace}
-                    onChange={(e) => updateEvent(ev.id, { thirdPlace: e.target.checked })}
-                  />
-                  Có trận tranh hạng 3
-                </label>
-              </div>
+              {ev.bracket === "rr_ko" ? (
+                <div>
+                  <Lbl>Tuỳ chọn</Lbl>
+                  <label
+                    className={`mt-1.5 flex w-fit items-center gap-2.5 rounded-xl border-2 px-4 py-2.5 text-sm font-['Space_Grotesk',sans-serif] font-bold cursor-pointer transition-all ${
+                      ev.thirdPlace
+                        ? "border-[#FF5C00] bg-orange-50/80 text-[#FF5C00] shadow-[0_0_16px_rgba(255,92,0,0.35)] ring-2 ring-[#FF5C00]/30"
+                        : "border-line/35 bg-white text-line/85 hover:border-line/60"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      className="size-4 accent-[#FF5C00]"
+                      checked={ev.thirdPlace}
+                      onChange={(e) => updateEvent(ev.id, { thirdPlace: e.target.checked })}
+                    />
+                    Có trận tranh hạng 3
+                  </label>
+                </div>
+              ) : null}
             </div>
 
             <div className="mt-5 grid gap-4 sm:grid-cols-2">

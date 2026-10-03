@@ -5,6 +5,7 @@ import {
   drawPairs,
   entryName,
   getGroupName,
+  getRotatingMatchesPerPlayer,
   splitGroups,
   uid,
   useTournament,
@@ -484,7 +485,7 @@ function PlayersPage() {
             >
               ℹ️ Định dạng file
             </button>
-            {ev.mode === "doi" && ev.pairMode === "random" ? (
+            {ev.mode === "doi" && ev.pairMode === "random" && ev.bracket === "rr_ko" ? (
               <button className="btn-ghost" onClick={doDraw}>
                 🎲 Bốc thăm ghép đôi
               </button>
@@ -624,8 +625,68 @@ function PlayersPage() {
         </div>
 
         <div className="lg:col-span-5">
-          <div className="flex items-center justify-between">
-            <p className="eyebrow">Chia bảng</p>
+          {ev.bracket === "rr" ? (
+            <div className="panel p-4 bg-white/95 border border-line/20 shadow-sm space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="font-head text-base font-bold uppercase tracking-tight text-[#0a3320]">
+                  {ev.mode === "doi" && ev.pairMode === "random"
+                    ? "Vòng tròn đổi partner ngẫu nhiên"
+                    : "Đấu vòng tròn toàn thể (Không chia bảng)"}
+                </p>
+                <span className="rounded-full bg-accent/15 px-2.5 py-0.5 text-xs font-bold text-accent">
+                  {entries.length} {ev.mode === "doi" && ev.pairMode === "fixed" ? "cặp đấu" : "VĐV"}
+                </span>
+              </div>
+              <p className="text-xs text-line/70 leading-relaxed">
+                {ev.mode === "doi" && ev.pairMode === "random"
+                  ? entries.length >= 4
+                    ? `Cơ chế bắt cặp ngẫu nhiên: Mỗi VĐV sẽ thi đấu đúng ${getRotatingMatchesPerPlayer(entries.length)} trận (tổng cộng ${(entries.length * getRotatingMatchesPerPlayer(entries.length)) / 4} trận). Đảm bảo số trận bằng nhau tuyệt đối và không trùng lặp partner. Điểm số tính cá nhân tích lũy qua từng trận đấu trong Quản lý giải.`
+                    : "Cơ chế bắt cặp ngẫu nhiên: Cần ít nhất 4 VĐV để tạo lịch thi đấu xoay tua partner (mỗi VĐV đều đánh số trận bằng nhau và không trùng partner)."
+                  : `Cơ chế bắt cặp cố định: Toàn bộ ${entries.length} đội sẽ lần lượt đấu vòng tròn với nhau (mỗi đội đấu ${Math.max(0, entries.length - 1)} trận, không chia bảng). Điểm số tính theo: Tổng điểm → Hiệu số → Đối đầu.`}
+              </p>
+
+              <div className="rounded-xl border border-line/15 bg-card p-3 divide-y divide-line/10 max-h-[420px] overflow-y-auto">
+                {entries.length === 0 ? (
+                  <p className="text-center py-6 text-xs text-line/40">
+                    Chưa có {ev.mode === "doi" && ev.pairMode === "fixed" ? "đội" : "VĐV"} nào được thêm.
+                  </p>
+                ) : (
+                  entries.map((en, idx) => {
+                    const pts = en.players.reduce((sum, p) => sum + (p.rating ?? 0), 0);
+                    return (
+                      <div key={en.id} className="flex items-center justify-between py-2 text-xs">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="w-5 font-head font-bold text-line/40 text-center">{idx + 1}</span>
+                          <div className="flex items-center gap-1.5 truncate">
+                            {en.players.map((p, pIdx) => (
+                              <input
+                                key={pIdx}
+                                type="checkbox"
+                                checked={Boolean(p.paid)}
+                                title={`${p.name || `VĐV ${pIdx + 1}`}: ${Boolean(p.paid) ? "Đã đóng phí" : "Chưa đóng phí"}`}
+                                className="size-3.5 rounded accent-[oklch(0.615_0.145_154.2)] cursor-pointer shrink-0"
+                                onChange={(e) => {
+                                  const checked = e.target.checked;
+                                  patchPlayer(en.id, pIdx, { paid: checked });
+                                }}
+                              />
+                            ))}
+                            <span className="font-semibold text-ink truncate">{entryName(en)}</span>
+                          </div>
+                        </div>
+                        <span className="shrink-0 rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-bold text-accent">
+                          {pts > 0 ? formatRating(pts) : "—"}
+                        </span>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center justify-between">
+                <p className="eyebrow">Chia bảng</p>
             {ev.groups.length > 0 && (
               <button
                 className="text-xs font-semibold text-accent hover:underline"
@@ -862,6 +923,8 @@ function PlayersPage() {
               </div>
             </div>
           ) : null}
+            </>
+          )}
 
           <Link to="/quan-ly-giai" className="btn-accent mt-4">
             Tiếp tục — Quản lý giải đấu

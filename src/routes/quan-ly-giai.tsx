@@ -8,6 +8,7 @@ import {
   addMinutes,
   autoScheduleTimeline,
   buildTimeline,
+  computeIndividualStandings,
   computeStandings,
   entryName,
   generateAlphabeticalKnockout,
@@ -15,11 +16,16 @@ import {
   generateGroupMatches,
   generateKnockout,
   getActivePlayerNames,
+  getMatchEntryA,
+  getMatchEntryB,
+  getRotatingMatchesPerPlayer,
   groupColor,
   groupTag,
+  isRotatingDoubles,
   propagateKnockout,
   useTournament,
   type Entry,
+  type IndividualStandingRow,
   type Match,
   type TEvent,
 } from "@/lib/tournament-store";
@@ -1496,6 +1502,12 @@ function ManagePage() {
   };
 
   const resolveSideLabel = (m: Match, side: "aId" | "bId"): string => {
+    if (side === "aId" && m.aEntryIds && m.aEntryIds.length === 2) {
+      return entryName(getMatchEntryA(m, entries));
+    }
+    if (side === "bId" && m.bEntryIds && m.bEntryIds.length === 2) {
+      return entryName(getMatchEntryB(m, entries));
+    }
     const id = side === "aId" ? m.aId : m.bId;
     if (id) return entryName(entries.find((e) => e.id === id));
     const rawHolder = (side === "aId" ? m.customPlaceholderA : m.customPlaceholderB)?.trim() || "";
@@ -1586,7 +1598,14 @@ function ManagePage() {
           ...fresh,
         ],
       });
-      setNote(`Đã tạo ${fresh.length} trận vòng bảng.`);
+      if (isRotatingDoubles(ev)) {
+        const k = getRotatingMatchesPerPlayer(entries.length);
+        setNote(
+          `Đã tạo ${fresh.length} trận vòng tròn đổi partner (mỗi VĐV thi đấu đúng ${k} trận, không trùng lặp partner).`,
+        );
+      } else {
+        setNote(`Đã tạo ${fresh.length} trận ${ev.bracket === "rr" ? "vòng tròn" : "vòng bảng"}.`);
+      }
     };
 
     if (hasKoProgress || hasKoStarted) {
@@ -1837,11 +1856,11 @@ function ManagePage() {
     m,
     nameA: resolveSideLabel(m, "aId"),
     nameB: resolveSideLabel(m, "bId"),
-    entryA: state.entries.find((e) => e.id === m.aId),
-    entryB: state.entries.find((e) => e.id === m.bId),
+    entryA: getMatchEntryA(m, state.entries),
+    entryB: getMatchEntryB(m, state.entries),
     activePlayerNames,
-    isLiveA: isEntryActive(m.aId),
-    isLiveB: isEntryActive(m.bId),
+    isLiveA: m.aEntryIds ? m.aEntryIds.some((id) => isEntryActive(id)) : isEntryActive(m.aId),
+    isLiveB: m.bEntryIds ? m.bEntryIds.some((id) => isEntryActive(id)) : isEntryActive(m.bId),
     onScore: (k, v) => setScore(m, k, v),
     onStatus: (s) => {
       const doStatus = () => {
@@ -2110,6 +2129,12 @@ function ManagePage() {
     });
 
     const resolveExcelTeamName = (m: Match, side: "aId" | "bId"): string => {
+      if (side === "aId" && m.aEntryIds && m.aEntryIds.length === 2) {
+        return entryName(getMatchEntryA(m, entries));
+      }
+      if (side === "bId" && m.bEntryIds && m.bEntryIds.length === 2) {
+        return entryName(getMatchEntryB(m, entries));
+      }
       const entryId = side === "aId" ? m.aId : m.bId;
       if (entryId) {
         return entryName(entries.find((e) => e.id === entryId));
@@ -2796,8 +2821,8 @@ function ManagePage() {
           >
             {allLiveMatches.map((m) => {
               const evMatch = state.events.find((e) => e.id === m.eventId);
-              const tA = state.entries.find((e) => e.id === m.aId);
-              const tB = state.entries.find((e) => e.id === m.bId);
+              const tA = getMatchEntryA(m, state.entries);
+              const tB = getMatchEntryB(m, state.entries);
               const icon = state.courtIcons?.[m.court] || "🎾";
               return (
                 <div
@@ -2886,9 +2911,9 @@ function ManagePage() {
       {/* Thanh điều khiển & Sub-tabs */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-y border-line/10 py-3">
         <div className="flex flex-wrap items-center gap-2">
-          <TabBtn id="group" label="Vòng bảng" />
+          <TabBtn id="group" label={ev.bracket === "rr" ? "Vòng tròn" : "Vòng bảng"} />
           <TabBtn id="timeline" label="Timeline sân" />
-          <TabBtn id="ko" label="Loại trực tiếp" />
+          {ev.bracket !== "rr" && <TabBtn id="ko" label="Loại trực tiếp" />}
           <span className="mx-1 h-5 w-px bg-line/15" />
 
           {tab === "ko" ? (
@@ -3153,7 +3178,7 @@ function ManagePage() {
                 style={{ fontFamily: "'Space Grotesk', sans-serif" }}
                 onClick={buildGroups}
               >
-                Tạo lịch vòng bảng
+                {ev.bracket === "rr" ? "Tạo lịch vòng tròn" : "Tạo lịch vòng bảng"}
               </button>
             </div>
           )}
@@ -3262,10 +3287,18 @@ function ManagePage() {
               <div className="flex items-center justify-between border-b border-line/15 pb-3">
                 <div className="flex items-center gap-2">
                   <span className="font-head text-base font-bold uppercase tracking-tight text-ink">
-                    📊 Bảng xếp hạng toàn diện ({ev.groups.length || 1} bảng)
+                    {isRotatingDoubles(ev)
+                      ? "📊 Bảng xếp hạng cá nhân tích lũy (Đổi partner ngẫu nhiên)"
+                      : ev.bracket === "rr"
+                        ? "📊 Bảng xếp hạng vòng tròn toàn thể (Không chia bảng)"
+                        : `📊 Bảng xếp hạng toàn diện (${ev.groups.length || 1} bảng)`}
                   </span>
                   <span className="text-xs text-line/60">
-                    (Xem chi tiết vị trí, số trận, hiệu số và điểm số)
+                    {isRotatingDoubles(ev)
+                      ? "(Điểm số cá nhân tích lũy qua từng trận • Ưu tiên: Tổng điểm → Hiệu số → Điểm ghi được)"
+                      : ev.bracket === "rr"
+                        ? "(Ưu tiên xếp hạng: Tổng điểm → Hiệu số → Đối đầu trực tiếp)"
+                        : "(Xem chi tiết vị trí, số trận, hiệu số và điểm số)"}
                   </span>
                 </div>
                 <button
@@ -3277,63 +3310,165 @@ function ManagePage() {
                 </button>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {(ev.groups.length
-                  ? ev.groups
-                  : [{ name: "Vòng tròn", entryIds: entries.map((e) => e.id) }]
-                ).map((g) => {
-                  const rows = computeStandings(
-                    g.entryIds,
-                    groupMatches.filter((m) => m.groupName === g.name),
-                    ev,
-                  );
-                  const c = groupColor(g.name);
-                  return (
-                    <div key={g.name} className="panel overflow-hidden rounded-xl border border-line/15">
-                      <p
-                        className="px-3 py-2 font-head text-sm font-bold uppercase tracking-wide border border-line/20 rounded-[14px]"
-                        style={{ backgroundColor: c.bg, color: c.text }}
-                      >
-                        {g.name}
-                      </p>
-                      <table className="w-full table-fixed text-xs">
-                        <thead>
-                          <tr className="border-b border-line/10 text-[10px] uppercase tracking-wide text-line/50">
-                            <th className="px-3 py-2 text-left">Đội</th>
-                            <th className="w-8 py-2 text-center">Tr</th>
-                            <th className="w-8 py-2 text-center">T</th>
-                            <th className="w-8 py-2 text-center">B</th>
-                            <th className="w-11 py-2 text-center">HS</th>
-                            <th className="w-11 py-2 text-center">Đ</th>
+              {isRotatingDoubles(ev) ? (
+                <div className="panel overflow-hidden rounded-xl border border-line/15">
+                  <div className="px-4 py-2.5 bg-accent/10 border-b border-line/15 flex items-center justify-between">
+                    <span className="font-head text-xs font-bold uppercase tracking-wide text-accent">
+                      Bảng xếp hạng cá nhân — Đổi partner ngẫu nhiên
+                    </span>
+                    <span className="rounded-full bg-accent/20 px-2 py-0.5 text-xs font-bold text-accent">
+                      {entries.length} VĐV
+                    </span>
+                  </div>
+                  <table className="w-full table-fixed text-xs">
+                    <thead>
+                      <tr className="border-b border-line/10 text-[10px] uppercase tracking-wide text-line/50">
+                        <th className="w-12 px-3 py-2 text-center">Hạng</th>
+                        <th className="px-3 py-2 text-left">Vận động viên</th>
+                        <th className="w-12 py-2 text-center">Tr</th>
+                        <th className="w-12 py-2 text-center">T</th>
+                        <th className="w-12 py-2 text-center">B</th>
+                        <th className="w-16 py-2 text-center">HS</th>
+                        <th className="w-20 py-2 text-center font-bold text-accent">Tổng điểm</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {computeIndividualStandings(entries, groupMatches, ev).map((r, i) => {
+                        const rowEntry = state.entries.find((e) => e.id === r.entryId);
+                        return (
+                          <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
+                            <td className="w-12 px-3 py-2 text-center font-head font-bold text-line/50 tabular-nums">
+                              {i + 1}
+                            </td>
+                            <td className="truncate px-3 py-2">
+                              <PlayerNameDisplay
+                                entry={rowEntry}
+                                fallback={r.playerName}
+                                activePlayerNames={activePlayerNames}
+                              />
+                            </td>
+                            <td className="w-12 py-2 text-center tabular-nums">{r.played}</td>
+                            <td className="w-12 py-2 text-center font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums">{r.win}</td>
+                            <td className="w-12 py-2 text-center font-semibold text-destructive tabular-nums">{r.loss}</td>
+                            <td className="w-16 py-2 text-center tabular-nums">{r.diff > 0 ? `+${r.diff}` : r.diff}</td>
+                            <td className="w-20 py-2 text-center font-head text-sm font-bold text-accent tabular-nums">{r.points}</td>
                           </tr>
-                        </thead>
-                        <tbody>
-                          {rows.map((r, i) => {
-                            const rowEntry = state.entries.find((e) => e.id === r.entryId);
-                            return (
-                              <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
-                                <td className="truncate px-3 py-2">
-                                  <span className="inline-block w-4 font-head font-bold text-line/40 tabular-nums">{i + 1}</span>
-                                  <PlayerNameDisplay
-                                    entry={rowEntry}
-                                    fallback={nameOf(r.entryId)}
-                                    activePlayerNames={activePlayerNames}
-                                  />
-                                </td>
-                                <td className="w-8 py-2 text-center tabular-nums">{r.played}</td>
-                                <td className="w-8 py-2 text-center tabular-nums">{r.win}</td>
-                                <td className="w-8 py-2 text-center tabular-nums">{r.loss}</td>
-                                <td className="w-11 py-2 text-center tabular-nums">{r.diff}</td>
-                                <td className="w-11 py-2 text-center font-bold text-accent tabular-nums">{r.points}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  );
-                })}
-              </div>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : ev.bracket === "rr" ? (
+                <div className="panel overflow-hidden rounded-xl border border-line/15">
+                  <div className="px-4 py-2.5 bg-accent/10 border-b border-line/15 flex items-center justify-between">
+                    <span className="font-head text-xs font-bold uppercase tracking-wide text-accent">
+                      Bảng xếp hạng toàn thể — {entries.length} đội đấu vòng tròn
+                    </span>
+                    <span className="text-xs text-line/60">
+                      Ưu tiên: Tổng điểm → Hiệu số → Đối đầu
+                    </span>
+                  </div>
+                  <table className="w-full table-fixed text-xs">
+                    <thead>
+                      <tr className="border-b border-line/10 text-[10px] uppercase tracking-wide text-line/50">
+                        <th className="w-12 px-3 py-2 text-center">Hạng</th>
+                        <th className="px-3 py-2 text-left">Đội / VĐV</th>
+                        <th className="w-12 py-2 text-center">Tr</th>
+                        <th className="w-12 py-2 text-center">T</th>
+                        <th className="w-12 py-2 text-center">B</th>
+                        <th className="w-16 py-2 text-center">HS</th>
+                        <th className="w-20 py-2 text-center font-bold text-accent">Điểm</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {computeStandings(
+                        entries.map((e) => e.id),
+                        groupMatches,
+                        ev,
+                      ).map((r, i) => {
+                        const rowEntry = state.entries.find((e) => e.id === r.entryId);
+                        return (
+                          <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
+                            <td className="w-12 px-3 py-2 text-center font-head font-bold text-line/50 tabular-nums">
+                              {i + 1}
+                            </td>
+                            <td className="truncate px-3 py-2">
+                              <PlayerNameDisplay
+                                entry={rowEntry}
+                                fallback={nameOf(r.entryId)}
+                                activePlayerNames={activePlayerNames}
+                              />
+                            </td>
+                            <td className="w-12 py-2 text-center tabular-nums">{r.played}</td>
+                            <td className="w-12 py-2 text-center font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums">{r.win}</td>
+                            <td className="w-12 py-2 text-center font-semibold text-destructive tabular-nums">{r.loss}</td>
+                            <td className="w-16 py-2 text-center tabular-nums">{r.diff > 0 ? `+${r.diff}` : r.diff}</td>
+                            <td className="w-20 py-2 text-center font-head text-sm font-bold text-accent tabular-nums">{r.points}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {(ev.groups.length
+                    ? ev.groups
+                    : [{ name: "Vòng tròn", entryIds: entries.map((e) => e.id) }]
+                  ).map((g) => {
+                    const rows = computeStandings(
+                      g.entryIds,
+                      groupMatches.filter((m) => m.groupName === g.name),
+                      ev,
+                    );
+                    const c = groupColor(g.name);
+                    return (
+                      <div key={g.name} className="panel overflow-hidden rounded-xl border border-line/15">
+                        <p
+                          className="px-3 py-2 font-head text-sm font-bold uppercase tracking-wide border border-line/20 rounded-[14px]"
+                          style={{ backgroundColor: c.bg, color: c.text }}
+                        >
+                          {g.name}
+                        </p>
+                        <table className="w-full table-fixed text-xs">
+                          <thead>
+                            <tr className="border-b border-line/10 text-[10px] uppercase tracking-wide text-line/50">
+                              <th className="px-3 py-2 text-left">Đội</th>
+                              <th className="w-8 py-2 text-center">Tr</th>
+                              <th className="w-8 py-2 text-center">T</th>
+                              <th className="w-8 py-2 text-center">B</th>
+                              <th className="w-11 py-2 text-center">HS</th>
+                              <th className="w-11 py-2 text-center">Đ</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rows.map((r, i) => {
+                              const rowEntry = state.entries.find((e) => e.id === r.entryId);
+                              return (
+                                <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
+                                  <td className="truncate px-3 py-2">
+                                    <span className="inline-block w-4 font-head font-bold text-line/40 tabular-nums">{i + 1}</span>
+                                    <PlayerNameDisplay
+                                      entry={rowEntry}
+                                      fallback={nameOf(r.entryId)}
+                                      activePlayerNames={activePlayerNames}
+                                    />
+                                  </td>
+                                  <td className="w-8 py-2 text-center tabular-nums">{r.played}</td>
+                                  <td className="w-8 py-2 text-center tabular-nums">{r.win}</td>
+                                  <td className="w-8 py-2 text-center tabular-nums">{r.loss}</td>
+                                  <td className="w-11 py-2 text-center tabular-nums">{r.diff}</td>
+                                  <td className="w-11 py-2 text-center font-bold text-accent tabular-nums">{r.points}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           ) : (
             <div className="grid gap-6 lg:grid-cols-12 !mt-0 pt-[2px]">
@@ -3384,61 +3519,163 @@ function ManagePage() {
                       🗖 Phóng to BXH
                     </button>
                   </div>
-                  {(ev.groups.length
-                    ? ev.groups
-                    : [{ name: "Vòng tròn", entryIds: entries.map((e) => e.id) }]
-                  ).map((g) => {
-                    const rows = computeStandings(
-                      g.entryIds,
-                      groupMatches.filter((m) => m.groupName === g.name),
-                      ev,
-                    );
-                    const c = groupColor(g.name);
-                    return (
-                      <div key={g.name} className="panel mt-3 overflow-hidden rounded-xl">
-                        <p
-                          className="px-3 py-2 font-head text-sm font-bold uppercase tracking-wide border border-line/20 rounded-[14px]"
-                          style={{ backgroundColor: c.bg, color: c.text }}
-                        >
-                          {g.name}
-                        </p>
-                        <table className="w-full table-fixed text-xs">
-                          <thead>
-                            <tr className="border-b border-line/10 text-[10px] uppercase tracking-wide text-line/50">
-                              <th className="px-3 py-2 text-left">Đội</th>
-                              <th className="w-8 py-2 text-center">Tr</th>
-                              <th className="w-8 py-2 text-center">T</th>
-                              <th className="w-8 py-2 text-center">B</th>
-                              <th className="w-10 py-2 text-center">HS</th>
-                              <th className="w-10 py-2 text-center">Đ</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {rows.map((r, i) => {
-                              const rowEntry = state.entries.find((e) => e.id === r.entryId);
-                              return (
-                                <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
-                                  <td className="truncate px-3 py-2">
-                                    <span className="inline-block w-4 font-head font-bold text-line/40 tabular-nums">{i + 1}</span>
-                                    <PlayerNameDisplay
-                                      entry={rowEntry}
-                                      fallback={nameOf(r.entryId)}
-                                      activePlayerNames={activePlayerNames}
-                                    />
-                                  </td>
-                                  <td className="w-8 py-2 text-center tabular-nums">{r.played}</td>
-                                  <td className="w-8 py-2 text-center tabular-nums">{r.win}</td>
-                                  <td className="w-8 py-2 text-center tabular-nums">{r.loss}</td>
-                                  <td className="w-10 py-2 text-center tabular-nums">{r.diff}</td>
-                                  <td className="w-10 py-2 text-center font-bold text-accent tabular-nums">{r.points}</td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
+                  {isRotatingDoubles(ev) ? (
+                    <div className="panel mt-3 overflow-hidden rounded-xl border border-line/15">
+                      <div className="px-3 py-2 bg-accent/10 border-b border-line/15 flex items-center justify-between">
+                        <span className="font-head text-xs font-bold uppercase tracking-wide text-accent">
+                          BXH cá nhân tích lũy
+                        </span>
+                        <span className="text-[10px] font-bold text-accent">
+                          {entries.length} VĐV
+                        </span>
                       </div>
-                    );
-                  })}
+                      <table className="w-full table-fixed text-xs">
+                        <thead>
+                          <tr className="border-b border-line/10 text-[10px] uppercase tracking-wide text-line/50">
+                            <th className="w-7 py-2 text-center">#</th>
+                            <th className="px-2 py-2 text-left">VĐV</th>
+                            <th className="w-7 py-2 text-center">Tr</th>
+                            <th className="w-7 py-2 text-center">T</th>
+                            <th className="w-7 py-2 text-center">B</th>
+                            <th className="w-9 py-2 text-center">HS</th>
+                            <th className="w-9 py-2 text-center font-bold text-accent">Đ</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {computeIndividualStandings(entries, groupMatches, ev).map((r, i) => {
+                            const rowEntry = state.entries.find((e) => e.id === r.entryId);
+                            return (
+                              <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
+                                <td className="w-7 py-2 text-center font-head font-bold text-line/40 tabular-nums">
+                                  {i + 1}
+                                </td>
+                                <td className="truncate px-2 py-2">
+                                  <PlayerNameDisplay
+                                    entry={rowEntry}
+                                    fallback={r.playerName}
+                                    activePlayerNames={activePlayerNames}
+                                  />
+                                </td>
+                                <td className="w-7 py-2 text-center tabular-nums">{r.played}</td>
+                                <td className="w-7 py-2 text-center font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums">{r.win}</td>
+                                <td className="w-7 py-2 text-center font-semibold text-destructive tabular-nums">{r.loss}</td>
+                                <td className="w-9 py-2 text-center tabular-nums">{r.diff > 0 ? `+${r.diff}` : r.diff}</td>
+                                <td className="w-9 py-2 text-center font-head font-bold text-accent tabular-nums">{r.points}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : ev.bracket === "rr" ? (
+                    <div className="panel mt-3 overflow-hidden rounded-xl border border-line/15">
+                      <div className="px-3 py-2 bg-accent/10 border-b border-line/15 flex items-center justify-between">
+                        <span className="font-head text-xs font-bold uppercase tracking-wide text-accent">
+                          BXH vòng tròn toàn thể
+                        </span>
+                        <span className="text-[10px] font-bold text-accent">
+                          {entries.length} đội
+                        </span>
+                      </div>
+                      <table className="w-full table-fixed text-xs">
+                        <thead>
+                          <tr className="border-b border-line/10 text-[10px] uppercase tracking-wide text-line/50">
+                            <th className="w-7 py-2 text-center">#</th>
+                            <th className="px-2 py-2 text-left">Đội</th>
+                            <th className="w-7 py-2 text-center">Tr</th>
+                            <th className="w-7 py-2 text-center">T</th>
+                            <th className="w-7 py-2 text-center">B</th>
+                            <th className="w-9 py-2 text-center">HS</th>
+                            <th className="w-9 py-2 text-center font-bold text-accent">Đ</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {computeStandings(
+                            entries.map((e) => e.id),
+                            groupMatches,
+                            ev,
+                          ).map((r, i) => {
+                            const rowEntry = state.entries.find((e) => e.id === r.entryId);
+                            return (
+                              <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
+                                <td className="w-7 py-2 text-center font-head font-bold text-line/40 tabular-nums">
+                                  {i + 1}
+                                </td>
+                                <td className="truncate px-2 py-2">
+                                  <PlayerNameDisplay
+                                    entry={rowEntry}
+                                    fallback={nameOf(r.entryId)}
+                                    activePlayerNames={activePlayerNames}
+                                  />
+                                </td>
+                                <td className="w-7 py-2 text-center tabular-nums">{r.played}</td>
+                                <td className="w-7 py-2 text-center font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums">{r.win}</td>
+                                <td className="w-7 py-2 text-center font-semibold text-destructive tabular-nums">{r.loss}</td>
+                                <td className="w-9 py-2 text-center tabular-nums">{r.diff > 0 ? `+${r.diff}` : r.diff}</td>
+                                <td className="w-9 py-2 text-center font-head font-bold text-accent tabular-nums">{r.points}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    (ev.groups.length
+                      ? ev.groups
+                      : [{ name: "Vòng tròn", entryIds: entries.map((e) => e.id) }]
+                    ).map((g) => {
+                      const rows = computeStandings(
+                        g.entryIds,
+                        groupMatches.filter((m) => m.groupName === g.name),
+                        ev,
+                      );
+                      const c = groupColor(g.name);
+                      return (
+                        <div key={g.name} className="panel mt-3 overflow-hidden rounded-xl">
+                          <p
+                            className="px-3 py-2 font-head text-sm font-bold uppercase tracking-wide border border-line/20 rounded-[14px]"
+                            style={{ backgroundColor: c.bg, color: c.text }}
+                          >
+                            {g.name}
+                          </p>
+                          <table className="w-full table-fixed text-xs">
+                            <thead>
+                              <tr className="border-b border-line/10 text-[10px] uppercase tracking-wide text-line/50">
+                                <th className="px-3 py-2 text-left">Đội</th>
+                                <th className="w-8 py-2 text-center">Tr</th>
+                                <th className="w-8 py-2 text-center">T</th>
+                                <th className="w-8 py-2 text-center">B</th>
+                                <th className="w-10 py-2 text-center">HS</th>
+                                <th className="w-10 py-2 text-center">Đ</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {rows.map((r, i) => {
+                                const rowEntry = state.entries.find((e) => e.id === r.entryId);
+                                return (
+                                  <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
+                                    <td className="truncate px-3 py-2">
+                                      <span className="inline-block w-4 font-head font-bold text-line/40 tabular-nums">{i + 1}</span>
+                                      <PlayerNameDisplay
+                                        entry={rowEntry}
+                                        fallback={nameOf(r.entryId)}
+                                        activePlayerNames={activePlayerNames}
+                                      />
+                                    </td>
+                                    <td className="w-8 py-2 text-center tabular-nums">{r.played}</td>
+                                    <td className="w-8 py-2 text-center tabular-nums">{r.win}</td>
+                                    <td className="w-8 py-2 text-center tabular-nums">{r.loss}</td>
+                                    <td className="w-10 py-2 text-center tabular-nums">{r.diff}</td>
+                                    <td className="w-10 py-2 text-center font-bold text-accent tabular-nums">{r.points}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
               )}
             </div>
@@ -3793,7 +4030,7 @@ function ManagePage() {
                               <div className="mt-1 flex items-center justify-between gap-1 text-[11px]">
                                 <div className="truncate flex-1">
                                   <PlayerNameDisplay
-                                    entry={state.entries.find((e) => e.id === m.aId)}
+                                    entry={getMatchEntryA(m, state.entries)}
                                     fallback={resolveSideLabel(m, "aId")}
                                     activePlayerNames={activePlayerNames}
                                   />
@@ -3801,7 +4038,7 @@ function ManagePage() {
                                 <span className="shrink-0 text-line/40 font-mono text-[10px] font-bold px-1">vs</span>
                                 <div className="truncate flex-1 text-right">
                                   <PlayerNameDisplay
-                                    entry={state.entries.find((e) => e.id === m.bId)}
+                                    entry={getMatchEntryB(m, state.entries)}
                                     fallback={resolveSideLabel(m, "bId")}
                                     activePlayerNames={activePlayerNames}
                                   />
