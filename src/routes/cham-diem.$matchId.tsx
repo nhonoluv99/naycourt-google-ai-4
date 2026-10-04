@@ -30,24 +30,57 @@ export const Route = createFileRoute("/cham-diem/$matchId")({
   component: LiveScoringPage,
 });
 
-const defaultLive = (): LiveState => ({
-  scoring: "sideout",
-  target: 11,
-  winBy2: true,
-  timeoutSeconds: 60,
-  medicalSeconds: 900,
-  timeoutsPerTeam: 1,
-  serveTeam: 0,
-  serverNum: 2,
-  serverIdx: 0,
-  receiverIdx: 0,
-  a: 0,
-  b: 0,
-  toUsed: [0, 0],
-  medUsed: [0, 0],
-  history: [],
-  note: "",
-});
+const LIVE_SCORING_PREFS_KEY = "pickleball_live_scoring_prefs";
+
+type LiveScoringPrefs = {
+  scoring: "sideout" | "rally" | "manual";
+  target: number;
+  winBy2: boolean;
+  timeoutSeconds: number;
+  medicalSeconds: number;
+  timeoutsPerTeam: number;
+};
+
+const getSavedLivePrefs = (): Partial<LiveScoringPrefs> => {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = localStorage.getItem(LIVE_SCORING_PREFS_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+};
+
+const saveLivePrefs = (prefs: Partial<LiveScoringPrefs>) => {
+  if (typeof window === "undefined") return;
+  try {
+    const current = getSavedLivePrefs();
+    localStorage.setItem(LIVE_SCORING_PREFS_KEY, JSON.stringify({ ...current, ...prefs }));
+  } catch {}
+};
+
+const defaultLive = (): LiveState => {
+  const prefs = getSavedLivePrefs();
+  return {
+    scoring: prefs.scoring ?? "sideout",
+    target: typeof prefs.target === "number" ? prefs.target : 11,
+    winBy2: typeof prefs.winBy2 === "boolean" ? prefs.winBy2 : true,
+    timeoutSeconds: typeof prefs.timeoutSeconds === "number" ? prefs.timeoutSeconds : 60,
+    medicalSeconds: typeof prefs.medicalSeconds === "number" ? prefs.medicalSeconds : 900,
+    timeoutsPerTeam: typeof prefs.timeoutsPerTeam === "number" ? prefs.timeoutsPerTeam : 1,
+    serveTeam: 0,
+    serverNum: 2,
+    serverIdx: 0,
+    receiverIdx: 0,
+    a: 0,
+    b: 0,
+    toUsed: [0, 0],
+    medUsed: [0, 0],
+    history: [],
+    note: "",
+  };
+};
 
 function Chip({
   active,
@@ -142,16 +175,69 @@ function LiveScoringPage() {
   const namesA = rawNamesA.length > 0 ? rawNamesA : [entryName(teamA)];
   const namesB = rawNamesB.length > 0 ? rawNamesB : [entryName(teamB)];
   
-  const rawLive = match.live ?? defaultLive();
+  const prefs = getSavedLivePrefs();
+  const rawLive = match.live;
+
+  // Trận đấu chưa ghi điểm nào: Luôn ưu tiên dùng các cài đặt đã lưu ghi nhớ từ lần gần nhất!
+  const hasRecordedScore = Boolean(
+    rawLive &&
+      ((rawLive.history && rawLive.history.length > 0) ||
+        rawLive.a > 0 ||
+        rawLive.b > 0)
+  );
+
+  const initialScoring =
+    !hasRecordedScore && prefs.scoring
+      ? prefs.scoring
+      : (rawLive?.scoring ?? prefs.scoring ?? "sideout");
+  const initialTarget =
+    !hasRecordedScore && typeof prefs.target === "number"
+      ? prefs.target
+      : (rawLive?.target ?? prefs.target ?? 11);
+  const initialWinBy2 =
+    !hasRecordedScore && typeof prefs.winBy2 === "boolean"
+      ? prefs.winBy2
+      : typeof rawLive?.winBy2 === "boolean"
+      ? rawLive.winBy2
+      : typeof prefs.winBy2 === "boolean"
+      ? prefs.winBy2
+      : true;
+  const initialTimeoutSec =
+    !hasRecordedScore && typeof prefs.timeoutSeconds === "number"
+      ? prefs.timeoutSeconds
+      : (rawLive?.timeoutSeconds ?? prefs.timeoutSeconds ?? 60);
+  const initialMedicalSec =
+    !hasRecordedScore && typeof prefs.medicalSeconds === "number"
+      ? prefs.medicalSeconds
+      : (rawLive?.medicalSeconds ?? prefs.medicalSeconds ?? 900);
+  const initialTimeoutsPerTeam =
+    !hasRecordedScore && typeof prefs.timeoutsPerTeam === "number"
+      ? prefs.timeoutsPerTeam
+      : (rawLive?.timeoutsPerTeam ?? prefs.timeoutsPerTeam ?? 1);
+
   const live: LiveState = {
     ...defaultLive(),
-    ...rawLive,
-    toUsed: Array.isArray(rawLive.toUsed) ? [rawLive.toUsed[0] ?? 0, rawLive.toUsed[1] ?? 0] : [0, 0],
-    medUsed: Array.isArray(rawLive.medUsed) ? [rawLive.medUsed[0] ?? 0, rawLive.medUsed[1] ?? 0] : [0, 0],
-    history: Array.isArray(rawLive.history) ? rawLive.history : [],
-    posA: Array.isArray(rawLive.posA) ? [rawLive.posA[0] ?? 0, rawLive.posA[1] ?? 1] : [0, 1],
-    posB: Array.isArray(rawLive.posB) ? [rawLive.posB[0] ?? 0, rawLive.posB[1] ?? 1] : [0, 1],
-    playerIcons: rawLive.playerIcons ?? {},
+    ...(rawLive ?? {}),
+    scoring: initialScoring,
+    target: initialTarget,
+    winBy2: initialWinBy2,
+    timeoutSeconds: initialTimeoutSec,
+    medicalSeconds: initialMedicalSec,
+    timeoutsPerTeam: initialTimeoutsPerTeam,
+    toUsed: Array.isArray(rawLive?.toUsed)
+      ? [rawLive.toUsed[0] ?? 0, rawLive.toUsed[1] ?? 0]
+      : [0, 0],
+    medUsed: Array.isArray(rawLive?.medUsed)
+      ? [rawLive.medUsed[0] ?? 0, rawLive.medUsed[1] ?? 0]
+      : [0, 0],
+    history: Array.isArray(rawLive?.history) ? rawLive.history : [],
+    posA: Array.isArray(rawLive?.posA)
+      ? [rawLive.posA[0] ?? 0, rawLive.posA[1] ?? 1]
+      : [0, 1],
+    posB: Array.isArray(rawLive?.posB)
+      ? [rawLive.posB[0] ?? 0, rawLive.posB[1] ?? 1]
+      : [0, 1],
+    playerIcons: rawLive?.playerIcons ?? {},
   };
 
   const doubles = (ev ? ev.mode === "doi" : true) && (namesA.length > 1 || namesB.length > 1);
@@ -160,8 +246,19 @@ function LiveScoringPage() {
   const posA: [number, number] = live.posA ?? [0, 1];
   const posB: [number, number] = live.posB ?? [0, 1];
 
-  const setLive = (patch: Partial<LiveState>) =>
-    updateMatch(match.id, { live: { ...live, ...patch } });
+  const setLive = (patch: Partial<LiveState>) => {
+    const nextLive = { ...live, ...patch };
+    const toSave: Partial<LiveScoringPrefs> = {
+      scoring: nextLive.scoring,
+      target: nextLive.target,
+      winBy2: nextLive.winBy2,
+      timeoutSeconds: nextLive.timeoutSeconds,
+      medicalSeconds: nextLive.medicalSeconds,
+      timeoutsPerTeam: nextLive.timeoutsPerTeam,
+    };
+    saveLivePrefs(toSave);
+    updateMatch(match.id, { live: nextLive });
+  };
 
   const setPlayerIcon = (playerName: string, icon: string) => {
     const nextIcons = { ...(live.playerIcons || {}), [playerName]: icon };
@@ -400,7 +497,35 @@ function LiveScoringPage() {
                 })}
               </div>
             </>
-          ) : null
+          ) : (
+            <>
+              <Lbl>Ghi chú VĐV (đấu đơn)</Lbl>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                {[
+                  { name: namesA[0] || entryName(teamA), teamLabel: entryName(teamA) },
+                  { name: namesB[0] || entryName(teamB), teamLabel: entryName(teamB) },
+                ].map(({ name, teamLabel }) => (
+                  <div
+                    key={name}
+                    className="rounded-xl bg-card border border-line/20 p-3 text-center transition-all select-none"
+                  >
+                    <div className="truncate py-1 text-center font-bold text-sm text-line/80">
+                      {name}
+                    </div>
+                    <p className="text-[11px] text-line/50 mb-1">{teamLabel}</p>
+                    <input
+                      type="text"
+                      placeholder="Ghi chú (màu áo, vợt...)..."
+                      value={live.playerIcons?.[name] ?? ""}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => setPlayerIcon(name, e.target.value)}
+                      className="mt-1 w-full rounded-md border border-line/20 bg-paper px-2 py-1 text-center text-xs outline-none hover:border-[#0a3320] focus:border-[#0a3320]"
+                    />
+                  </div>
+                ))}
+              </div>
+            </>
+          )
         ) : (
           <p className="mt-4 text-center text-xs text-line/50">
             Tung đồng xu hoặc bấm chọn đội giao bóng để tiếp tục.
@@ -410,8 +535,25 @@ function LiveScoringPage() {
         <button
           className="mt-6 w-full cursor-pointer rounded-lg bg-courtdeep py-3.5 font-head text-base font-bold uppercase tracking-wide text-paper hover:bg-courtdeep/90 transition shadow-md"
           onClick={() => {
-            const effServerIdx = doubles ? (selectedServerIdx ?? live.serverIdx ?? 0) : 0;
-            const effReceiverIdx = doubles ? (selectedReceiverIdx ?? live.receiverIdx ?? 0) : 0;
+            saveLivePrefs({
+              scoring: live.scoring,
+              target: live.target,
+              winBy2: live.winBy2,
+              timeoutSeconds: live.timeoutSeconds,
+              medicalSeconds: live.medicalSeconds,
+              timeoutsPerTeam: live.timeoutsPerTeam,
+            });
+
+            const effServerIdx = doubles
+              ? (live.scoring === "rally"
+                  ? (live.serveTeam === 0 ? (live.posA?.[0] ?? 0) : (live.posB?.[0] ?? 0))
+                  : (selectedServerIdx ?? live.serverIdx ?? 0))
+              : 0;
+            const effReceiverIdx = doubles
+              ? (live.scoring === "rally"
+                  ? (live.serveTeam === 0 ? (live.posB?.[0] ?? 0) : (live.posA?.[0] ?? 0))
+                  : (selectedReceiverIdx ?? live.receiverIdx ?? 0))
+              : 0;
             const nextPosA: [number, number] = live.posA ? [...live.posA] : [0, 1];
             const nextPosB: [number, number] = live.posB ? [...live.posB] : [0, 1];
             // Đặt người giao đầu tiên và người nhận đầu tiên vào ô Phải (pos[0] - đối diện chéo nhau)
@@ -478,7 +620,8 @@ function LiveScoringPage() {
           receiverIdx: live.receiverIdx,
           posA: live.posA ?? [0, 1],
           posB: live.posB ?? [0, 1],
-        },
+          courtFlipped: courtFlipped,
+        } as any,
       ],
     });
 
@@ -488,6 +631,8 @@ function LiveScoringPage() {
     if (!coDone && (na === coPoint || nb === coPoint)) {
       setCoDone(true);
       setChangeover(true);
+      // Tự động lật ngược đổi sân cho sân mini nhỏ trong bảng chấm điểm theo yêu cầu
+      setCourtFlipped((prev) => !prev);
     }
     const win =
       Math.max(na, nb) >= live.target && (!live.winBy2 || Math.abs(na - nb) >= 2);
@@ -498,6 +643,40 @@ function LiveScoringPage() {
     const na = team === 0 ? live.a + 1 : live.a;
     const nb = team === 1 ? live.b + 1 : live.b;
     push(team === 0 ? { a: na } : { b: nb });
+    afterScore(na, nb);
+  };
+
+  /** Chấm điểm Rally Score chuẩn luật Pickleball */
+  const scoreRally = (winningTeam: 0 | 1) => {
+    const na = winningTeam === 0 ? live.a + 1 : live.a;
+    const nb = winningTeam === 1 ? live.b + 1 : live.b;
+    const winScore = winningTeam === 0 ? na : nb;
+
+    // Chuẩn luật Rally Scoring Pickleball:
+    // 1. Bên nào thắng rally thì bên đó được cộng 1 điểm, bất kể họ đang giao bóng hay đang nhận bóng.
+    // 2. Bên thắng rally nhận/giữ quyền giao bóng tiếp theo (nextServeTeam = winningTeam).
+    // 3. Hai người trong đội KHÔNG ĐỔI Ô ĐỨNG CHO NHAU (posA và posB giữ nguyên).
+    // 4. Người giao bóng tiếp theo được xác định theo quy tắc:
+    //    - Điểm đội giao là số chẵn: người đứng bên phải (pos[0]) giao bóng.
+    //    - Điểm đội giao là số lẻ: người đứng bên trái (pos[1]) giao bóng.
+    //    (Nếu đang cầm giao bóng mà ghi điểm, tiếp tục lượt giao đưa cho người còn lại giao vì điểm tăng 1 từ chẵn sang lẻ hoặc lẻ sang chẵn).
+    const isEven = winScore % 2 === 0;
+    const servingPos = winningTeam === 0 ? posA : posB;
+    const opponentPos = winningTeam === 0 ? posB : posA;
+
+    const nextServerIdx = doubles ? (isEven ? (servingPos[0] ?? 0) : (servingPos[1] ?? 1)) : 0;
+    const nextReceiverIdx = doubles ? (isEven ? (opponentPos[0] ?? 0) : (opponentPos[1] ?? 1)) : 0;
+
+    push({
+      a: na,
+      b: nb,
+      serveTeam: winningTeam,
+      serverIdx: nextServerIdx,
+      receiverIdx: nextReceiverIdx,
+      posA: [...posA],
+      posB: [...posB],
+      serverNum: 1,
+    });
     afterScore(na, nb);
   };
 
@@ -592,6 +771,12 @@ function LiveScoringPage() {
   const undo = () => {
     const last = live.history[live.history.length - 1];
     if (!last) return;
+    if (typeof (last as any).courtFlipped === "boolean") {
+      setCourtFlipped((last as any).courtFlipped);
+    }
+    if (last.a < coPoint && last.b < coPoint) {
+      setCoDone(false);
+    }
     setLive({
       ...last,
       posA: last.posA ?? posA,
@@ -611,18 +796,18 @@ function LiveScoringPage() {
 
     if (!doubles) {
       // Nội dung đơn: điểm chẵn của người giao bóng đứng ô Phải (Chẵn), điểm lẻ đứng ô Trái (Lẻ)
+      // Người nhận đứng ở ô chéo đối diện
       const servingScore = live.serveTeam === 0 ? live.a : live.b;
       const isRightCourtActive = servingScore % 2 === 0;
       const pName = names[0] || (teamIdx === 0 ? "VĐV A" : "VĐV B");
       const pNote = live.playerIcons?.[pName]?.trim() || "";
       const isServ = live.serveTeam === teamIdx;
-      // Nửa sân bên trái: ô Trên là Trái (Lẻ), ô Dưới là Phải (Chẵn)
+      // Nửa sân bên trái: ô Dưới là Phải (Chẵn), ô Trên là Trái (Lẻ)
       // Nửa sân bên phải: ô Trên là Phải (Chẵn), ô Dưới là Trái (Lẻ)
-      const topIsRightCourt = side === "right";
-      const showInTop = topIsRightCourt ? isRightCourtActive : !isRightCourtActive;
+      const isPlayerInTop = side === "right" ? isRightCourtActive : !isRightCourtActive;
       return {
-        top: showInTop ? { name: pName, note: pNote, isServ } : { name: "", note: "", isServ: false },
-        bottom: !showInTop ? { name: pName, note: pNote, isServ } : { name: "", note: "", isServ: false },
+        top: isPlayerInTop ? { name: pName, note: pNote, isServ } : { name: "", note: "", isServ: false },
+        bottom: !isPlayerInTop ? { name: pName, note: pNote, isServ } : { name: "", note: "", isServ: false },
       };
     }
 
@@ -635,16 +820,24 @@ function LiveScoringPage() {
     const topName = names[topPlayerIdx] || names[0] || "";
     const bottomName = names[bottomPlayerIdx] || names[1] || names[0] || "";
 
+    const isServingTeam = live.serveTeam === teamIdx;
+    const activeServerIdx =
+      live.scoring === "rally"
+        ? (teamIdx === 0 ? live.a : live.b) % 2 === 0
+          ? (pos[0] ?? 0)
+          : (pos[1] ?? 1)
+        : live.serverIdx;
+
     return {
       top: {
         name: topName,
         note: live.playerIcons?.[topName]?.trim() || "",
-        isServ: live.serveTeam === teamIdx && live.serverIdx === topPlayerIdx,
+        isServ: isServingTeam && activeServerIdx === topPlayerIdx,
       },
       bottom: {
         name: bottomName,
         note: live.playerIcons?.[bottomName]?.trim() || "",
-        isServ: live.serveTeam === teamIdx && live.serverIdx === bottomPlayerIdx,
+        isServ: isServingTeam && activeServerIdx === bottomPlayerIdx,
       },
     };
   };
@@ -754,31 +947,47 @@ function LiveScoringPage() {
 
       {/* Vùng chính: 2 ô bấm điểm lớn chiếm trọn 2 nửa Trái / Phải + Sân Pickleball Mini thanh mảnh ở giữa */}
       <div className="relative grid flex-1 grid-cols-2 min-h-[340px]">
-        {/* Ô bấm điểm lớn bên TRÁI */}
+        {/* Ô bấm điểm lớn bên TRÁI: Trong Rally Score, bấm +1 điểm cho đội đang đứng bên TRÁI sân */}
         <button
           type="button"
           className="flex flex-col items-center justify-end pb-12 sm:pb-16 pt-48 bg-court/15 transition hover:bg-court/20 active:bg-court/25 cursor-pointer select-none"
-          onClick={() => (isSideout ? scoreForServing() : pointFor(0))}
+          onClick={() => {
+            if (isSideout) {
+              scoreForServing();
+            } else if (live.scoring === "rally") {
+              scoreRally(leftTeamIdx);
+            } else {
+              pointFor(leftTeamIdx);
+            }
+          }}
         >
           <span className="font-head text-4xl sm:text-5xl font-extrabold uppercase tracking-tight text-courtdeep">
             +1 Điểm
           </span>
           <span className="mt-2 text-xs font-semibold text-line/70">
-            cho {isSideout ? (live.serveTeam === 0 ? entryName(teamA) : entryName(teamB)) : entryName(teamA)}
+            cho {isSideout ? (live.serveTeam === 0 ? entryName(teamA) : entryName(teamB)) : entryName(leftTeamIdx === 0 ? teamA : teamB)}
           </span>
         </button>
 
-        {/* Ô bấm điểm lớn bên PHẢI */}
+        {/* Ô bấm điểm lớn bên PHẢI: Trong Rally Score, bấm +1 điểm cho đội đang đứng bên PHẢI sân */}
         <button
           type="button"
           className="flex flex-col items-center justify-end pb-12 sm:pb-16 pt-48 bg-card transition hover:bg-card/80 active:bg-line/10 border-l border-line/15 cursor-pointer select-none"
-          onClick={() => (isSideout ? sideOut() : pointFor(1))}
+          onClick={() => {
+            if (isSideout) {
+              sideOut();
+            } else if (live.scoring === "rally") {
+              scoreRally(rightTeamIdx);
+            } else {
+              pointFor(rightTeamIdx);
+            }
+          }}
         >
-          <span className="font-head text-4xl sm:text-5xl font-extrabold uppercase tracking-tight text-line">
+          <span className={`font-head text-4xl sm:text-5xl font-extrabold uppercase tracking-tight ${isSideout ? "text-line" : "text-courtdeep"}`}>
             {isSideout ? "Mất giao" : "+1 Điểm"}
           </span>
           <span className="mt-2 text-xs font-semibold text-line/70">
-            {isSideout ? "Đổi lượt giao (Side-out)" : `cho ${entryName(teamB)}`}
+            {isSideout ? "Đổi lượt giao (Side-out)" : `cho ${entryName(rightTeamIdx === 0 ? teamA : teamB)}`}
           </span>
         </button>
 
@@ -839,28 +1048,30 @@ function LiveScoringPage() {
         </div>
       </div>
 
-      {/* Thanh hội ý & Y tế */}
+      {/* Thanh hội ý & Y tế theo phía sân hiển thị */}
       <div className="flex items-center justify-between gap-2 border-t border-line/10 bg-card px-3 py-2 text-[11px] font-semibold">
         <div className="flex items-center gap-1.5">
-          <span className="max-w-[90px] truncate text-line/70">{entryName(teamA)}</span>
+          <span className="max-w-[90px] truncate text-line/70">{entryName(leftTeamIdx === 0 ? teamA : teamB)}</span>
           <button
             className="rounded-md bg-paper px-2 py-1 ring-1 ring-line/20 hover:bg-paper/80"
             onClick={() => {
               const u0 = live.toUsed?.[0] ?? 0;
               const u1 = live.toUsed?.[1] ?? 0;
-              setLive({ toUsed: [u0 + 1, u1] });
-              startTimer(`Hội ý · ${entryName(teamA)}`, live.timeoutSeconds);
+              const nextTo: [number, number] = leftTeamIdx === 0 ? [u0 + 1, u1] : [u0, u1 + 1];
+              setLive({ toUsed: nextTo });
+              startTimer(`Hội ý · ${entryName(leftTeamIdx === 0 ? teamA : teamB)}`, live.timeoutSeconds);
             }}
           >
-            ⏱ Hội ý ({Math.max(0, (live.timeoutsPerTeam ?? 1) - (live.toUsed?.[0] ?? 0))})
+            ⏱ Hội ý ({Math.max(0, (live.timeoutsPerTeam ?? 1) - (live.toUsed?.[leftTeamIdx] ?? 0))})
           </button>
           <button
             className="rounded-md bg-destructive px-2 py-1 text-destructive-foreground hover:opacity-90"
             onClick={() => {
               const m0 = live.medUsed?.[0] ?? 0;
               const m1 = live.medUsed?.[1] ?? 0;
-              setLive({ medUsed: [m0 + 1, m1] });
-              startTimer(`Y tế · ${entryName(teamA)}`, live.medicalSeconds);
+              const nextMed: [number, number] = leftTeamIdx === 0 ? [m0 + 1, m1] : [m0, m1 + 1];
+              setLive({ medUsed: nextMed });
+              startTimer(`Y tế · ${entryName(leftTeamIdx === 0 ? teamA : teamB)}`, live.medicalSeconds);
             }}
           >
             MED
@@ -873,8 +1084,9 @@ function LiveScoringPage() {
             onClick={() => {
               const m0 = live.medUsed?.[0] ?? 0;
               const m1 = live.medUsed?.[1] ?? 0;
-              setLive({ medUsed: [m0, m1 + 1] });
-              startTimer(`Y tế · ${entryName(teamB)}`, live.medicalSeconds);
+              const nextMed: [number, number] = rightTeamIdx === 0 ? [m0 + 1, m1] : [m0, m1 + 1];
+              setLive({ medUsed: nextMed });
+              startTimer(`Y tế · ${entryName(rightTeamIdx === 0 ? teamA : teamB)}`, live.medicalSeconds);
             }}
           >
             MED
@@ -884,13 +1096,14 @@ function LiveScoringPage() {
             onClick={() => {
               const u0 = live.toUsed?.[0] ?? 0;
               const u1 = live.toUsed?.[1] ?? 0;
-              setLive({ toUsed: [u0, u1 + 1] });
-              startTimer(`Hội ý · ${entryName(teamB)}`, live.timeoutSeconds);
+              const nextTo: [number, number] = rightTeamIdx === 0 ? [u0 + 1, u1] : [u0, u1 + 1];
+              setLive({ toUsed: nextTo });
+              startTimer(`Hội ý · ${entryName(rightTeamIdx === 0 ? teamA : teamB)}`, live.timeoutSeconds);
             }}
           >
-            ⏱ Hội ý ({Math.max(0, (live.timeoutsPerTeam ?? 1) - (live.toUsed?.[1] ?? 0))})
+            ⏱ Hội ý ({Math.max(0, (live.timeoutsPerTeam ?? 1) - (live.toUsed?.[rightTeamIdx] ?? 0))})
           </button>
-          <span className="max-w-[90px] truncate text-line/70">{entryName(teamB)}</span>
+          <span className="max-w-[90px] truncate text-line/70">{entryName(rightTeamIdx === 0 ? teamA : teamB)}</span>
         </div>
       </div>
 
@@ -939,7 +1152,8 @@ function LiveScoringPage() {
                       {h.a} - {h.b}
                     </span>
                     <span className="text-[11px] text-line/60">
-                      Giao: Đội {h.serveTeam === 0 ? "A" : "B"} (người {h.serverIdx + 1})
+                      Giao: Đội {h.serveTeam === 0 ? "A" : "B"}
+                      {live.scoring === "rally" ? "" : ` (người ${h.serverIdx + 1})`}
                     </span>
                   </div>
                 ))
@@ -991,11 +1205,11 @@ function LiveScoringPage() {
       {changeover ? (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-ink/85 px-6 text-center text-paper">
           <p className="font-head text-3xl font-bold uppercase tracking-tight">Đổi sân</p>
-          <p className="mt-2 text-sm opacity-80">
-            Một đội đã đạt {coPoint} điểm — nhắc hai đội đổi sân.
+          <p className="mt-2 text-sm opacity-90 max-w-sm">
+            Một đội đã đạt {coPoint} điểm — nhắc hai đội đổi sân. Sân mini và các nút chấm điểm đã tự động lật ngược vị trí hai đội.
           </p>
           <button className="btn-accent mt-6" onClick={() => setChangeover(false)}>
-            Đã đổi sân
+            Đã đổi sân · Tiếp tục thi đấu
           </button>
         </div>
       ) : null}

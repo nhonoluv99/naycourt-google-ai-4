@@ -1482,7 +1482,12 @@ function ManagePage() {
   if (!ev) {
     return (
       <div className="max-w-xl">
-        <h1 className="font-head text-4xl font-bold uppercase tracking-tight">Quản lý giải đấu</h1>
+        <h1
+          className="font-head text-3xl font-extrabold uppercase tracking-tight text-[#0a3320] sm:text-4xl"
+          style={{ color: "#0a3320" }}
+        >
+          Quản lý giải đấu
+        </h1>
         <p className="mt-3 text-sm text-line/60">Chưa có nội dung nào để điều hành.</p>
         <Link to="/noi-dung" className="btn-accent mt-4 inline-block">
           Tạo nội dung
