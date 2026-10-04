@@ -4,9 +4,19 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
+import {
+  auth,
+  signInWithGoogle,
+  logOutGoogle,
+  syncTournamentToCloud,
+  fetchTournamentFromCloud,
+  onAuthStateChanged,
+  type User,
+} from "./firebase";
 
 /* ---------------- Kiểu dữ liệu ---------------- */
 
@@ -171,6 +181,13 @@ type Ctx = {
   setSelectedEventId: (id: string) => void;
   toggleKoLock: (eventId: string) => void;
   reset: () => void;
+  user: User | null;
+  authLoading: boolean;
+  isSyncing: boolean;
+  lastSyncedAt: Date | null;
+  loginWithGoogle: () => Promise<void>;
+  logout: () => Promise<void>;
+  syncNow: () => Promise<void>;
 };
 
 const TournamentContext = createContext<Ctx | null>(null);
@@ -204,6 +221,13 @@ function sanitizeLoadedState(rawState: TournamentState): TournamentState {
 }
 
 export function TournamentProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
+  const syncTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastCommitTimeRef = useRef<number>(0);
+
   const [state, setState] = useState<TournamentState>(() => {
     try {
       const raw = typeof window !== "undefined" ? localStorage.getItem(STORAGE_KEY) : null;
@@ -214,6 +238,11 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     return initialState;
   });
 
+  const stateRef = useRef(state);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -223,14 +252,72 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const commit = useCallback((next: TournamentState) => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-    } catch {
-      /* ignore */
-    }
-    return next;
+  // Lắng nghe trạng thái đăng nhập Firebase Auth và tải giải đấu từ đám mây khi đổi máy
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (currentUser) => {
+      setUser(currentUser);
+      setAuthLoading(false);
+      if (currentUser) {
+        setIsSyncing(true);
+        try {
+          const cloudData = await fetchTournamentFromCloud(currentUser.uid);
+          if (
+            cloudData &&
+            typeof cloudData === "object" &&
+            (cloudData.name !== undefined || (cloudData.events && cloudData.events.length > 0))
+          ) {
+            // Máy mới hoặc tải lại: nạp giải đấu từ đám mây vào ứng dụng
+            const sanitized = sanitizeLoadedState(cloudData);
+            setState(sanitized);
+            try {
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitized));
+            } catch {}
+            setLastSyncedAt(new Date());
+          } else {
+            // Chỉ đồng bộ lên nếu máy hiện tại đang có dữ liệu giải đấu thực sự
+            if (stateRef.current.events.length > 0 || stateRef.current.name.trim() !== "") {
+              await syncTournamentToCloud(currentUser.uid, currentUser.email, stateRef.current);
+              setLastSyncedAt(new Date());
+            }
+          }
+        } catch (e) {
+          console.error("Lỗi đồng bộ đám mây:", e);
+        } finally {
+          setIsSyncing(false);
+        }
+      }
+    });
+    return () => unsub();
   }, []);
+
+  const commit = useCallback(
+    (next: TournamentState) => {
+      lastCommitTimeRef.current = Date.now();
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        /* ignore */
+      }
+      // Tự động đồng bộ lên đám mây Firestore khi tài khoản đã đăng nhập
+      if (auth.currentUser) {
+        if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+        syncTimerRef.current = setTimeout(async () => {
+          if (!auth.currentUser) return;
+          setIsSyncing(true);
+          try {
+            await syncTournamentToCloud(auth.currentUser.uid, auth.currentUser.email, next);
+            setLastSyncedAt(new Date());
+          } catch (err) {
+            console.error("Lỗi tự động lưu đám mây:", err);
+          } finally {
+            setIsSyncing(false);
+          }
+        }, 1200);
+      }
+      return next;
+    },
+    [],
+  );
 
   const update = useCallback(
     (patch: Partial<TournamentState>) => setState((prev) => commit({ ...prev, ...patch })),
@@ -284,11 +371,92 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     } catch {
       /* ignore */
     }
+    if (auth.currentUser) {
+      void syncTournamentToCloud(auth.currentUser.uid, auth.currentUser.email, initialState);
+    }
   }, []);
 
+  const loginWithGoogle = useCallback(async () => {
+    setIsSyncing(true);
+    try {
+      const loggedUser = await signInWithGoogle();
+      setUser(loggedUser);
+      // Khi đăng nhập trên máy mới: ưu tiên lấy giải đấu đã lưu trên đám mây về máy này
+      const cloudData = await fetchTournamentFromCloud(loggedUser.uid);
+      if (
+        cloudData &&
+        typeof cloudData === "object" &&
+        (cloudData.name !== undefined || (cloudData.events && cloudData.events.length > 0))
+      ) {
+        const sanitized = sanitizeLoadedState(cloudData);
+        setState(sanitized);
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitized));
+        } catch {}
+      } else if (stateRef.current.events.length > 0 || stateRef.current.name.trim() !== "") {
+        // Chỉ đẩy lên đám mây nếu giải hiện tại ở máy này có dữ liệu thật
+        await syncTournamentToCloud(loggedUser.uid, loggedUser.email, stateRef.current);
+      }
+      setLastSyncedAt(new Date());
+    } catch (e) {
+      console.error("Lỗi khi đăng nhập Google:", e);
+      throw e;
+    } finally {
+      setIsSyncing(false);
+    }
+  }, []);
+
+  const logout = useCallback(async () => {
+    await logOutGoogle();
+    setUser(null);
+  }, []);
+
+  const syncNow = useCallback(async () => {
+    if (!auth.currentUser) return;
+    setIsSyncing(true);
+    try {
+      await syncTournamentToCloud(auth.currentUser.uid, auth.currentUser.email, state);
+      setLastSyncedAt(new Date());
+    } catch (e) {
+      console.error("Lỗi đồng bộ đám mây:", e);
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [state]);
+
   const value = useMemo(
-    () => ({ state, update, updateEvent, updateMatch, setSelectedEventId, toggleKoLock, reset }),
-    [state, update, updateEvent, updateMatch, setSelectedEventId, toggleKoLock, reset],
+    () => ({
+      state,
+      update,
+      updateEvent,
+      updateMatch,
+      setSelectedEventId,
+      toggleKoLock,
+      reset,
+      user,
+      authLoading,
+      isSyncing,
+      lastSyncedAt,
+      loginWithGoogle,
+      logout,
+      syncNow,
+    }),
+    [
+      state,
+      update,
+      updateEvent,
+      updateMatch,
+      setSelectedEventId,
+      toggleKoLock,
+      reset,
+      user,
+      authLoading,
+      isSyncing,
+      lastSyncedAt,
+      loginWithGoogle,
+      logout,
+      syncNow,
+    ],
   );
 
   return <TournamentContext.Provider value={value}>{children}</TournamentContext.Provider>;

@@ -1,0 +1,34 @@
+{
+  "entities": {
+    "TournamentDoc": {
+      "title": "TournamentDoc",
+      "description": "User pickleball tournament data synced to cloud",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "User ID of tournament owner"
+        },
+        "userEmail": {
+          "type": "string",
+          "description": "Email address of owner"
+        },
+        "stateJson": {
+          "type": "string",
+          "description": "JSON payload containing tournament events, entries, matches, and courts"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Timestamp string of last sync"
+        }
+      },
+      "required": ["userId", "stateJson"]
+    }
+  },
+  "firestore": {
+    "/tournaments/{userId}": {
+      "schema": "TournamentDoc",
+      "description": "User tournament state indexed by their Firebase Auth UID"
+    }
+  }
+}

@@ -1,6 +1,9 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import * as XLSX from "xlsx";
+import { DuprPvnaLookupModal } from "@/components/DuprPvnaLookupModal";
+import type { RatedPlayer } from "@/lib/rating-database";
 import {
   drawPairs,
   entryName,
@@ -58,6 +61,31 @@ function PlayersPage() {
     onConfirm: () => void;
   } | null>(null);
 
+  const [ratingLookupOpen, setRatingLookupOpen] = useState(false);
+  const [lookupQuery, setLookupQuery] = useState("");
+  const [lookupTarget, setLookupTarget] = useState<{ entryId: string; playerIdx: number; name: string } | null>(null);
+  const [lookupSelectedRating, setLookupSelectedRating] = useState<number | null>(null);
+
+  const openLookup = (target?: { entryId: string; playerIdx: number; name: string }) => {
+    if (target) {
+      setLookupTarget(target);
+      setLookupQuery(target.name || "");
+    } else {
+      setLookupTarget(null);
+      setLookupQuery("");
+    }
+    setLookupSelectedRating(null);
+    setRatingLookupOpen(true);
+  };
+
+  const applyRatingToTarget = (rating: number) => {
+    if (lookupTarget) {
+      patchPlayer(lookupTarget.entryId, lookupTarget.playerIdx, { rating });
+      toast.success(`Đã cập nhật điểm trình ${rating} cho VĐV ${lookupTarget.name || "được chọn"}`);
+      setRatingLookupOpen(false);
+    }
+  };
+
   const ev: TEvent | undefined = state.events.find((e) => e.id === activeId) ?? state.events[0];
 
   useEffect(() => {
@@ -113,6 +141,49 @@ function PlayersPage() {
   }
 
   const slots = ev.mode === "don" ? 1 : ev.pairMode === "fixed" ? 2 : 1;
+
+  // State cho Tra cứu DUPR / PVNA
+  const [lookupModalOpen, setLookupModalOpen] = useState(false);
+  const [targetSlot, setTargetSlot] = useState<{
+    entryId: string;
+    playerIdx: number;
+    initialQuery: string;
+    slotLabel: string;
+  } | null>(null);
+
+  const handleSelectRatedPlayer = (
+    player: RatedPlayer,
+    chosenRating: number,
+    type: "dupr" | "pvna",
+  ) => {
+    if (targetSlot) {
+      // Điền vào ô VĐV cụ thể đang chọn
+      patchPlayer(targetSlot.entryId, targetSlot.playerIdx, {
+        name: player.name,
+        rating: chosenRating,
+      });
+      toast.success(
+        `Đã điền điểm ${type.toUpperCase()} (${chosenRating.toFixed(3)}) cho VĐV ${player.name}!`,
+      );
+      setTargetSlot(null);
+    } else {
+      // Thêm VĐV mới vào danh sách giải đấu
+      const newSlot = { name: player.name, rating: chosenRating, paid: false };
+      setEntries([
+        ...entries,
+        {
+          id: uid(),
+          eventId: ev.id,
+          players:
+            slots === 2 ? [newSlot, { name: "", rating: null, paid: false }] : [newSlot],
+          paid: false,
+        },
+      ]);
+      toast.success(
+        `Đã thêm VĐV ${player.name} (${type.toUpperCase()}: ${chosenRating.toFixed(3)}) vào danh sách!`,
+      );
+    }
+  };
 
   const setEntries = (next: Entry[]) =>
     update({ entries: [...state.entries.filter((e) => e.eventId !== ev.id), ...next] });
@@ -463,6 +534,17 @@ function PlayersPage() {
               + Thêm {ev.mode === "don" ? "VĐV" : slots === 2 ? "đội" : "VĐV"}
             </button>
             <button
+              type="button"
+              className="rounded-lg bg-[#0a3320] hover:bg-[#0a3320]/90 text-white px-3.5 py-2 text-sm font-semibold shadow-xs cursor-pointer transition"
+              onClick={() => {
+                setTargetSlot(null);
+                setLookupModalOpen(true);
+              }}
+              title="Tra cứu điểm DURP / PVNA"
+            >
+              DURP/PVNA
+            </button>
+            <button
               className="btn-ghost"
               onClick={() => fileRef.current?.click()}
               title="Hỗ trợ file .xlsx, .xls, .csv, .tsv (cột STT, Tên, Điểm trình)"
@@ -588,12 +670,42 @@ function PlayersPage() {
                               patchPlayer(en.id, pi, { paid: checked });
                             }}
                           />
-                          <input
-                            className="field"
-                            placeholder={en.players.length > 1 ? `VĐV ${pi + 1}` : "Tên VĐV"}
-                            value={p.name}
-                            onChange={(e) => patchPlayer(en.id, pi, { name: e.target.value })}
-                          />
+                          <div className="group/slot relative flex-1 min-w-[130px]">
+                            <input
+                              className="field w-full pr-7"
+                              placeholder={en.players.length > 1 ? `VĐV ${pi + 1}` : "Tên VĐV"}
+                              value={p.name}
+                              onChange={(e) => patchPlayer(en.id, pi, { name: e.target.value })}
+                            />
+                            <button
+                              type="button"
+                              tabIndex={-1}
+                              onClick={() => {
+                                setTargetSlot({
+                                  entryId: en.id,
+                                  playerIdx: pi,
+                                  initialQuery: p.name,
+                                  slotLabel: `${p.name || `VĐV ${pi + 1}`} (Hàng #${i + 1})`,
+                                });
+                                setLookupModalOpen(true);
+                              }}
+                              className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 text-line/40 hover:text-line cursor-pointer transition opacity-0 group-hover/slot:opacity-100 group-focus-within/slot:opacity-100"
+                              title="Tra cứu điểm DURP / PVNA cho VĐV này"
+                            >
+                              <svg
+                                className="size-3.5 stroke-line/40 hover:stroke-line/70"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              >
+                                <circle cx="11" cy="11" r="7" />
+                                <path d="m21 21-4.35-4.35" />
+                              </svg>
+                            </button>
+                          </div>
                           <RatingInput
                             value={p.rating}
                             onChange={(rating) => patchPlayer(en.id, pi, { rating })}
@@ -602,10 +714,9 @@ function PlayersPage() {
                       ))}
                       {en.players.length > 1 && (
                         <div
-                          className="flex h-9 shrink-0 items-center justify-center rounded-md border border-accent/40 bg-accent/10 px-2.5 text-xs font-bold text-accent"
-                          title="Tổng điểm trình của cả 2 VĐV cộng lại (đầy đủ số thập phân)"
+                          className="flex h-9 w-16 shrink-0 items-center justify-center rounded-lg border border-accent/40 bg-accent/10 text-xs font-bold text-accent shadow-2xs"
+                          title="Điểm tổng của cả 2 VĐV"
                         >
-                          <span className="text-[10px] uppercase text-accent/70 mr-1">Tổng:</span>
                           <span>{totalRating > 0 ? formatRating(Number(totalRating.toFixed(4))) : "—"}</span>
                         </div>
                       )}
@@ -1047,6 +1158,17 @@ function PlayersPage() {
           </div>
         </div>
       )}
+      {/* Modal tra cứu điểm DUPR & PVNA */}
+      <DuprPvnaLookupModal
+        isOpen={lookupModalOpen}
+        onClose={() => {
+          setLookupModalOpen(false);
+          setTargetSlot(null);
+        }}
+        targetSlotLabel={targetSlot?.slotLabel}
+        initialQuery={targetSlot?.initialQuery || ""}
+        onSelectPlayer={handleSelectRatedPlayer}
+      />
     </div>
   );
 }
