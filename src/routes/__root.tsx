@@ -159,16 +159,18 @@ function Header({ isWide }: { isWide: boolean }) {
           ))}
         </nav>
         <div className="flex items-center gap-3">
-          {state.date ? (
-            <span className="text-xs font-semibold text-line/80">
-              {state.date}
+          <div className="flex items-center gap-2.5 mr-1">
+            {state.date ? (
+              <span className="text-xs font-semibold text-line/80">
+                {state.date}
+              </span>
+            ) : null}
+            <span className="rounded-md bg-[#0a3320] px-2.5 py-1 text-xs font-semibold text-paper">
+              {state.courts.length} sân
             </span>
-          ) : null}
-          <span className="rounded-md bg-[#0a3320] px-2.5 py-1 text-xs font-semibold text-paper">
-            {state.courts.length} sân
-          </span>
+          </div>
 
-          {/* Nút Logo Gmail / Google tròn gọn gàng chuẩn Ảnh 1 */}
+          {/* Nút Logo Gmail bên phải gọn gàng chuẩn Ảnh 1 */}
           {authLoading ? (
             <div className="size-8 animate-pulse rounded-full bg-line/10" />
           ) : user ? (
@@ -257,23 +259,12 @@ function Header({ isWide }: { isWide: boolean }) {
               className="grid size-8 place-items-center rounded-full border border-line/25 bg-card hover:border-line/50 hover:bg-secondary transition cursor-pointer shadow-2xs group"
               title="Đăng nhập Gmail để tự động đồng bộ giải đấu giữa các thiết bị"
             >
-              <svg className="size-5 transition-transform group-hover:scale-110" viewBox="0 0 24 24">
-                <path
-                  fill="#4285F4"
-                  d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"
-                />
-                <path
-                  fill="#34A853"
-                  d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.41 7.33 24 12 24Z"
-                />
-                <path
-                  fill="#FBBC05"
-                  d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.98 0 12s.45 3.82 1.25 5.42l4.03-3.15Z"
-                />
-                <path
-                  fill="#EA4335"
-                  d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.26 2.59 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98Z"
-                />
+              <svg className="size-5 transition-transform group-hover:scale-110" viewBox="0 0 48 48">
+                <path fill="#4caf50" d="M45,16.2l-5,2.75l-5,4.75L35,40h7c1.657,0,3-1.343,3-3V16.2z"/>
+                <path fill="#1e88e5" d="M3,16.2l3.614,1.71L13,23.7V40H6c-1.657,0-3-1.343-3-3V16.2z"/>
+                <polygon fill="#e53935" points="35,11.2 24,19.45 13,11.2 12,17 13,23.7 24,31.95 35,23.7 36,17"/>
+                <path fill="#c62828" d="M3,12.298V16.2l10,7.5V11.2L8.685,7.964C7.039,6.729,4.685,7.915,4.685,9.974L3,12.298z"/>
+                <path fill="#fbc02d" d="M45,12.298V16.2l-10,7.5V11.2l4.315-3.236c1.646-1.235,4-0.049,4,2.01L45,12.298z"/>
               </svg>
             </button>
           )}

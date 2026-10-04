@@ -673,7 +673,7 @@ function PlayersPage() {
                           <div className="group/slot relative flex-1 min-w-[130px]">
                             <input
                               className="field w-full pr-7"
-                              placeholder={en.players.length > 1 ? `VĐV ${pi + 1}` : "Tên VĐV"}
+                              placeholder="Nhập tên"
                               value={p.name}
                               onChange={(e) => patchPlayer(en.id, pi, { name: e.target.value })}
                             />
@@ -690,14 +690,14 @@ function PlayersPage() {
                                 setLookupModalOpen(true);
                               }}
                               className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 text-line/40 hover:text-line cursor-pointer transition opacity-0 group-hover/slot:opacity-100 group-focus-within/slot:opacity-100"
-                              title="Tra cứu điểm DURP / PVNA cho VĐV này"
+                              title="DURP/PVNA"
                             >
                               <svg
                                 className="size-3.5 stroke-line/40 hover:stroke-line/70"
                                 viewBox="0 0 24 24"
                                 fill="none"
                                 stroke="currentColor"
-                                strokeWidth="2"
+                                strokeWidth="1.6"
                                 strokeLinecap="round"
                                 strokeLinejoin="round"
                               >
@@ -712,9 +712,9 @@ function PlayersPage() {
                           />
                         </div>
                       ))}
-                      {en.players.length > 1 && (
+                      {slots === 2 && (
                         <div
-                          className="flex h-9 w-16 shrink-0 items-center justify-center rounded-lg border border-accent/40 bg-accent/10 text-xs font-bold text-accent shadow-2xs"
+                          className="flex h-9 w-16 shrink-0 items-center justify-center rounded-lg border border-accent/40 bg-accent/10 text-xs font-bold text-accent shadow-2xs tabular-nums"
                           title="Điểm tổng của cả 2 VĐV"
                         >
                           <span>{totalRating > 0 ? formatRating(Number(totalRating.toFixed(4))) : "—"}</span>

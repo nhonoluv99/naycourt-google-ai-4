@@ -56,11 +56,13 @@ function ScoreBox({
   onCommit,
   isWinning,
   compact,
+  large,
 }: {
   value: number | null;
   onCommit: (v: number | null) => void;
   isWinning?: boolean;
   compact?: boolean;
+  large?: boolean;
 }) {
   const [raw, setRaw] = useState(value === null ? "" : String(value));
   useEffect(() => {
@@ -69,7 +71,11 @@ function ScoreBox({
   return (
     <input
       className={`${
-        compact ? "w-9 px-1 py-0.5 text-xs" : "w-11 px-1 py-1 text-sm"
+        large
+          ? "w-14 px-2 py-1.5 text-base sm:text-lg"
+          : compact
+            ? "w-9 px-1 py-0.5 text-xs"
+            : "w-11 px-1 py-1 text-sm"
       } rounded-md text-center font-bold ring-1 outline-none focus:ring-2 focus:ring-[#e44c11] transition-all shrink-0 ${
         isWinning
           ? "bg-[#e44c11]/15 text-[#e44c11] ring-2 ring-[#e44c11] font-bold shadow-xs"
@@ -732,6 +738,7 @@ function KoCard({
   isConflictB,
   hasRoundConflict,
   isKoLocked = false,
+  isFinal = false,
   onScore,
   onStatus,
   onReset,
@@ -758,6 +765,7 @@ function KoCard({
   isConflictB?: boolean;
   hasRoundConflict?: boolean;
   isKoLocked?: boolean;
+  isFinal?: boolean;
   onScore: (k: "scoreA" | "scoreB", v: number | null) => void;
   onStatus: (s: Match["status"]) => void;
   onReset: () => void;
@@ -852,24 +860,32 @@ function KoCard({
     ? "border-2 border-solid border-red-500 ring-2 ring-red-500 bg-red-50/60 dark:bg-red-950/30 shadow-md"
     : m.status === "live"
       ? "border-2 border-solid border-red-500 ring-2 ring-red-500 shadow-md bg-card"
-      : isByeMatch
-        ? "border-[1.2px] border-dashed border-[#e44c11]"
-        : "border-[1.2px] border-solid border-[#e44c11]";
+      : isFinal
+        ? "border-2 border-solid border-amber-500 ring-2 ring-amber-500/35 shadow-md bg-card"
+        : isByeMatch
+          ? "border-[1.2px] border-dashed border-[#e44c11]"
+          : "border-[1.2px] border-solid border-[#e44c11]";
 
   return (
     <div
-      className={`relative rounded-xl ${matchFrameBorder} bg-card shadow-xs transition-all`}
-      style={{ borderWidth: "1.2px" }}
+      className={`relative rounded-xl ${matchFrameBorder} bg-card shadow-xs transition-all ${
+        isFinal ? "scale-[1.03] shadow-md my-1" : ""
+      }`}
+      style={{ borderWidth: isFinal ? "2px" : "1.2px" }}
     >
       <div
-        className={`flex items-center justify-between border-b px-2 py-1 text-[10px] font-semibold rounded-t-xl ${
+        className={`flex items-center justify-between border-b ${
+          isFinal
+            ? "px-3 py-1.5 text-xs font-black rounded-t-xl bg-amber-500/20 text-amber-900 dark:text-amber-100 border-amber-500/30"
+            : "px-2 py-1 text-[10px] font-semibold rounded-t-xl"
+        } ${
           hasRoundConflict
             ? "border-red-300 bg-red-100/90 text-red-900 dark:bg-red-900/40 dark:text-red-200"
-            : "border-line/15 bg-secondary/40 text-line/70"
+            : !isFinal ? "border-line/15 bg-secondary/40 text-line/70" : ""
         }`}
       >
-        <span className="font-bold" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
-          {m.koRound || `Vòng ${m.round}`}
+        <span className="font-bold flex items-center gap-1.5" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+          {isFinal ? "🏆 CHUNG KẾT" : m.koRound || `Vòng ${m.round}`}
         </span>
         <div className="flex items-center gap-1">
           {hasRoundConflict && (
@@ -963,7 +979,7 @@ function KoCard({
           {isByeA ? (
             <span className="text-line/40 font-mono text-xs px-2 select-none">-</span>
           ) : (
-            <ScoreBox value={m.scoreA} onCommit={(v) => onScore("scoreA", v)} isWinning={aWin} />
+            <ScoreBox value={m.scoreA} onCommit={(v) => onScore("scoreA", v)} isWinning={aWin} large={isFinal} />
           )}
         </div>
       </div>
@@ -1036,7 +1052,7 @@ function KoCard({
           {isByeB ? (
             <span className="text-line/40 font-mono text-xs px-2 select-none">-</span>
           ) : (
-            <ScoreBox value={m.scoreB} onCommit={(v) => onScore("scoreB", v)} isWinning={bWin} />
+            <ScoreBox value={m.scoreB} onCommit={(v) => onScore("scoreB", v)} isWinning={bWin} large={isFinal} />
           )}
         </div>
       </div>
@@ -2509,7 +2525,7 @@ function ManagePage() {
     return idx >= 0 ? `${idx + 1}${cleanGn}` : "";
   };
 
-  const renderKoCard = (m: Match) => {
+  const renderKoCard = (m: Match, isFinal = false) => {
     const isConflictA = Boolean(
       m.aId && (roundEntryCounts.get(`${m.round}_${m.aId}`) ?? 0) > 1,
     );
@@ -2522,6 +2538,7 @@ function ManagePage() {
       <KoCard
         key={m.id}
         m={m}
+        isFinal={isFinal}
         nameA={nameOf(m.aId)}
         nameB={nameOf(m.bId)}
         entryA={state.entries.find((e) => e.id === m.aId)}
@@ -2703,15 +2720,15 @@ function ManagePage() {
         })}
 
         {/* CỘT TRUNG TÂM: Chung kết và Tranh hạng 3 */}
-        <div className="w-[285px] shrink-0 flex flex-col items-stretch px-2">
+        <div className="w-[330px] sm:w-[350px] shrink-0 flex flex-col items-stretch px-2.5">
           <div
-            className="rounded-xl bg-amber-500/20 py-2.5 text-center font-head text-sm font-bold uppercase tracking-wide text-amber-700 dark:text-amber-300 ring-2 ring-amber-500/40 shadow-sm"
+            className="rounded-xl bg-amber-500/25 py-3 text-center font-head text-base sm:text-lg font-black uppercase tracking-wider text-amber-800 dark:text-amber-200 ring-2 ring-amber-500/50 shadow-md"
             style={{ fontFamily: "'Space Grotesk', sans-serif" }}
           >
             🏆 Chung kết
           </div>
           <div className="mt-4 flex flex-1 flex-col justify-around gap-6">
-            {finalMatches.map((m) => renderKoCard(m))}
+            {finalMatches.map((m) => renderKoCard(m, true))}
           </div>
 
           {thirdMatch && (

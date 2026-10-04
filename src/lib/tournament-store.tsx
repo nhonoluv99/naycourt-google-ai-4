@@ -188,6 +188,7 @@ type Ctx = {
   loginWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
   syncNow: () => Promise<void>;
+  loadTournament: (newState: TournamentState) => void;
 };
 
 const TournamentContext = createContext<Ctx | null>(null);
@@ -424,6 +425,17 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     }
   }, [state]);
 
+  const loadTournament = useCallback((newState: TournamentState) => {
+    const sanitized = sanitizeLoadedState(newState);
+    setState(sanitized);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitized));
+    } catch {}
+    if (auth.currentUser) {
+      void syncTournamentToCloud(auth.currentUser.uid, auth.currentUser.email, sanitized);
+    }
+  }, []);
+
   const value = useMemo(
     () => ({
       state,
@@ -440,6 +452,7 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       loginWithGoogle,
       logout,
       syncNow,
+      loadTournament,
     }),
     [
       state,
@@ -456,6 +469,7 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       loginWithGoogle,
       logout,
       syncNow,
+      loadTournament,
     ],
   );
 

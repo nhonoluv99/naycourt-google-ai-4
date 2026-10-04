@@ -919,12 +919,6 @@ function LiveScoringPage() {
           </span>
           <button
             className="rounded-md bg-secondary px-2 py-1 text-xs font-semibold ring-1 ring-line/20 hover:bg-secondary/80"
-            onClick={() => setShowHistory(true)}
-          >
-            📊 Lịch sử ({live.history.length})
-          </button>
-          <button
-            className="rounded-md bg-secondary px-2 py-1 text-xs font-semibold ring-1 ring-line/20 hover:bg-secondary/80"
             onClick={() => setNoteOpen(true)}
           >
             📝 Ghi chú {live.note ? "✓" : ""}
@@ -1052,57 +1046,115 @@ function LiveScoringPage() {
       <div className="flex items-center justify-between gap-2 border-t border-line/10 bg-card px-3 py-2 text-[11px] font-semibold">
         <div className="flex items-center gap-1.5">
           <span className="max-w-[90px] truncate text-line/70">{entryName(leftTeamIdx === 0 ? teamA : teamB)}</span>
-          <button
-            className="rounded-md bg-paper px-2 py-1 ring-1 ring-line/20 hover:bg-paper/80"
-            onClick={() => {
-              const u0 = live.toUsed?.[0] ?? 0;
-              const u1 = live.toUsed?.[1] ?? 0;
-              const nextTo: [number, number] = leftTeamIdx === 0 ? [u0 + 1, u1] : [u0, u1 + 1];
-              setLive({ toUsed: nextTo });
-              startTimer(`Hội ý · ${entryName(leftTeamIdx === 0 ? teamA : teamB)}`, live.timeoutSeconds);
-            }}
-          >
-            ⏱ Hội ý ({Math.max(0, (live.timeoutsPerTeam ?? 1) - (live.toUsed?.[leftTeamIdx] ?? 0))})
-          </button>
-          <button
-            className="rounded-md bg-destructive px-2 py-1 text-destructive-foreground hover:opacity-90"
-            onClick={() => {
-              const m0 = live.medUsed?.[0] ?? 0;
-              const m1 = live.medUsed?.[1] ?? 0;
-              const nextMed: [number, number] = leftTeamIdx === 0 ? [m0 + 1, m1] : [m0, m1 + 1];
-              setLive({ medUsed: nextMed });
-              startTimer(`Y tế · ${entryName(leftTeamIdx === 0 ? teamA : teamB)}`, live.medicalSeconds);
-            }}
-          >
-            MED
-          </button>
+          {(() => {
+            const leftName = entryName(leftTeamIdx === 0 ? teamA : teamB);
+            const remainingTo = Math.max(0, (live.timeoutsPerTeam ?? 1) - (live.toUsed?.[leftTeamIdx] ?? 0));
+            const isToExhausted = remainingTo <= 0;
+            const remainingMed = Math.max(0, 1 - (live.medUsed?.[leftTeamIdx] ?? 0));
+            const isMedExhausted = remainingMed <= 0;
+            return (
+              <>
+                <button
+                  className={`rounded-md px-2 py-1 ring-1 transition cursor-pointer ${
+                    isToExhausted
+                      ? "bg-line/10 text-line/40 ring-line/10"
+                      : "bg-paper text-ink ring-line/20 hover:bg-paper/80"
+                  }`}
+                  onClick={() => {
+                    if (isToExhausted) {
+                      toast.error(`Đội ${leftName} đã hết lượt hội ý!`);
+                      return;
+                    }
+                    const u0 = live.toUsed?.[0] ?? 0;
+                    const u1 = live.toUsed?.[1] ?? 0;
+                    const nextTo: [number, number] = leftTeamIdx === 0 ? [u0 + 1, u1] : [u0, u1 + 1];
+                    setLive({ toUsed: nextTo });
+                    startTimer(`Hội ý · ${leftName}`, live.timeoutSeconds);
+                  }}
+                  title={isToExhausted ? "Đã hết lượt hội ý" : "Bấm để bắt đầu hội ý"}
+                >
+                  ⏱ Hội ý ({remainingTo})
+                </button>
+                <button
+                  className={`rounded-md px-2 py-1 transition cursor-pointer ${
+                    isMedExhausted
+                      ? "bg-line/10 text-line/40 ring-1 ring-line/10"
+                      : "bg-destructive text-destructive-foreground hover:opacity-90"
+                  }`}
+                  onClick={() => {
+                    if (isMedExhausted) {
+                      toast.error(`Đội ${leftName} đã hết lượt hội ý y tế (MED)!`);
+                      return;
+                    }
+                    const m0 = live.medUsed?.[0] ?? 0;
+                    const m1 = live.medUsed?.[1] ?? 0;
+                    const nextMed: [number, number] = leftTeamIdx === 0 ? [m0 + 1, m1] : [m0, m1 + 1];
+                    setLive({ medUsed: nextMed });
+                    startTimer(`Y tế · ${leftName}`, live.medicalSeconds);
+                  }}
+                  title={isMedExhausted ? "Đã hết lượt hội ý y tế" : "Hội ý y tế (MED)"}
+                >
+                  MED ({remainingMed})
+                </button>
+              </>
+            );
+          })()}
         </div>
 
         <div className="flex items-center gap-1.5">
-          <button
-            className="rounded-md bg-destructive px-2 py-1 text-destructive-foreground hover:opacity-90"
-            onClick={() => {
-              const m0 = live.medUsed?.[0] ?? 0;
-              const m1 = live.medUsed?.[1] ?? 0;
-              const nextMed: [number, number] = rightTeamIdx === 0 ? [m0 + 1, m1] : [m0, m1 + 1];
-              setLive({ medUsed: nextMed });
-              startTimer(`Y tế · ${entryName(rightTeamIdx === 0 ? teamA : teamB)}`, live.medicalSeconds);
-            }}
-          >
-            MED
-          </button>
-          <button
-            className="rounded-md bg-paper px-2 py-1 ring-1 ring-line/20 hover:bg-paper/80"
-            onClick={() => {
-              const u0 = live.toUsed?.[0] ?? 0;
-              const u1 = live.toUsed?.[1] ?? 0;
-              const nextTo: [number, number] = rightTeamIdx === 0 ? [u0 + 1, u1] : [u0, u1 + 1];
-              setLive({ toUsed: nextTo });
-              startTimer(`Hội ý · ${entryName(rightTeamIdx === 0 ? teamA : teamB)}`, live.timeoutSeconds);
-            }}
-          >
-            ⏱ Hội ý ({Math.max(0, (live.timeoutsPerTeam ?? 1) - (live.toUsed?.[rightTeamIdx] ?? 0))})
-          </button>
+          {(() => {
+            const rightName = entryName(rightTeamIdx === 0 ? teamA : teamB);
+            const remainingTo = Math.max(0, (live.timeoutsPerTeam ?? 1) - (live.toUsed?.[rightTeamIdx] ?? 0));
+            const isToExhausted = remainingTo <= 0;
+            const remainingMed = Math.max(0, 1 - (live.medUsed?.[rightTeamIdx] ?? 0));
+            const isMedExhausted = remainingMed <= 0;
+            return (
+              <>
+                <button
+                  className={`rounded-md px-2 py-1 transition cursor-pointer ${
+                    isMedExhausted
+                      ? "bg-line/10 text-line/40 ring-1 ring-line/10"
+                      : "bg-destructive text-destructive-foreground hover:opacity-90"
+                  }`}
+                  onClick={() => {
+                    if (isMedExhausted) {
+                      toast.error(`Đội ${rightName} đã hết lượt hội ý y tế (MED)!`);
+                      return;
+                    }
+                    const m0 = live.medUsed?.[0] ?? 0;
+                    const m1 = live.medUsed?.[1] ?? 0;
+                    const nextMed: [number, number] = rightTeamIdx === 0 ? [m0 + 1, m1] : [m0, m1 + 1];
+                    setLive({ medUsed: nextMed });
+                    startTimer(`Y tế · ${rightName}`, live.medicalSeconds);
+                  }}
+                  title={isMedExhausted ? "Đã hết lượt hội ý y tế" : "Hội ý y tế (MED)"}
+                >
+                  MED ({remainingMed})
+                </button>
+                <button
+                  className={`rounded-md px-2 py-1 ring-1 transition cursor-pointer ${
+                    isToExhausted
+                      ? "bg-line/10 text-line/40 ring-line/10"
+                      : "bg-paper text-ink ring-line/20 hover:bg-paper/80"
+                  }`}
+                  onClick={() => {
+                    if (isToExhausted) {
+                      toast.error(`Đội ${rightName} đã hết lượt hội ý!`);
+                      return;
+                    }
+                    const u0 = live.toUsed?.[0] ?? 0;
+                    const u1 = live.toUsed?.[1] ?? 0;
+                    const nextTo: [number, number] = rightTeamIdx === 0 ? [u0 + 1, u1] : [u0, u1 + 1];
+                    setLive({ toUsed: nextTo });
+                    startTimer(`Hội ý · ${rightName}`, live.timeoutSeconds);
+                  }}
+                  title={isToExhausted ? "Đã hết lượt hội ý" : "Bấm để bắt đầu hội ý"}
+                >
+                  ⏱ Hội ý ({remainingTo})
+                </button>
+              </>
+            );
+          })()}
           <span className="max-w-[90px] truncate text-line/70">{entryName(rightTeamIdx === 0 ? teamA : teamB)}</span>
         </div>
       </div>
@@ -1122,46 +1174,6 @@ function LiveScoringPage() {
           Kết thúc trận
         </button>
       </div>
-
-      {/* Modal Lịch sử điểm số */}
-      {showHistory && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs">
-          <div className="max-h-[85vh] w-full max-w-md overflow-hidden rounded-2xl bg-card p-5 shadow-2xl ring-1 ring-line/20 flex flex-col">
-            <div className="flex items-center justify-between border-b border-line/15 pb-3">
-              <p className="font-head text-lg font-bold uppercase tracking-tight">
-                Lịch sử điểm số ({live.history.length} lượt)
-              </p>
-              <button
-                className="btn-ghost text-xs"
-                onClick={() => setShowHistory(false)}
-              >
-                Đóng
-              </button>
-            </div>
-            <div className="mt-3 flex-1 overflow-y-auto space-y-2 pr-1">
-              {live.history.length === 0 ? (
-                <p className="text-xs text-line/50 text-center py-6">Chưa có điểm nào được ghi.</p>
-              ) : (
-                live.history.map((h, i) => (
-                  <div
-                    key={i}
-                    className="flex items-center justify-between rounded-lg bg-paper p-2 text-xs ring-1 ring-line/10"
-                  >
-                    <span className="font-head font-bold text-line/40">#{i + 1}</span>
-                    <span className="font-head font-bold text-accent">
-                      {h.a} - {h.b}
-                    </span>
-                    <span className="text-[11px] text-line/60">
-                      Giao: Đội {h.serveTeam === 0 ? "A" : "B"}
-                      {live.scoring === "rally" ? "" : ` (người ${h.serverIdx + 1})`}
-                    </span>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Modal Ghi chú sau trận */}
       {noteOpen && (

@@ -23,12 +23,140 @@
         }
       },
       "required": ["userId", "stateJson"]
+    },
+    "UserTournament": {
+      "title": "UserTournament",
+      "description": "Saved tournament belonging to a user in their archive",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique tournament document ID"
+        },
+        "userId": {
+          "type": "string",
+          "description": "User UID of creator"
+        },
+        "userEmail": {
+          "type": "string",
+          "description": "Email of creator"
+        },
+        "name": {
+          "type": "string",
+          "description": "Name of the tournament"
+        },
+        "date": {
+          "type": "string",
+          "description": "Date of tournament"
+        },
+        "courtsCount": {
+          "type": "number",
+          "description": "Number of courts"
+        },
+        "eventsCount": {
+          "type": "number",
+          "description": "Number of events"
+        },
+        "stateJson": {
+          "type": "string",
+          "description": "Serialized tournament state"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Last update timestamp"
+        }
+      },
+      "required": ["id", "userId", "name", "stateJson"]
+    },
+    "ActivityLog": {
+      "title": "ActivityLog",
+      "description": "Audit and activity log of web app events for server administrator",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Log ID"
+        },
+        "userId": {
+          "type": "string",
+          "description": "UID of the user performing the action"
+        },
+        "userEmail": {
+          "type": "string",
+          "description": "Email of user"
+        },
+        "userName": {
+          "type": "string",
+          "description": "Display name of user"
+        },
+        "action": {
+          "type": "string",
+          "description": "Action performed, e.g. Login, Create Tournament, Score Match"
+        },
+        "details": {
+          "type": "string",
+          "description": "Additional context or details"
+        },
+        "timestamp": {
+          "type": "string",
+          "description": "ISO timestamp"
+        }
+      },
+      "required": ["action", "timestamp"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Registered user record tracked for administrator",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID"
+        },
+        "email": {
+          "type": "string",
+          "description": "User email address"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "User display name"
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "Avatar photo URL"
+        },
+        "lastLoginAt": {
+          "type": "string",
+          "description": "Timestamp of last visit"
+        },
+        "tournamentsCount": {
+          "type": "number",
+          "description": "Number of tournaments created"
+        }
+      },
+      "required": ["userId", "email"]
     }
   },
   "firestore": {
     "/tournaments/{userId}": {
       "schema": "TournamentDoc",
       "description": "User tournament state indexed by their Firebase Auth UID"
+    },
+    "/user_tournaments/{tournamentId}": {
+      "schema": "UserTournament",
+      "description": "Individual saved tournament archives belonging to users"
+    },
+    "/activity_logs/{logId}": {
+      "schema": "ActivityLog",
+      "description": "System activity logs viewable by server administrator"
+    },
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Registered user profile records"
     }
   }
 }

@@ -53,8 +53,8 @@
   --paper: oklch(0.945 0.011 92);
   --ink: oklch(0.215 0.032 160);
   --line: oklch(0.288 0.058 158.6);
-  --court: oklch(0.56 0.135 154.2);
-  --courtdeep: oklch(0.41 0.1 154.8);
+  --court: #0a3320;
+  --courtdeep: #062315;
   --accent: oklch(0.622 0.198 37.7);
   --accent-foreground: oklch(0.98 0.008 92);
 
