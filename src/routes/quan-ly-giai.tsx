@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState, useRef } from "react";
 import { createPortal } from "react-dom";
 import * as React from "react";
+import { toast } from "sonner";
 // @ts-ignore
 import XLSX from "xlsx-js-style";
 import {
@@ -328,18 +329,20 @@ function PlayerNameDisplay({
   activePlayerNames,
   isWinning,
   isMatchLive,
+  truncate = true,
 }: {
   entry?: Entry;
   fallback: string;
   activePlayerNames: Set<string>;
   isWinning?: boolean;
   isMatchLive?: boolean;
+  truncate?: boolean;
 }) {
   if (!entry || entry.players.length === 0) {
     const isLive = Boolean(isMatchLive) || activePlayerNames.has((fallback || "").toLowerCase());
     return (
       <span
-        className={`truncate ${
+        className={`${truncate ? "truncate" : "break-words leading-tight"} ${
           isLive
             ? "text-red-600 dark:text-red-400 font-semibold"
             : isWinning
@@ -353,13 +356,19 @@ function PlayerNameDisplay({
     );
   }
   return (
-    <span className="truncate inline-flex items-center gap-1">
+    <span
+      className={
+        truncate
+          ? "truncate inline-flex items-center gap-1"
+          : "inline-flex flex-wrap items-center gap-0.5 break-words leading-tight"
+      }
+    >
       {entry.players.map((p, idx) => {
         const pName = p.name.trim();
         if (!pName) return null;
         const isLive = Boolean(isMatchLive) || activePlayerNames.has(pName.toLowerCase());
         return (
-          <span key={idx} className="inline-flex items-center shrink-0">
+          <span key={idx} className={truncate ? "inline-flex items-center shrink-0" : "inline-flex items-center"}>
             {idx > 0 && <span className="text-line/40 mx-1">/</span>}
             <span
               className={`${
@@ -1357,6 +1366,7 @@ function ManagePage() {
   // Zoom timeline (infinite range slider)
   const [colWidth, setColWidth] = useState(210);
   const [rowHeight, setRowHeight] = useState(145);
+  const [timelineEndHour, setTimelineEndHour] = useState<number | null>(null);
 
   // Xác nhận chỉnh sửa vòng bảng khi vòng KO đã bắt đầu
   const [confirmedGroupEdit, setConfirmedGroupEdit] = useState(false);
@@ -1935,16 +1945,25 @@ function ManagePage() {
   const timelineSource = tab === "timeline" ? matches : [];
   const grid = buildTimeline(timelineSource, state.courts);
 
-  // Hiển thị toàn bộ ngày: từ giờ bắt đầu giải đấu đến 0h sáng ngày hôm sau (24:00)
+  // Hiển thị toàn bộ ngày hoặc khung giờ được người dùng chọn
   const [startH = 8, startM = 0] = (state.startTime || "08:00").split(":").map(Number);
   const startTotalMinutes = (startH % 24) * 60 + startM;
   const minutesUntilMidnight = Math.max(60, 24 * 60 - startTotalMinutes);
   const fullDaySlots = Math.ceil(minutesUntilMidnight / Math.max(5, state.slotMinutes || 30));
 
+  const selectedEndMinutes = (timelineEndHour ?? 24) * 60;
+  const minutesFromStart = Math.max(60, selectedEndMinutes - startTotalMinutes);
+  const targetSlots = Math.ceil(minutesFromStart / Math.max(5, state.slotMinutes || 30));
+
   const maxSlot = Math.max(
-    fullDaySlots,
-    3,
-    ...[...grid.values()].flatMap((list) => list.map((s) => s.slot + 1)),
+    1,
+    timelineEndHour !== null
+      ? targetSlots - 1
+      : Math.max(
+          fullDaySlots,
+          3,
+          ...[...grid.values()].flatMap((list) => list.map((s) => s.slot + 1)),
+        ),
   );
   const slotIdxs = Array.from({ length: maxSlot + 1 }, (_, i) => i);
 
@@ -3208,14 +3227,64 @@ function ManagePage() {
 
         {tab === "timeline" && (
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            {/* Thanh trượt zoom ngang */}
+            {/* Lựa chọn khung giờ và Fit màn hình chỉ dành cho điện thoại theo yêu cầu */}
+            <div className="flex sm:hidden items-center gap-1.5 w-full bg-card p-1.5 rounded-xl border border-line/15 shadow-2xs">
+              <span className="text-[11px] font-bold text-line/70 shrink-0">
+                Xem: {state.startTime || "08:00"} →
+              </span>
+              <select
+                value={timelineEndHour ?? "all"}
+                onChange={(e) => {
+                  const val = e.target.value === "all" ? null : Number(e.target.value);
+                  setTimelineEndHour(val);
+                  const targetH = val ?? 24;
+                  const totalH = Math.max(1, targetH - startH);
+                  const slotsCount = Math.max(2, Math.ceil((totalH * 60) / Math.max(5, state.slotMinutes || 30)));
+                  const screenW = typeof window !== "undefined" ? window.innerWidth : 380;
+                  const avail = Math.max(120, screenW - 95);
+                  const idealW = Math.max(30, Math.floor(avail / slotsCount));
+                  setColWidth(idealW);
+                  setRowHeight(Math.max(45, Math.min(rowHeight, 75)));
+                }}
+                className="rounded-lg bg-paper px-2 py-1 text-xs font-bold text-ink border border-line/20 outline-hidden flex-1"
+              >
+                <option value="all">Toàn bộ ngày (đến 24:00)</option>
+                <option value={10}>Đến 10:00</option>
+                <option value={12}>Đến 12:00 (Trưa)</option>
+                <option value={14}>Đến 14:00</option>
+                <option value={16}>Đến 16:00</option>
+                <option value={18}>Đến 18:00 (Chiều)</option>
+                <option value={20}>Đến 20:00 (Tối)</option>
+                <option value={22}>Đến 22:00</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => {
+                  const targetH = timelineEndHour ?? 24;
+                  const totalH = Math.max(1, targetH - startH);
+                  const slotsCount = Math.max(2, Math.ceil((totalH * 60) / Math.max(5, state.slotMinutes || 30)));
+                  const screenW = typeof window !== "undefined" ? window.innerWidth : 380;
+                  const avail = Math.max(120, screenW - 95);
+                  const idealW = Math.max(30, Math.floor(avail / slotsCount));
+                  setColWidth(idealW);
+                  setRowHeight(Math.max(45, Math.min(rowHeight, 75)));
+                  toast.success("Đã căn vừa khít màn hình điện thoại!");
+                }}
+                className="rounded-lg bg-[#0a3320] text-white px-2.5 py-1 text-xs font-bold shrink-0 cursor-pointer shadow-2xs"
+                title="Căn chỉnh vừa khít chiều ngang màn hình điện thoại"
+              >
+                Fit toàn màn
+              </button>
+            </div>
+
+            {/* Thanh trượt zoom ngang (cho phép zoom out rộng hết cỡ từ 30px) */}
             <div className="flex items-center gap-2 rounded-lg bg-card px-2.5 py-1 ring-1 ring-line/20 shadow-2xs">
               <span className="text-[11px] font-medium text-line/60">Zoom ngang:</span>
               <input
                 type="range"
-                min="110"
+                min="30"
                 max="450"
-                step="5"
+                step="2"
                 value={colWidth}
                 onChange={(e) => setColWidth(Number(e.target.value))}
                 className="h-1.5 w-20 cursor-pointer accent-accent"
@@ -3224,14 +3293,14 @@ function ManagePage() {
               <span className="w-9 text-[10px] font-mono text-line/50 text-right">{colWidth}px</span>
             </div>
 
-            {/* Thanh trượt zoom dọc (yêu cầu người dùng) */}
+            {/* Thanh trượt zoom dọc (cho phép zoom out từ 35px) */}
             <div className="flex items-center gap-2 rounded-lg bg-card px-2.5 py-1 ring-1 ring-line/20 shadow-2xs">
               <span className="text-[11px] font-medium text-line/60">Zoom dọc:</span>
               <input
                 type="range"
-                min="50"
+                min="35"
                 max="250"
-                step="5"
+                step="2"
                 value={rowHeight}
                 onChange={(e) => setRowHeight(Number(e.target.value))}
                 className="h-1.5 w-20 cursor-pointer accent-accent"
@@ -3342,16 +3411,16 @@ function ManagePage() {
                       {entries.length} VĐV
                     </span>
                   </div>
-                  <table className="w-full table-fixed text-xs">
+                  <table className="w-full text-xs">
                     <thead>
                       <tr className="border-b border-line/10 text-[10px] uppercase tracking-wide text-line/50">
-                        <th className="w-12 px-3 py-2 text-center">Hạng</th>
-                        <th className="px-3 py-2 text-left">Vận động viên</th>
-                        <th className="w-12 py-2 text-center">Tr</th>
-                        <th className="w-12 py-2 text-center">T</th>
-                        <th className="w-12 py-2 text-center">B</th>
-                        <th className="w-16 py-2 text-center">HS</th>
-                        <th className="w-20 py-2 text-center font-bold text-accent">Tổng điểm</th>
+                        <th className="w-8 sm:w-12 px-1.5 py-1.5 sm:px-3 sm:py-2 text-center">Hạng</th>
+                        <th className="px-2 py-1.5 sm:px-3 sm:py-2 text-left">Vận động viên</th>
+                        <th className="w-6 sm:w-12 py-1.5 sm:py-2 text-center px-0.5">Tr</th>
+                        <th className="w-6 sm:w-12 py-1.5 sm:py-2 text-center px-0.5">T</th>
+                        <th className="w-6 sm:w-12 py-1.5 sm:py-2 text-center px-0.5">B</th>
+                        <th className="w-8 sm:w-16 py-1.5 sm:py-2 text-center px-0.5">HS</th>
+                        <th className="w-10 sm:w-20 py-1.5 sm:py-2 text-center font-bold text-accent px-0.5">Tổng điểm</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3359,21 +3428,22 @@ function ManagePage() {
                         const rowEntry = state.entries.find((e) => e.id === r.entryId);
                         return (
                           <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
-                            <td className="w-12 px-3 py-2 text-center font-head font-bold text-line/50 tabular-nums">
+                            <td className="w-8 sm:w-12 px-1.5 py-1.5 sm:px-3 sm:py-2 text-center font-head font-bold text-line/50 tabular-nums">
                               {i + 1}
                             </td>
-                            <td className="truncate px-3 py-2">
+                            <td className="px-2 py-1.5 sm:px-3 sm:py-2 min-w-0">
                               <PlayerNameDisplay
                                 entry={rowEntry}
                                 fallback={r.playerName}
                                 activePlayerNames={activePlayerNames}
+                                truncate={false}
                               />
                             </td>
-                            <td className="w-12 py-2 text-center tabular-nums">{r.played}</td>
-                            <td className="w-12 py-2 text-center font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums">{r.win}</td>
-                            <td className="w-12 py-2 text-center font-semibold text-destructive tabular-nums">{r.loss}</td>
-                            <td className="w-16 py-2 text-center tabular-nums">{r.diff > 0 ? `+${r.diff}` : r.diff}</td>
-                            <td className="w-20 py-2 text-center font-head text-sm font-bold text-accent tabular-nums">{r.points}</td>
+                            <td className="w-6 sm:w-12 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.played}</td>
+                            <td className="w-6 sm:w-12 py-1.5 sm:py-2 text-center font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums px-0.5">{r.win}</td>
+                            <td className="w-6 sm:w-12 py-1.5 sm:py-2 text-center font-semibold text-destructive tabular-nums px-0.5">{r.loss}</td>
+                            <td className="w-8 sm:w-16 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.diff > 0 ? `+${r.diff}` : r.diff}</td>
+                            <td className="w-10 sm:w-20 py-1.5 sm:py-2 text-center font-head text-sm font-bold text-accent tabular-nums px-0.5">{r.points}</td>
                           </tr>
                         );
                       })}
@@ -3390,16 +3460,16 @@ function ManagePage() {
                       Ưu tiên: Tổng điểm → Hiệu số → Đối đầu
                     </span>
                   </div>
-                  <table className="w-full table-fixed text-xs">
+                  <table className="w-full text-xs">
                     <thead>
                       <tr className="border-b border-line/10 text-[10px] uppercase tracking-wide text-line/50">
-                        <th className="w-12 px-3 py-2 text-center">Hạng</th>
-                        <th className="px-3 py-2 text-left">Đội / VĐV</th>
-                        <th className="w-12 py-2 text-center">Tr</th>
-                        <th className="w-12 py-2 text-center">T</th>
-                        <th className="w-12 py-2 text-center">B</th>
-                        <th className="w-16 py-2 text-center">HS</th>
-                        <th className="w-20 py-2 text-center font-bold text-accent">Điểm</th>
+                        <th className="w-8 sm:w-12 px-1.5 py-1.5 sm:px-3 sm:py-2 text-center">Hạng</th>
+                        <th className="px-2 py-1.5 sm:px-3 sm:py-2 text-left">Đội / VĐV</th>
+                        <th className="w-6 sm:w-12 py-1.5 sm:py-2 text-center px-0.5">Tr</th>
+                        <th className="w-6 sm:w-12 py-1.5 sm:py-2 text-center px-0.5">T</th>
+                        <th className="w-6 sm:w-12 py-1.5 sm:py-2 text-center px-0.5">B</th>
+                        <th className="w-8 sm:w-16 py-1.5 sm:py-2 text-center px-0.5">HS</th>
+                        <th className="w-10 sm:w-20 py-1.5 sm:py-2 text-center font-bold text-accent px-0.5">Điểm</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3411,21 +3481,22 @@ function ManagePage() {
                         const rowEntry = state.entries.find((e) => e.id === r.entryId);
                         return (
                           <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
-                            <td className="w-12 px-3 py-2 text-center font-head font-bold text-line/50 tabular-nums">
+                            <td className="w-8 sm:w-12 px-1.5 py-1.5 sm:px-3 sm:py-2 text-center font-head font-bold text-line/50 tabular-nums">
                               {i + 1}
                             </td>
-                            <td className="truncate px-3 py-2">
+                            <td className="px-2 py-1.5 sm:px-3 sm:py-2 min-w-0">
                               <PlayerNameDisplay
                                 entry={rowEntry}
                                 fallback={nameOf(r.entryId)}
                                 activePlayerNames={activePlayerNames}
+                                truncate={false}
                               />
                             </td>
-                            <td className="w-12 py-2 text-center tabular-nums">{r.played}</td>
-                            <td className="w-12 py-2 text-center font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums">{r.win}</td>
-                            <td className="w-12 py-2 text-center font-semibold text-destructive tabular-nums">{r.loss}</td>
-                            <td className="w-16 py-2 text-center tabular-nums">{r.diff > 0 ? `+${r.diff}` : r.diff}</td>
-                            <td className="w-20 py-2 text-center font-head text-sm font-bold text-accent tabular-nums">{r.points}</td>
+                            <td className="w-6 sm:w-12 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.played}</td>
+                            <td className="w-6 sm:w-12 py-1.5 sm:py-2 text-center font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums px-0.5">{r.win}</td>
+                            <td className="w-6 sm:w-12 py-1.5 sm:py-2 text-center font-semibold text-destructive tabular-nums px-0.5">{r.loss}</td>
+                            <td className="w-8 sm:w-16 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.diff > 0 ? `+${r.diff}` : r.diff}</td>
+                            <td className="w-10 sm:w-20 py-1.5 sm:py-2 text-center font-head text-sm font-bold text-accent tabular-nums px-0.5">{r.points}</td>
                           </tr>
                         );
                       })}
@@ -3452,15 +3523,15 @@ function ManagePage() {
                         >
                           {g.name}
                         </p>
-                        <table className="w-full table-fixed text-xs">
+                        <table className="w-full text-xs">
                           <thead>
                             <tr className="border-b border-line/10 text-[10px] uppercase tracking-wide text-line/50">
-                              <th className="px-3 py-2 text-left">Đội</th>
-                              <th className="w-8 py-2 text-center">Tr</th>
-                              <th className="w-8 py-2 text-center">T</th>
-                              <th className="w-8 py-2 text-center">B</th>
-                              <th className="w-11 py-2 text-center">HS</th>
-                              <th className="w-11 py-2 text-center">Đ</th>
+                              <th className="px-2 py-1.5 sm:px-3 sm:py-2 text-left">Đội</th>
+                              <th className="w-6 sm:w-8 py-1.5 sm:py-2 text-center px-0.5">Tr</th>
+                              <th className="w-6 sm:w-8 py-1.5 sm:py-2 text-center px-0.5">T</th>
+                              <th className="w-6 sm:w-8 py-1.5 sm:py-2 text-center px-0.5">B</th>
+                              <th className="w-8 sm:w-11 py-1.5 sm:py-2 text-center px-0.5">HS</th>
+                              <th className="w-8 sm:w-11 py-1.5 sm:py-2 text-center px-0.5">Đ</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -3468,19 +3539,20 @@ function ManagePage() {
                               const rowEntry = state.entries.find((e) => e.id === r.entryId);
                               return (
                                 <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
-                                  <td className="truncate px-3 py-2">
-                                    <span className="inline-block w-4 font-head font-bold text-line/40 tabular-nums">{i + 1}</span>
+                                  <td className="px-2 py-1.5 sm:px-3 sm:py-2 min-w-0">
+                                    <span className="inline-block w-4 font-head font-bold text-line/40 tabular-nums mr-0.5">{i + 1}</span>
                                     <PlayerNameDisplay
                                       entry={rowEntry}
                                       fallback={nameOf(r.entryId)}
                                       activePlayerNames={activePlayerNames}
+                                      truncate={false}
                                     />
                                   </td>
-                                  <td className="w-8 py-2 text-center tabular-nums">{r.played}</td>
-                                  <td className="w-8 py-2 text-center tabular-nums">{r.win}</td>
-                                  <td className="w-8 py-2 text-center tabular-nums">{r.loss}</td>
-                                  <td className="w-11 py-2 text-center tabular-nums">{r.diff}</td>
-                                  <td className="w-11 py-2 text-center font-bold text-accent tabular-nums">{r.points}</td>
+                                  <td className="w-6 sm:w-8 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.played}</td>
+                                  <td className="w-6 sm:w-8 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.win}</td>
+                                  <td className="w-6 sm:w-8 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.loss}</td>
+                                  <td className="w-8 sm:w-11 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.diff}</td>
+                                  <td className="w-8 sm:w-11 py-1.5 sm:py-2 text-center font-bold text-accent tabular-nums px-0.5">{r.points}</td>
                                 </tr>
                               );
                             })}
@@ -4211,8 +4283,19 @@ function ManagePage() {
 
       {/* MODAL TOÀN MÀN HÌNH XEM SƠ ĐỒ NHÁNH LOẠI TRỰC TIẾP */}
       {isFullscreenKo && (
-        <div className="fixed inset-0 z-50 bg-background/95 backdrop-blur-md flex flex-col p-4 overflow-hidden">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line/15 pb-3 px-2">
+        <div className="fixed inset-0 z-50 bg-background/95 backdrop-blur-md flex flex-col p-1 sm:p-4 overflow-hidden">
+          {/* Nút đóng nổi trên điện thoại (tối giản, không chiếm diện tích) */}
+          <button
+            type="button"
+            onClick={() => setIsFullscreenKo(false)}
+            className="sm:hidden fixed top-3 right-3 z-50 size-9 rounded-full bg-black/75 text-white flex items-center justify-center font-bold text-base shadow-xl backdrop-blur-xs cursor-pointer active:scale-95 transition"
+            title="Đóng toàn màn hình"
+          >
+            ✕
+          </button>
+
+          {/* Thanh công cụ điều khiển: chỉ hiển thị trên máy tính/tablet */}
+          <div className="hidden sm:flex flex-wrap items-center justify-between gap-3 border-b border-line/15 pb-3 px-2">
             <div className="flex items-center gap-3">
               <h2 className="font-head text-base md:text-lg font-bold tracking-tight text-ink flex items-center gap-2">
                 🏆 Sơ đồ Nhánh trực tiếp ({ev.name})
@@ -4301,8 +4384,8 @@ function ManagePage() {
             </div>
           </div>
 
-          {/* Vùng hiển thị toàn màn hình */}
-          <div className="flex-1 overflow-auto p-6 flex items-start justify-center">
+          {/* Vùng hiển thị toàn màn hình: trên mobile tràn viền và tự động thích ứng */}
+          <div className="flex-1 overflow-auto p-1 sm:p-6 flex items-start justify-center touch-pan-x touch-pan-y">
             <div
               style={{
                 transform: `scale(${koZoom})`,

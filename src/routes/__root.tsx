@@ -5,12 +5,16 @@ import {
   createRootRouteWithContext,
   useRouter,
   useRouterState,
+  useNavigate,
 } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { TournamentProvider, useTournament } from "../lib/tournament-store";
+import { MyTournamentsModal } from "../components/MyTournamentsModal";
+import { HostAdminMonitorModal } from "../components/HostAdminMonitorModal";
+import { UnsavedConfirmDialog } from "../components/UnsavedConfirmDialog";
 
 function NotFoundComponent() {
   return (
@@ -78,9 +82,39 @@ const NAV = [
 ] as const;
 
 function Header({ isWide }: { isWide: boolean }) {
-  const { state, user, authLoading, isSyncing, loginWithGoogle, logout, syncNow } = useTournament();
+  const {
+    state,
+    user,
+    authLoading,
+    isSyncing,
+    loginWithGoogle,
+    logout,
+    syncNow,
+    createNewTournament,
+    saveCurrentToArchive,
+    discardChanges,
+    hasUnsavedChanges,
+  } = useTournament();
+  const navigate = useNavigate();
   const [profileOpen, setProfileOpen] = useState(false);
+  const [myTournamentsOpen, setMyTournamentsOpen] = useState(false);
+  const [hostAdminOpen, setHostAdminOpen] = useState(false);
+  const [unsavedDialogOpen, setUnsavedDialogOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  const isServerHost = Boolean(user && user.email === "nhonoluv99@gmail.com");
+
+  // Bảo vệ cảnh báo khi tắt trang/reload nếu có thay đổi chưa lưu
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (hasUnsavedChanges()) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [hasUnsavedChanges]);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -113,13 +147,40 @@ function Header({ isWide }: { isWide: boolean }) {
     }
   };
 
-  const handleManualSync = async () => {
+  const executeCreateNew = async () => {
     try {
-      await syncNow();
-      toast.success("Đã đồng bộ dữ liệu giải đấu lên đám mây!");
+      await createNewTournament();
+      void navigate({ to: "/" });
+      toast.success("Đã tạo giải mới và tự động lưu vào Giải đấu của tôi!");
     } catch {
-      toast.error("Lỗi khi đồng bộ lên đám mây.");
+      toast.error("Lỗi khi tạo giải mới.");
     }
+  };
+
+  const handleCreateTournamentClick = () => {
+    setProfileOpen(false);
+    if (hasUnsavedChanges()) {
+      setUnsavedDialogOpen(true);
+    } else {
+      void executeCreateNew();
+    }
+  };
+
+  const handleSaveAndCreate = async () => {
+    setUnsavedDialogOpen(false);
+    try {
+      await saveCurrentToArchive();
+      toast.success("Đã lưu giải hiện tại!");
+    } catch {
+      console.error("Lỗi lưu giải trước khi tạo mới");
+    }
+    await executeCreateNew();
+  };
+
+  const handleDiscardAndCreate = async () => {
+    setUnsavedDialogOpen(false);
+    discardChanges();
+    await executeCreateNew();
   };
 
   return (
@@ -196,58 +257,51 @@ function Header({ isWide }: { isWide: boolean }) {
               </button>
 
               {profileOpen && (
-                <div className="absolute right-0 top-full mt-2 w-72 rounded-2xl border border-line/15 bg-card p-4 shadow-xl z-50 animate-in fade-in slide-in-from-top-2 duration-150">
-                  <div className="flex items-center gap-3 border-b border-line/10 pb-3">
-                    {user.photoURL ? (
-                      <img
-                        src={user.photoURL}
-                        alt=""
-                        className="size-10 rounded-full object-cover ring-2 ring-[#0a3320]/30"
-                        referrerPolicy="no-referrer"
-                      />
-                    ) : (
-                      <div className="grid size-10 place-items-center rounded-full bg-[#0a3320]/10 text-base font-bold text-[#0a3320]">
-                        {(user.displayName || user.email || "U")[0]?.toUpperCase()}
-                      </div>
+                <div className="absolute right-0 top-full mt-2 w-52 rounded-2xl border border-line/15 bg-card p-2 shadow-xl z-50 animate-in fade-in slide-in-from-top-2 duration-150">
+                  <div className="flex flex-col gap-1">
+                    <button
+                      type="button"
+                      onClick={handleCreateTournamentClick}
+                      className="w-full rounded-xl px-3 py-2 text-xs font-bold text-ink hover:bg-secondary transition cursor-pointer text-left"
+                      style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                    >
+                      Tạo giải
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProfileOpen(false);
+                        setMyTournamentsOpen(true);
+                      }}
+                      className="w-full rounded-xl px-3 py-2 text-xs font-bold text-ink hover:bg-secondary transition cursor-pointer text-left border-t border-line/10"
+                      style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                    >
+                      Giải đấu của tôi
+                    </button>
+
+                    {isServerHost && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setProfileOpen(false);
+                          setHostAdminOpen(true);
+                        }}
+                        className="w-full rounded-xl px-3 py-2 text-xs font-bold text-[#0a3320] hover:bg-[#0a3320]/10 transition cursor-pointer text-left border-t border-line/10"
+                        style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                      >
+                        Quản trị máy chủ
+                      </button>
                     )}
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-bold text-ink">{user.displayName || "Chủ giải đấu"}</p>
-                      <p className="truncate text-xs text-line/60">{user.email}</p>
-                    </div>
-                  </div>
 
-                  <div className="mt-3 space-y-2 text-xs">
-                    <div className="flex items-center justify-between rounded-lg bg-[#0a3320]/10 px-2.5 py-2 text-[#0a3320]">
-                      <span className="flex items-center gap-1.5 font-medium">
-                        <span className="size-2 rounded-full bg-[#0a3320]" />
-                        Đồng bộ tự động
-                      </span>
-                      <span className="text-[11px] font-bold">
-                        {isSyncing ? "Đang lưu..." : "Thời gian thực"}
-                      </span>
-                    </div>
-
-                    <p className="text-[11px] text-line/60 leading-normal">
-                      ☁️ Dữ liệu giải đấu được tự động đồng bộ theo thời gian thực. Khi đổi máy tính/điện thoại, bạn chỉ cần đăng nhập cùng tài khoản Gmail này là toàn bộ giải đấu sẽ hiển thị đầy đủ!
-                    </p>
-
-                    <div className="pt-2 flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={handleManualSync}
-                        disabled={isSyncing}
-                        className="flex-1 rounded-lg border border-line/20 bg-paper py-2 text-xs font-semibold text-ink hover:bg-secondary transition cursor-pointer"
-                      >
-                        {isSyncing ? "Đang lưu..." : "🔄 Đồng bộ ngay"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleLogout}
-                        className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-600 hover:bg-red-500/20 transition cursor-pointer"
-                      >
-                        Đăng xuất
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={handleLogout}
+                      className="w-full rounded-xl px-3 py-2 text-xs font-bold text-red-600 hover:bg-red-500/10 transition cursor-pointer text-left border-t border-line/10"
+                      style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                    >
+                      Đăng xuất
+                    </button>
                   </div>
                 </div>
               )}
@@ -270,6 +324,30 @@ function Header({ isWide }: { isWide: boolean }) {
           )}
         </div>
       </div>
+
+      {/* Modal Giải đấu của tôi */}
+      <MyTournamentsModal
+        isOpen={myTournamentsOpen}
+        onClose={() => setMyTournamentsOpen(false)}
+      />
+
+      {/* Modal Quản trị máy chủ dành cho host */}
+      <HostAdminMonitorModal
+        isOpen={hostAdminOpen}
+        onClose={() => setHostAdminOpen(false)}
+      />
+
+      {/* Pop-up cảnh báo lưu khi bấm Tạo giải */}
+      <UnsavedConfirmDialog
+        isOpen={unsavedDialogOpen}
+        title="Lưu giải đấu trước khi tạo mới?"
+        message="Giải đấu hiện tại có các chỉnh sửa chưa được lưu. Bạn có muốn lưu lại trước khi tạo giải mới không?"
+        saveButtonText="Lưu & Tạo mới"
+        discardButtonText="Không lưu"
+        onSaveAndProceed={handleSaveAndCreate}
+        onDiscardAndProceed={handleDiscardAndCreate}
+        onCancel={() => setUnsavedDialogOpen(false)}
+      />
     </div>
   );
 }

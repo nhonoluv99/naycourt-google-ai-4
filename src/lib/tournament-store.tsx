@@ -14,6 +14,7 @@ import {
   logOutGoogle,
   syncTournamentToCloud,
   fetchTournamentFromCloud,
+  saveTournamentToArchive,
   onAuthStateChanged,
   type User,
 } from "./firebase";
@@ -188,7 +189,14 @@ type Ctx = {
   loginWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
   syncNow: () => Promise<void>;
-  loadTournament: (newState: TournamentState) => void;
+  loadTournament: (newState: TournamentState, archiveId?: string) => void;
+  createNewTournament: () => Promise<string | null>;
+  saveCurrentToArchive: () => Promise<string | null>;
+  activeTournamentId: string | null;
+  hasUnsavedChanges: () => boolean;
+  markSaved: () => void;
+  discardChanges: () => void;
+  clearActiveTournament: () => void;
 };
 
 const TournamentContext = createContext<Ctx | null>(null);
@@ -247,7 +255,11 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) setState(sanitizeLoadedState(JSON.parse(raw) as TournamentState));
+      if (raw) {
+        const parsed = sanitizeLoadedState(JSON.parse(raw) as TournamentState);
+        setState(parsed);
+        savedSnapshotRef.current = JSON.stringify(parsed);
+      }
     } catch {
       /* ignore */
     }
@@ -270,6 +282,7 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
             // Máy mới hoặc tải lại: nạp giải đấu từ đám mây vào ứng dụng
             const sanitized = sanitizeLoadedState(cloudData);
             setState(sanitized);
+            savedSnapshotRef.current = JSON.stringify(sanitized);
             try {
               localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitized));
             } catch {}
@@ -291,6 +304,55 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     return () => unsub();
   }, []);
 
+  const [activeTournamentId, setActiveTournamentId] = useState<string | null>(() => {
+    try {
+      return typeof window !== "undefined" ? localStorage.getItem("naycourt_active_tour_id") : null;
+    } catch {
+      return null;
+    }
+  });
+  const savedSnapshotRef = useRef<string>(JSON.stringify(state));
+
+  const markSaved = useCallback(() => {
+    savedSnapshotRef.current = JSON.stringify(stateRef.current);
+  }, []);
+
+  const discardChanges = useCallback(() => {
+    try {
+      if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+      const original: TournamentState = JSON.parse(savedSnapshotRef.current);
+      setState(original);
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(original));
+      } catch {}
+      if (auth.currentUser) {
+        void syncTournamentToCloud(auth.currentUser.uid, auth.currentUser.email, original);
+      }
+    } catch (e) {
+      console.error("Lỗi hoàn tác thay đổi:", e);
+    }
+  }, []);
+
+  const clearActiveTournament = useCallback(() => {
+    setActiveTournamentId(null);
+    try {
+      localStorage.removeItem("naycourt_active_tour_id");
+    } catch {}
+  }, []);
+
+  const hasUnsavedChanges = useCallback(() => {
+    try {
+      const current = JSON.stringify(stateRef.current);
+      if (current === savedSnapshotRef.current) return false;
+      if (!stateRef.current.name.trim() && stateRef.current.events.length === 0 && stateRef.current.entries.length === 0) {
+        return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
   const commit = useCallback(
     (next: TournamentState) => {
       lastCommitTimeRef.current = Date.now();
@@ -299,7 +361,8 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       } catch {
         /* ignore */
       }
-      // Tự động đồng bộ lên đám mây Firestore khi tài khoản đã đăng nhập
+      // Tự động đồng bộ lên bản nháp tạm thời Firestore khi tài khoản đã đăng nhập
+      // (Không tự động lưu đè danh sách vĩnh viễn user_tournaments để người dùng có thể "Không lưu")
       if (auth.currentUser) {
         if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
         syncTimerRef.current = setTimeout(async () => {
@@ -309,7 +372,7 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
             await syncTournamentToCloud(auth.currentUser.uid, auth.currentUser.email, next);
             setLastSyncedAt(new Date());
           } catch (err) {
-            console.error("Lỗi tự động lưu đám mây:", err);
+            console.error("Lỗi tự động đồng bộ bản nháp:", err);
           } finally {
             setIsSyncing(false);
           }
@@ -425,14 +488,77 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     }
   }, [state]);
 
-  const loadTournament = useCallback((newState: TournamentState) => {
+  const loadTournament = useCallback((newState: TournamentState, archiveId?: string) => {
     const sanitized = sanitizeLoadedState(newState);
     setState(sanitized);
+    savedSnapshotRef.current = JSON.stringify(sanitized);
+    const tourId = archiveId || (sanitized as unknown as { id?: string }).id || null;
+    setActiveTournamentId(tourId);
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitized));
+      if (tourId) {
+        localStorage.setItem("naycourt_active_tour_id", tourId);
+      } else {
+        localStorage.removeItem("naycourt_active_tour_id");
+      }
     } catch {}
     if (auth.currentUser) {
       void syncTournamentToCloud(auth.currentUser.uid, auth.currentUser.email, sanitized);
+    }
+  }, []);
+
+  const saveCurrentToArchive = useCallback(async () => {
+    if (!auth.currentUser) return null;
+    try {
+      const tourId = activeTournamentId || undefined;
+      const savedId = await saveTournamentToArchive(
+        auth.currentUser.uid,
+        auth.currentUser.email,
+        stateRef.current,
+        tourId
+      );
+      if (savedId) {
+        setActiveTournamentId(savedId);
+        try {
+          localStorage.setItem("naycourt_active_tour_id", savedId);
+        } catch {}
+      }
+      savedSnapshotRef.current = JSON.stringify(stateRef.current);
+      return savedId;
+    } catch (e) {
+      console.error("Lỗi khi lưu giải:", e);
+      return null;
+    }
+  }, [activeTournamentId]);
+
+  const createNewTournament = useCallback(async () => {
+    setState(initialState);
+    savedSnapshotRef.current = JSON.stringify(initialState);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(initialState));
+      localStorage.removeItem("naycourt_active_tour_id");
+    } catch {}
+    if (auth.currentUser) {
+      try {
+        const newId = await saveTournamentToArchive(
+          auth.currentUser.uid,
+          auth.currentUser.email,
+          initialState
+        );
+        setActiveTournamentId(newId);
+        try {
+          localStorage.setItem("naycourt_active_tour_id", newId);
+        } catch {}
+        void syncTournamentToCloud(auth.currentUser.uid, auth.currentUser.email, initialState);
+        return newId;
+      } catch (e) {
+        console.error("Lỗi khi tạo giải mới:", e);
+        setActiveTournamentId(null);
+        return null;
+      }
+    } else {
+      setActiveTournamentId(null);
+      return null;
     }
   }, []);
 
@@ -453,6 +579,13 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       logout,
       syncNow,
       loadTournament,
+      createNewTournament,
+      saveCurrentToArchive,
+      activeTournamentId,
+      hasUnsavedChanges,
+      markSaved,
+      discardChanges,
+      clearActiveTournament,
     }),
     [
       state,
@@ -470,6 +603,13 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       logout,
       syncNow,
       loadTournament,
+      createNewTournament,
+      saveCurrentToArchive,
+      activeTournamentId,
+      hasUnsavedChanges,
+      markSaved,
+      discardChanges,
+      clearActiveTournament,
     ],
   );
 

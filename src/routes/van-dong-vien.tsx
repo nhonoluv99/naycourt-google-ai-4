@@ -654,12 +654,34 @@ function PlayersPage() {
             ) : (
               entries.map((en, i) => {
                 const totalRating = en.players.reduce((sum, p) => sum + (p.rating ?? 0), 0);
-                return (
-                  <div key={en.id} className="flex flex-wrap items-center gap-2 px-3 py-2.5">
-                    <span className="w-5 font-head font-bold text-line/40">{i + 1}</span>
-                    <div className="flex min-w-[220px] flex-1 flex-wrap items-center gap-2">
+                return slots === 2 ? (
+                  <div key={en.id} className="border-b border-line/10 last:border-b-0">
+                    {/* Giao diện điện thoại: mỗi cặp VĐV là 1 card gọn gàng, không bị chồng chéo */}
+                    <div className="sm:hidden p-3 space-y-2.5 bg-card">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="font-head font-bold text-xs text-line/50">#{i + 1}</span>
+                          <span className="text-xs font-bold text-ink">Cặp VĐV</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div
+                            className="flex h-7 px-2.5 items-center justify-center rounded-lg border border-accent/40 bg-accent/10 text-xs font-bold text-accent tabular-nums"
+                            title="Điểm tổng của cả 2 VĐV"
+                          >
+                            Tổng: {totalRating > 0 ? formatRating(Number(totalRating.toFixed(4))) : "—"}
+                          </div>
+                          <button
+                            type="button"
+                            className="text-line/40 hover:text-destructive p-1"
+                            onClick={() => removeEntry(en.id)}
+                            aria-label="Xoá"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </div>
                       {en.players.map((p, pi) => (
-                        <div key={pi} className="flex min-w-[180px] flex-1 items-center gap-1.5">
+                        <div key={pi} className="flex items-center gap-2">
                           <input
                             type="checkbox"
                             title={`Tình trạng đóng phí: ${p.name || `VĐV ${pi + 1}`}`}
@@ -670,9 +692,136 @@ function PlayersPage() {
                               patchPlayer(en.id, pi, { paid: checked });
                             }}
                           />
-                          <div className="group/slot relative flex-1 min-w-[130px]">
+                          <div className="group/slot relative flex-1 min-w-0">
                             <input
-                              className="field w-full pr-7"
+                              className="field w-full pr-7 !text-xs !py-2 !px-2.5"
+                              placeholder={`Nhập tên VĐV ${pi + 1}`}
+                              value={p.name}
+                              onChange={(e) => patchPlayer(en.id, pi, { name: e.target.value })}
+                            />
+                            <button
+                              type="button"
+                              tabIndex={-1}
+                              onClick={() => {
+                                setTargetSlot({
+                                  entryId: en.id,
+                                  playerIdx: pi,
+                                  initialQuery: p.name,
+                                  slotLabel: `${p.name || `VĐV ${pi + 1}`} (Hàng #${i + 1})`,
+                                });
+                                setLookupModalOpen(true);
+                              }}
+                              className="absolute right-1 top-1/2 -translate-y-1/2 p-1 text-line/40 hover:text-line cursor-pointer"
+                              title="DURP/PVNA"
+                            >
+                              <svg className="size-3.5 stroke-line/40 hover:stroke-line/70" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                                <circle cx="11" cy="11" r="7" />
+                                <path d="m21 21-4.35-4.35" />
+                              </svg>
+                            </button>
+                          </div>
+                          <RatingInput
+                            value={p.rating}
+                            onChange={(rating) => patchPlayer(en.id, pi, { rating })}
+                          />
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Giao diện máy tính / tablet */}
+                    <div className="hidden sm:flex items-center gap-2 px-3 py-2.5">
+                      <span className="w-5 font-head font-bold text-line/40 shrink-0">{i + 1}</span>
+                      <div className="flex min-w-[220px] flex-1 items-center gap-2">
+                        {en.players.map((p, pi) => (
+                          <div key={pi} className="flex min-w-[180px] flex-1 items-center gap-1.5">
+                            <input
+                              type="checkbox"
+                              title={`Tình trạng đóng phí: ${p.name || `VĐV ${pi + 1}`}`}
+                              className="size-4 shrink-0 rounded accent-[oklch(0.615_0.145_154.2)] cursor-pointer"
+                              checked={Boolean(p.paid)}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                patchPlayer(en.id, pi, { paid: checked });
+                              }}
+                            />
+                            <div className="group/slot relative flex-1 min-w-[130px]">
+                              <input
+                                className="field w-full pr-7"
+                                placeholder="Nhập tên"
+                                value={p.name}
+                                onChange={(e) => patchPlayer(en.id, pi, { name: e.target.value })}
+                              />
+                              <button
+                                type="button"
+                                tabIndex={-1}
+                                onClick={() => {
+                                  setTargetSlot({
+                                    entryId: en.id,
+                                    playerIdx: pi,
+                                    initialQuery: p.name,
+                                    slotLabel: `${p.name || `VĐV ${pi + 1}`} (Hàng #${i + 1})`,
+                                  });
+                                  setLookupModalOpen(true);
+                                }}
+                                className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 text-line/40 hover:text-line cursor-pointer transition opacity-0 group-hover/slot:opacity-100 group-focus-within/slot:opacity-100"
+                                title="DURP/PVNA"
+                              >
+                                <svg
+                                  className="size-3.5 stroke-line/40 hover:stroke-line/70"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.6"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                >
+                                  <circle cx="11" cy="11" r="7" />
+                                  <path d="m21 21-4.35-4.35" />
+                                </svg>
+                              </button>
+                            </div>
+                            <RatingInput
+                              value={p.rating}
+                              onChange={(rating) => patchPlayer(en.id, pi, { rating })}
+                            />
+                          </div>
+                        ))}
+                        <div
+                          className="flex h-9 w-16 shrink-0 items-center justify-center rounded-lg border border-accent/40 bg-accent/10 text-xs font-bold text-accent shadow-2xs tabular-nums"
+                          title="Điểm tổng của cả 2 VĐV"
+                        >
+                          <span>{totalRating > 0 ? formatRating(Number(totalRating.toFixed(4))) : "—"}</span>
+                        </div>
+                      </div>
+                      <button
+                        className="text-line/40 hover:text-destructive shrink-0 p-1"
+                        onClick={() => removeEntry(en.id)}
+                        aria-label="Xoá"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  /* Đơn (slots === 1) */
+                  <div key={en.id} className="flex items-center gap-2 px-3 py-2.5 border-b border-line/10 last:border-b-0">
+                    <span className="w-5 font-head font-bold text-line/40 shrink-0">{i + 1}</span>
+                    <div className="flex flex-1 items-center gap-2 min-w-0">
+                      {en.players.map((p, pi) => (
+                        <div key={pi} className="flex flex-1 items-center gap-1.5 min-w-0">
+                          <input
+                            type="checkbox"
+                            title={`Tình trạng đóng phí: ${p.name || `VĐV ${pi + 1}`}`}
+                            className="size-4 shrink-0 rounded accent-[oklch(0.615_0.145_154.2)] cursor-pointer"
+                            checked={Boolean(p.paid)}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              patchPlayer(en.id, pi, { paid: checked });
+                            }}
+                          />
+                          <div className="group/slot relative flex-1 min-w-0">
+                            <input
+                              className="field w-full pr-7 !text-xs sm:!text-sm"
                               placeholder="Nhập tên"
                               value={p.name}
                               onChange={(e) => patchPlayer(en.id, pi, { name: e.target.value })}
@@ -689,7 +838,7 @@ function PlayersPage() {
                                 });
                                 setLookupModalOpen(true);
                               }}
-                              className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 text-line/40 hover:text-line cursor-pointer transition opacity-0 group-hover/slot:opacity-100 group-focus-within/slot:opacity-100"
+                              className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 text-line/40 hover:text-line cursor-pointer"
                               title="DURP/PVNA"
                             >
                               <svg
@@ -712,14 +861,6 @@ function PlayersPage() {
                           />
                         </div>
                       ))}
-                      {slots === 2 && (
-                        <div
-                          className="flex h-9 w-16 shrink-0 items-center justify-center rounded-lg border border-accent/40 bg-accent/10 text-xs font-bold text-accent shadow-2xs tabular-nums"
-                          title="Điểm tổng của cả 2 VĐV"
-                        >
-                          <span>{totalRating > 0 ? formatRating(Number(totalRating.toFixed(4))) : "—"}</span>
-                        </div>
-                      )}
                     </div>
                     <button
                       className="text-line/40 hover:text-destructive shrink-0 p-1"
@@ -1205,7 +1346,7 @@ function RatingInput({
 
   return (
     <input
-      className="field w-20 shrink-0 text-center"
+      className="field !w-16 sm:!w-20 shrink-0 text-center !px-1 text-xs sm:text-sm font-semibold tabular-nums"
       placeholder="—"
       inputMode="decimal"
       value={raw}
