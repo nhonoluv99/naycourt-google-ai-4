@@ -109,11 +109,11 @@ export function DuprPvnaLookupModal({
       // Khi người dùng tìm kiếm: kết hợp cả danh sách DUPR và kết quả tìm kiếm thời gian thực
       const map = new Map<string, RatedPlayer>();
       for (const p of local) {
-        const key = normalizeVietnamese(p.name);
+        const key = `${normalizeVietnamese(p.name)}_${p.duprId || p.pvnaId || p.id}`;
         map.set(key, p);
       }
       for (const p of livePvnaPlayers) {
-        const key = normalizeVietnamese(p.name);
+        const key = `${normalizeVietnamese(p.name)}_${p.duprId || p.pvnaId || p.id}`;
         if (!map.has(key)) {
           const dDouble = p.duprDoubles > 0 ? p.duprDoubles : (p.pvnaDoubles > 0 ? p.pvnaDoubles : 3.5);
           const dSingle = p.duprSingles > 0 ? p.duprSingles : (p.pvnaSingles > 0 ? p.pvnaSingles : 3.5);
@@ -292,9 +292,36 @@ export function DuprPvnaLookupModal({
               </p>
               <p className="mt-1 text-line/50 text-[11px]">
                 {query
-                  ? "VĐV này không có trong hệ thống dữ liệu."
+                  ? "VĐV này chưa có trong cơ sở dữ liệu hệ thống."
                   : "Chưa có vận động viên nào trong danh mục này."}
               </p>
+              {query.trim() && onSelectPlayer && (
+                <div className="mt-5 pt-4 border-t border-line/15 max-w-xs mx-auto text-center">
+                  <p className="text-[11px] text-line/70 mb-2">Bạn vẫn có thể chọn tên này và gán điểm:</p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const newP: RatedPlayer = {
+                        id: `custom_${Date.now()}`,
+                        name: query.trim(),
+                        gender: "nam",
+                        duprDoubles: 3.5,
+                        duprSingles: 3.5,
+                        pvnaDoubles: 3.5,
+                        pvnaSingles: 3.5,
+                        isDuprPlayer: currentTabConfig.system === "dupr",
+                        isPvnaPlayer: currentTabConfig.system === "pvna",
+                      };
+                      onSelectPlayer(newP, 3.5, currentTabConfig.system);
+                      onClose();
+                    }}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-[#0a3320] text-white px-4 py-2 text-xs font-bold shadow-sm hover:bg-[#0a3320]/90 cursor-pointer transition w-full"
+                    style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                  >
+                    + Sử dụng &quot;{query.trim()}&quot; (Điểm: 3.500)
+                  </button>
+                </div>
+              )}
             </div>
           ) : (
             results.map((player, idx) => {

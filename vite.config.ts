@@ -21,6 +21,12 @@ export default defineConfig(() => {
           secure: false,
           rewrite: (path: string) => path.replace(/^\/api\/pvna-proxy/, '/api/webPlayers'),
         },
+        '/api/dupr-proxy': {
+          target: 'https://api.dupr.com',
+          changeOrigin: true,
+          secure: false,
+          rewrite: (path: string) => path.replace(/^\/api\/dupr-proxy/, ''),
+        },
       },
     },
   };

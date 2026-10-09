@@ -1,8 +1,10 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import * as React from "react";
 import { toast } from "sonner";
+import html2canvas from "html2canvas";
+import { jsPDF } from "jspdf";
 // @ts-ignore
 import XLSX from "xlsx-js-style";
 import {
@@ -457,10 +459,18 @@ function MatchCard({
   const bWin = m.scoreA !== null && m.scoreB !== null && m.scoreB > m.scoreA;
   const hasNote = Boolean(m.note || m.live?.note);
 
+  const isRoundRobin =
+    !m.groupName ||
+    m.groupName.toLowerCase().includes("vòng tròn") ||
+    m.groupName === "rr" ||
+    m.groupName.toLowerCase().includes("toàn thể");
+
   const displayTag =
     m.stage === "ko"
       ? groupTag(m.groupName)
-      : `${groupTag(m.groupName)} · V${m.round}`;
+      : isRoundRobin
+        ? `V${m.round}`
+        : `${groupTag(m.groupName)} · V${m.round}`;
 
   const isUltraCompact = compact && rowHeight < 75;
   const isMidCompact = compact && rowHeight >= 75 && rowHeight < 100;
@@ -1417,15 +1427,31 @@ function ManagePage() {
   // Chế độ xem toàn màn hình nhánh KO
   const [isFullscreenKo, setIsFullscreenKo] = useState(false);
   const [koZoom, setKoZoom] = useState(1);
+  const [koRotate, setKoRotate] = useState(false);
+
+  // Chế độ xem toàn màn hình Timeline
+  const [isFullscreenTimeline, setIsFullscreenTimeline] = useState(false);
+
+  // Modal xuất ảnh / PDF sơ đồ thi đấu vòng bảng
+  const [isExportGroupModalOpen, setIsExportGroupModalOpen] = useState(false);
+  const [includeScoresInExport, setIncludeScoresInExport] = useState(false);
+  const [splitExportRows, setSplitExportRows] = useState(true);
+  const [isExportingImage, setIsExportingImage] = useState(false);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const exportGroupScheduleRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!isFullscreenKo) return;
+    if (!isFullscreenKo && !isFullscreenTimeline && !isExportGroupModalOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setIsFullscreenKo(false);
+      if (e.key === "Escape") {
+        setIsFullscreenKo(false);
+        setIsFullscreenTimeline(false);
+        setIsExportGroupModalOpen(false);
+      }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isFullscreenKo]);
+  }, [isFullscreenKo, isFullscreenTimeline, isExportGroupModalOpen]);
 
   const recordTimelineState = () => {
     setTimelineHistory((prev) => [...prev.slice(-30), state.matches]);
@@ -1938,6 +1964,22 @@ function ManagePage() {
   /* -------- Vòng bảng theo cột vòng -------- */
   const rounds = [...new Set(groupMatches.map((m) => m.round))].sort((a, b) => (a ?? 0) - (b ?? 0));
 
+  // Tách các vòng thành 2 hàng khi có nhiều vòng (vd: 9 vòng -> 5 vòng trên, 4 vòng dưới)
+  const exportRoundRows = useMemo(() => {
+    if (!splitExportRows || rounds.length <= 4) {
+      return [rounds];
+    }
+    if (rounds.length <= 10) {
+      const half = Math.ceil(rounds.length / 2);
+      return [rounds.slice(0, half), rounds.slice(half)];
+    }
+    const rows: number[][] = [];
+    for (let i = 0; i < rounds.length; i += 5) {
+      rows.push(rounds.slice(i, i + 5));
+    }
+    return rows;
+  }, [rounds, splitExportRows]);
+
   /* -------- Timeline -------- */
   const timelinePrintRef = useRef<HTMLDivElement>(null);
   const dragGrabPxRef = useRef<number | null>(null);
@@ -2268,7 +2310,9 @@ function ManagePage() {
       const stageLabel =
         m.stage === "ko"
           ? m.koRound || groupTag(m.groupName) || `V${m.round}`
-          : `${groupTag(m.groupName)} - V${m.round}`;
+          : m.groupName.toLowerCase().includes("vòng tròn") || m.groupName === "rr"
+            ? `V${m.round}`
+            : `${groupTag(m.groupName)} - V${m.round}`;
 
       const statusLabel =
         m.status === "done"
@@ -2409,6 +2453,163 @@ function ManagePage() {
     });
     return counts;
   }, [koMatches]);
+
+  const calculateOptimalKoScale = useCallback((isRotated: boolean) => {
+    if (typeof window === "undefined") return 0.6;
+    const isMobile = window.innerWidth < 768;
+    const screenW = window.innerWidth;
+    const screenH = window.innerHeight;
+
+    const maxR = koRounds.length > 0 ? Math.max(...koRounds) : 3;
+    const isTwoSided = koLayout === "two_sided" && koRounds.length > 1;
+    const preCount = Math.max(1, maxR - 1);
+    const treeW = isTwoSided
+      ? preCount * 2 * (275 + 50) + 360
+      : maxR * (275 + 50) + 120;
+    const maxMatchesInRound = Math.max(
+      1,
+      ...koRounds.map((r) => koMatches.filter((m) => m.round === r && m.slot !== 99).length)
+    );
+    const treeH = Math.max(480, maxMatchesInRound * 115 + 60);
+
+    const availW = isRotated ? (screenH - 50) : (screenW - 24);
+    const availH = isRotated ? (screenW - 24) : (screenH - (isMobile ? 70 : 100));
+
+    const scaleW = availW / treeW;
+    const scaleH = availH / treeH;
+    const optimal = Math.min(scaleW, scaleH);
+    return Math.max(0.18, Math.min(1.2, Number((optimal * 0.95).toFixed(2))));
+  }, [koRounds, koLayout, koMatches]);
+
+  const handleOpenFullscreenKo = useCallback(() => {
+    setIsFullscreenKo(true);
+    const isMobile = typeof window !== "undefined" && window.innerWidth < 768;
+    const shouldRotate = isMobile && window.innerHeight > window.innerWidth;
+    setKoRotate(shouldRotate);
+    const optimal = calculateOptimalKoScale(shouldRotate);
+    setKoZoom(optimal);
+  }, [calculateOptimalKoScale]);
+
+  const handleFitTimelineScreen = useCallback(() => {
+    const screenW = typeof window !== "undefined" ? window.innerWidth : 390;
+    const screenH = typeof window !== "undefined" ? window.innerHeight : 844;
+    const availW = Math.max(100, screenW - 85);
+    const idealW = Math.max(25, Math.floor(availW / Math.max(1, slotIdxs.length)));
+    const availH = Math.max(120, screenH - 120);
+    const idealH = Math.max(38, Math.floor(availH / Math.max(1, state.courts.length)));
+    setColWidth(idealW);
+    setRowHeight(idealH);
+    toast.success("Đã căn vừa khít màn hình!");
+  }, [slotIdxs.length, state.courts.length]);
+
+  const handleDownloadGroupScheduleImage = async () => {
+    if (!exportGroupScheduleRef.current) return;
+    setIsExportingImage(true);
+    toast.info("Đang xử lý tạo ảnh chất lượng cao...");
+    try {
+      const canvas = await html2canvas(exportGroupScheduleRef.current, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: "#fbfaf6",
+        logging: false,
+        onclone: (clonedDoc) => {
+          const exportEl = clonedDoc.querySelector('[data-export-schedule="true"]');
+          if (exportEl) {
+            const all = exportEl.querySelectorAll('*');
+            const helperCanvas = clonedDoc.createElement('canvas');
+            const ctx = helperCanvas.getContext('2d');
+            all.forEach((el) => {
+              const htmlEl = el as HTMLElement;
+              const cs = clonedDoc.defaultView?.getComputedStyle(htmlEl);
+              if (cs && ctx) {
+                ['color', 'backgroundColor', 'borderColor'].forEach((prop) => {
+                  const val = (cs as any)[prop];
+                  if (typeof val === 'string' && val.includes('oklch')) {
+                    try {
+                      ctx.fillStyle = val;
+                      (htmlEl.style as any)[prop] = ctx.fillStyle;
+                    } catch {
+                      // fallback
+                    }
+                  }
+                });
+              }
+            });
+          }
+        },
+      });
+      const dataUrl = canvas.toDataURL("image/png");
+      const link = document.createElement("a");
+      const safeTournament = (state.name || "Giai").trim().replace(/[\s/\\?%*:|"<>]+/g, "_");
+      const safeEvent = (ev.name || "Noi_dung").trim().replace(/[\s/\\?%*:|"<>]+/g, "_");
+      link.download = `Lich_thi_dau_${safeTournament}_${safeEvent}.png`;
+      link.href = dataUrl;
+      link.click();
+      toast.success("Đã tải ảnh sơ đồ thi đấu thành công!");
+    } catch (err) {
+      console.error("Export image error:", err);
+      toast.error("Không thể tạo ảnh sơ đồ. Vui lòng thử lại!");
+    } finally {
+      setIsExportingImage(false);
+    }
+  };
+
+  const handleDownloadGroupSchedulePdf = async () => {
+    if (!exportGroupScheduleRef.current) return;
+    setIsExportingPdf(true);
+    toast.info("Đang xử lý xuất file PDF...");
+    try {
+      const canvas = await html2canvas(exportGroupScheduleRef.current, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: "#fbfaf6",
+        logging: false,
+        onclone: (clonedDoc) => {
+          const exportEl = clonedDoc.querySelector('[data-export-schedule="true"]');
+          if (exportEl) {
+            const all = exportEl.querySelectorAll('*');
+            const helperCanvas = clonedDoc.createElement('canvas');
+            const ctx = helperCanvas.getContext('2d');
+            all.forEach((el) => {
+              const htmlEl = el as HTMLElement;
+              const cs = clonedDoc.defaultView?.getComputedStyle(htmlEl);
+              if (cs && ctx) {
+                ['color', 'backgroundColor', 'borderColor'].forEach((prop) => {
+                  const val = (cs as any)[prop];
+                  if (typeof val === 'string' && val.includes('oklch')) {
+                    try {
+                      ctx.fillStyle = val;
+                      (htmlEl.style as any)[prop] = ctx.fillStyle;
+                    } catch {
+                      // fallback
+                    }
+                  }
+                });
+              }
+            });
+          }
+        },
+      });
+      const imgW = canvas.width;
+      const imgH = canvas.height;
+      const orientation = imgW > imgH ? "landscape" : "portrait";
+      const pdf = new jsPDF({
+        orientation,
+        unit: "px",
+        format: [imgW, imgH],
+      });
+      pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, imgW, imgH);
+      const safeTournament = (state.name || "Giai").trim().replace(/[\s/\\?%*:|"<>]+/g, "_");
+      const safeEvent = (ev.name || "Noi_dung").trim().replace(/[\s/\\?%*:|"<>]+/g, "_");
+      pdf.save(`Lich_thi_dau_${safeTournament}_${safeEvent}.pdf`);
+      toast.success("Đã xuất file PDF thành công!");
+    } catch (err) {
+      console.error("Export PDF error:", err);
+      toast.error("Không thể xuất file PDF. Vui lòng thử lại!");
+    } finally {
+      setIsExportingPdf(false);
+    }
+  };
 
   const dropTeam = (targetMatch: Match, targetSide: "aId" | "bId") => {
     if (isKoLocked) {
@@ -2806,6 +3007,269 @@ function ManagePage() {
     );
   };
 
+  const renderTimelineGrid = () => (
+    <div
+      className="relative overflow-x-auto overflow-y-visible flex-1"
+      ref={timelinePrintRef}
+    >
+      {/* Đường chỉ đỏ thời gian thực */}
+      {redLineOffsetPx !== null && (
+        <div
+          className="pointer-events-none absolute top-0 bottom-0 z-25 w-0.5 bg-red-600 shadow-[0_0_8px_rgba(239,68,68,0.8)]"
+          style={{ left: `${redLineOffsetPx}px` }}
+        >
+          <div className="sticky top-1 -translate-x-1/2 whitespace-nowrap rounded bg-red-600 px-1.5 py-0.5 text-[9px] font-bold text-white shadow-md">
+            Bây giờ: {nowString}
+          </div>
+        </div>
+      )}
+
+      <div
+        className="border-l border-t border-line/20 bg-card"
+        style={{
+          display: "grid",
+          gridTemplateColumns: `80px repeat(${slotIdxs.length}, ${colWidth}px)`,
+          gridTemplateRows: `34px repeat(${state.courts.length}, ${rowHeight}px)`,
+        }}
+      >
+        {/* Ô góc trên bên trái: STICKY top-0 left-0 z-30 */}
+        <div
+          data-timeline-hours="true"
+          className="sticky top-0 left-0 z-30 border-b border-r border-line/20 bg-card p-1 text-[11px] font-bold uppercase tracking-wider text-line/70 shadow-xs flex items-center justify-center text-center h-[34px] w-[80px]"
+        >
+          Sân / Giờ
+        </div>
+
+        {/* Hàng giờ: STICKY top-0 z-20 */}
+        {slotIdxs.map((s) => (
+          <div
+            key={`h${s}`}
+            data-timeline-hours="true"
+            className="sticky top-0 z-20 border-b border-r border-line/15 bg-card/95 p-1 text-center text-[11px] font-bold uppercase tracking-wider text-line/70 backdrop-blur-xs shadow-xs flex items-center justify-center h-[34px]"
+          >
+            {addMinutes(state.startTime, s * state.slotMinutes)}
+          </div>
+        ))}
+
+        {/* Từng dòng Sân */}
+        {state.courts.map((court, courtIdx) => {
+          const rowNum = courtIdx + 2;
+          const courtMatches = grid.get(court) ?? [];
+          const slotMins = state.slotMinutes || 30;
+
+          return (
+            <React.Fragment key={court}>
+              {/* Cột Sân: STICKY left-0 z-20 (chỉ hiển thị tên sân, không icon) */}
+              <div
+                className="sticky left-0 z-20 border-b border-r border-line/20 bg-card/95 p-1 text-xs font-bold text-ink backdrop-blur-xs flex items-center justify-center text-center shadow-xs select-none truncate w-[80px]"
+                style={{
+                  gridRow: rowNum,
+                  gridColumn: 1,
+                  minHeight: `${rowHeight}px`,
+                  height: `${rowHeight}px`,
+                  maxHeight: `${rowHeight}px`,
+                }}
+              >
+                <span className="truncate">{court}</span>
+              </div>
+
+              {/* Các ô giờ của Sân này: Nền nhận kéo thả (Drop Target) với vạch chia 5 phút */}
+              {slotIdxs.map((s) => (
+                <div
+                  key={`${court}-${s}`}
+                  className="relative border-b border-r border-line/10 p-0.5 transition hover:bg-accent/10 group overflow-hidden"
+                  style={{
+                    gridRow: rowNum,
+                    gridColumn: s + 2,
+                    minHeight: `${rowHeight}px`,
+                    height: `${rowHeight}px`,
+                    maxHeight: `${rowHeight}px`,
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const draggedId = e.dataTransfer.getData("text/plain") || dragMatch;
+                    if (!draggedId) return;
+                    const draggedMatch = state.matches.find((x) => x.id === draggedId);
+                    if (!draggedMatch) return;
+
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    let targetSlot = s;
+                    let targetOffset = 0;
+
+                    if (dragGrabPxRef.current !== null) {
+                      // Tính vị trí mép trái thực tế của thẻ đang kéo trên trục thời gian
+                      const slot0Left = rect.left - s * colWidth;
+                      const ghostLeftX = e.clientX - dragGrabPxRef.current;
+                      const deltaPx = ghostLeftX - (slot0Left + 4);
+                      const rawTotalMinutes = (deltaPx / colWidth) * slotMins;
+                      const snappedTotalMinutes = Math.max(
+                        0,
+                        Math.round(rawTotalMinutes / 5) * 5,
+                      );
+                      targetSlot = Math.floor(snappedTotalMinutes / slotMins);
+                      targetOffset = snappedTotalMinutes % slotMins;
+                    } else {
+                      // Kéo từ danh sách chờ bên phải sang
+                      const offsetX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+                      const ratio = offsetX / rect.width;
+                      const numSteps = Math.max(1, Math.floor(slotMins / 5));
+                      const stepIdx = Math.min(numSteps - 1, Math.floor(ratio * numSteps));
+                      targetOffset = stepIdx * 5;
+                    }
+
+                    const droppedStartMins = targetSlot * slotMins + targetOffset;
+
+                    // Kiểm tra nếu kéo thả chồng khít 100% lên một trận khác trên cùng sân -> Hoán đổi vị trí 2 trận
+                    const exactTargetMatch = matches.find((other) => {
+                      if (other.id === draggedId || other.timeSlot === undefined) return false;
+                      const otherCourt = state.courts.includes(other.court)
+                        ? other.court
+                        : state.courts[0];
+                      if (otherCourt !== court) return false;
+                      const otherStartMins =
+                        (other.timeSlot ?? 0) * slotMins + (other.offsetMinutes ?? 0);
+                      return otherStartMins === droppedStartMins;
+                    });
+
+                    recordTimelineState();
+
+                    if (exactTargetMatch) {
+                      const srcCourt = draggedMatch.court;
+                      const srcSlot = draggedMatch.timeSlot;
+                      const srcOffset = draggedMatch.offsetMinutes ?? 0;
+
+                      const dstCourt = exactTargetMatch.court;
+                      const dstSlot = exactTargetMatch.timeSlot;
+                      const dstOffset = exactTargetMatch.offsetMinutes ?? 0;
+
+                      update({
+                        matches: state.matches.map((item) => {
+                          if (item.id === draggedId) {
+                            return {
+                              ...item,
+                              court: dstCourt,
+                              timeSlot: dstSlot,
+                              offsetMinutes: dstOffset,
+                            };
+                          }
+                          if (item.id === exactTargetMatch.id) {
+                            return {
+                              ...item,
+                              court: srcCourt,
+                              timeSlot: srcSlot,
+                              offsetMinutes: srcSlot !== undefined ? srcOffset : 0,
+                            };
+                          }
+                          return item;
+                        }),
+                      });
+                      setDragMatch(null);
+                      dragGrabPxRef.current = null;
+                      setNote("Đã hoán đổi vị trí 2 trận đấu trên timeline.");
+                      return;
+                    }
+
+                    updateMatch(draggedId, {
+                      court,
+                      timeSlot: targetSlot,
+                      offsetMinutes: targetOffset,
+                    });
+                    setDragMatch(null);
+                    dragGrabPxRef.current = null;
+                    setNote(
+                      `Đã chuyển trận sang ${court} (${addMinutes(
+                        state.startTime,
+                        droppedStartMins,
+                      )})`,
+                    );
+                  }}
+                >
+                  {/* Vạch chia 5 phút khi hover để kéo thả chính xác (+5p, +10p, +15p...) */}
+                  <div className="pointer-events-none absolute inset-0 hidden group-hover:flex">
+                    {Array.from({ length: Math.max(1, Math.floor(slotMins / 5)) }).map((_, stepI) => (
+                      <div
+                        key={stepI}
+                        className="flex-1 border-r border-accent/20 border-dashed last:border-r-0 flex items-end justify-center pb-0.5"
+                      >
+                        <span className="text-[8px] font-mono text-accent font-semibold">+{(stepI + 1) * 5}p</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+
+              {/* Lớp chứa tất cả các thẻ trận đấu trên sân này (Cards Layer) nằm trên nền drop targets */}
+              <div
+                key={`${court}-cards-layer`}
+                className="relative pointer-events-none w-full h-full overflow-visible z-10"
+                style={{
+                  gridRow: rowNum,
+                  gridColumn: `2 / span ${slotIdxs.length}`,
+                  height: `${rowHeight}px`,
+                }}
+              >
+                {courtMatches.map(({ match: m }, cardIdx) => {
+                  const minWidth = Math.max(36, Math.round((5 / slotMins) * colWidth));
+                  const cardWidth = Math.max(
+                    minWidth,
+                    Math.round(((m.durationMinutes ?? slotMins) / slotMins) * colWidth - 9),
+                  );
+                  const leftOffset =
+                    Math.round((((m.timeSlot ?? 0) * slotMins + (m.offsetMinutes ?? 0)) / slotMins) * colWidth) + 4;
+
+                  return (
+                    <div
+                      key={m.id}
+                      draggable={true}
+                      onDragStart={(e) => {
+                        if ((e.target as HTMLElement).closest("[data-no-drag]")) {
+                          e.preventDefault();
+                          return;
+                        }
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        dragGrabPxRef.current = e.clientX - rect.left;
+                        e.dataTransfer.setData("text/plain", m.id);
+                        e.dataTransfer.effectAllowed = "move";
+                        // Cho phép chuyển sang trạng thái drag ngay sau khi event dragstart được browser khởi tạo
+                        setTimeout(() => setDragMatch(m.id), 0);
+                      }}
+                      onDragEnd={() => {
+                        setDragMatch(null);
+                        dragGrabPxRef.current = null;
+                      }}
+                      className={`timeline-card-wrapper pointer-events-auto cursor-grab active:cursor-grabbing absolute transition-[opacity] ${
+                        dragMatch === m.id ? "opacity-30 !pointer-events-none" : ""
+                      } ${dragMatch && dragMatch !== m.id ? "pointer-events-none" : ""} hover:z-30`}
+                      style={{
+                        top: "4px",
+                        bottom: "5px",
+                        width: `${cardWidth}px`,
+                        left: `${leftOffset}px`,
+                        zIndex: 10 + cardIdx * 2,
+                      }}
+                    >
+                      <MatchCard
+                        {...cardProps(m, true)}
+                        colWidth={colWidth}
+                        rowHeight={rowHeight}
+                        slotMinutes={slotMins}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </React.Fragment>
+          );
+        })}
+      </div>
+    </div>
+  );
+
   return (
     <div
       className="space-y-6 pl-0"
@@ -2864,7 +3328,6 @@ function ManagePage() {
               const evMatch = state.events.find((e) => e.id === m.eventId);
               const tA = getMatchEntryA(m, state.entries);
               const tB = getMatchEntryB(m, state.entries);
-              const icon = state.courtIcons?.[m.court] || "🎾";
               return (
                 <div
                   key={m.id}
@@ -2876,7 +3339,7 @@ function ManagePage() {
                         {evMatch?.name}
                       </span>
                       <span className="font-semibold text-line/60">
-                        {icon} {m.court}
+                        {m.court}
                       </span>
                     </div>
                     <div className="mt-1.5 flex items-center justify-between gap-2 text-xs font-bold">
@@ -3139,7 +3602,7 @@ function ManagePage() {
               <button
                 type="button"
                 className="btn-ghost text-xs font-bold flex items-center gap-1.5 px-2.5 py-1 rounded-lg ring-1 ring-line/20 hover:bg-card shadow-2xs cursor-pointer text-accent hover:text-accent font-semibold"
-                onClick={() => setIsFullscreenKo(true)}
+                onClick={handleOpenFullscreenKo}
                 title="Xem toàn bộ sơ đồ nhánh trực tiếp ở chế độ toàn màn hình"
               >
                 ⛶ Toàn màn hình
@@ -3215,6 +3678,21 @@ function ManagePage() {
                 </button>
               )}
               <button
+                type="button"
+                className="btn-ghost text-xs font-bold flex items-center gap-1.5 px-3 py-1.5 rounded-lg ring-1 ring-line/20 hover:bg-card shadow-2xs cursor-pointer text-[#0a3320] dark:text-emerald-300 font-semibold"
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                onClick={() => {
+                  if (rounds.length === 0) {
+                    toast.warning("Chưa có lịch thi đấu để xuất ảnh/PDF. Vui lòng bấm tạo lịch trước!");
+                    return;
+                  }
+                  setIsExportGroupModalOpen(true);
+                }}
+                title="Xuất ảnh hoặc file PDF sơ đồ lịch thi đấu các vòng sạch đẹp"
+              >
+                📸 Xuất ảnh / PDF sơ đồ
+              </button>
+              <button
                 className="btn-accent text-xs"
                 style={{ fontFamily: "'Space Grotesk', sans-serif" }}
                 onClick={buildGroups}
@@ -3260,22 +3738,28 @@ function ManagePage() {
               <button
                 type="button"
                 onClick={() => {
-                  const targetH = timelineEndHour ?? 24;
-                  const totalH = Math.max(1, targetH - startH);
-                  const slotsCount = Math.max(2, Math.ceil((totalH * 60) / Math.max(5, state.slotMinutes || 30)));
-                  const screenW = typeof window !== "undefined" ? window.innerWidth : 380;
-                  const avail = Math.max(120, screenW - 95);
-                  const idealW = Math.max(30, Math.floor(avail / slotsCount));
-                  setColWidth(idealW);
-                  setRowHeight(Math.max(45, Math.min(rowHeight, 75)));
-                  toast.success("Đã căn vừa khít màn hình điện thoại!");
+                  setIsFullscreenTimeline(true);
+                  handleFitTimelineScreen();
                 }}
-                className="rounded-lg bg-[#0a3320] text-white px-2.5 py-1 text-xs font-bold shrink-0 cursor-pointer shadow-2xs"
-                title="Căn chỉnh vừa khít chiều ngang màn hình điện thoại"
+                className="rounded-lg bg-[#0a3320] text-white px-3 py-1.5 text-xs font-bold shrink-0 cursor-pointer shadow-2xs hover:bg-[#0a3320]/90 flex items-center gap-1"
+                title="Mở toàn màn hình và tự động căn vừa khít màn hình"
               >
-                Fit toàn màn
+                ⛶ Fit toàn màn
               </button>
             </div>
+
+            {/* Nút Toàn màn hình Timeline */}
+            <button
+              type="button"
+              onClick={() => {
+                setIsFullscreenTimeline(true);
+                handleFitTimelineScreen();
+              }}
+              className="btn-ghost text-xs !py-1.5 font-bold flex items-center gap-1.5 px-2.5 rounded-lg ring-1 ring-line/20 hover:bg-card shadow-2xs cursor-pointer text-accent hover:text-accent font-semibold"
+              title="Xem toàn bộ timeline ở chế độ toàn màn hình"
+            >
+              ⛶ Toàn màn hình
+            </button>
 
             {/* Thanh trượt zoom ngang (cho phép zoom out rộng hết cỡ từ 30px) */}
             <div className="flex items-center gap-2 rounded-lg bg-card px-2.5 py-1 ring-1 ring-line/20 shadow-2xs">
@@ -3573,18 +4057,37 @@ function ManagePage() {
                     Chưa có lịch thi đấu vòng bảng. Bấm nút <strong>“Tạo lịch vòng bảng”</strong> để bắt đầu.
                   </div>
                 ) : (
-                  <div className="flex gap-4 overflow-x-auto pb-4 pt-[2px]">
-                    {rounds.map((r, idx) => (
-                      <div
-                        key={r}
-                        className={`w-[280px] shrink-0 pt-[2px] ${idx === 0 ? "pl-[2px] pr-[3px]" : "px-[3px]"}`}
+                  <div>
+                    <div className="flex items-center justify-between mb-2.5 px-1">
+                      <span className="font-head text-xs font-bold uppercase tracking-wide text-line/80">
+                        {ev.bracket === "rr" ? "Lịch đấu vòng tròn" : "Lịch đấu vòng bảng"} ({rounds.length} vòng)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setIsExportGroupModalOpen(true)}
+                        className="rounded-lg bg-[#0a3320] text-white hover:bg-[#0a3320]/90 px-3 py-1.5 text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer transition"
+                        title="Xuất sơ đồ thi đấu theo từng vòng ra file ảnh PNG hoặc PDF sạch đẹp"
                       >
+                        📸 Xuất ảnh / PDF sơ đồ
+                      </button>
+                    </div>
+                    <div className="flex gap-4 overflow-x-auto pb-4 pt-[2px]">
+                    {rounds.map((r, idx) => {
+                      const roundMatchesCount = groupMatches.filter((m) => m.round === r).length;
+                      return (
                         <div
-                          className="rounded-xl bg-accent/15 h-[40px] flex items-center justify-center text-center font-head text-sm font-bold uppercase tracking-wide text-accent ring-1 ring-accent/30"
-                          style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                          key={r}
+                          className={`w-[280px] shrink-0 pt-[2px] ${idx === 0 ? "pl-[2px] pr-[3px]" : "px-[3px]"}`}
                         >
-                          Vòng {r}
-                        </div>
+                          <div
+                            className="rounded-xl bg-accent/15 h-[40px] flex items-center justify-center gap-1.5 text-center font-head text-sm font-bold uppercase tracking-wide text-accent ring-1 ring-accent/30 px-2"
+                            style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                          >
+                            <span>Vòng {r}</span>
+                            <span className="text-xs font-normal text-line/60 lowercase tracking-normal">
+                              ({roundMatchesCount} trận)
+                            </span>
+                          </div>
                         <div className="mt-3 space-y-3">
                           {groupMatches
                             .filter((m) => m.round === r)
@@ -3594,7 +4097,9 @@ function ManagePage() {
                             ))}
                         </div>
                       </div>
-                    ))}
+                    );
+                  })}
+                  </div>
                   </div>
                 )}
               </div>
@@ -3794,266 +4299,7 @@ function ManagePage() {
           <div className="grid gap-4 lg:grid-cols-12 items-start">
             {/* Bảng timeline với sticky headers */}
             <div className={`${showQueue ? "lg:col-span-9" : "lg:col-span-12"} panel overflow-hidden rounded-2xl flex flex-col`}>
-              <div
-                className="relative overflow-x-auto overflow-y-visible flex-1"
-                ref={timelinePrintRef}
-              >
-                {/* Đường chỉ đỏ thời gian thực */}
-                {redLineOffsetPx !== null && (
-                  <div
-                    className="pointer-events-none absolute top-0 bottom-0 z-25 w-0.5 bg-red-600 shadow-[0_0_8px_rgba(239,68,68,0.8)]"
-                    style={{ left: `${redLineOffsetPx}px` }}
-                  >
-                    <div className="sticky top-1 -translate-x-1/2 whitespace-nowrap rounded bg-red-600 px-1.5 py-0.5 text-[9px] font-bold text-white shadow-md">
-                      Bây giờ: {nowString}
-                    </div>
-                  </div>
-                )}
-
-                <div
-                  className="border-l border-t border-line/20 bg-card"
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: `80px repeat(${slotIdxs.length}, ${colWidth}px)`,
-                    gridTemplateRows: `34px repeat(${state.courts.length}, ${rowHeight}px)`,
-                  }}
-                >
-                  {/* Ô góc trên bên trái: STICKY top-0 left-0 z-30 */}
-                  <div
-                    data-timeline-hours="true"
-                    className="sticky top-0 left-0 z-30 border-b border-r border-line/20 bg-card p-1 text-[11px] font-bold uppercase tracking-wider text-line/70 shadow-xs flex items-center justify-center text-center h-[34px] w-[80px]"
-                  >
-                    Sân / Giờ
-                  </div>
-
-                  {/* Hàng giờ: STICKY top-0 z-20 */}
-                  {slotIdxs.map((s) => (
-                    <div
-                      key={`h${s}`}
-                      data-timeline-hours="true"
-                      className="sticky top-0 z-20 border-b border-r border-line/15 bg-card/95 p-1 text-center text-[11px] font-bold uppercase tracking-wider text-line/70 backdrop-blur-xs shadow-xs flex items-center justify-center h-[34px]"
-                    >
-                      {addMinutes(state.startTime, s * state.slotMinutes)}
-                    </div>
-                  ))}
-
-                  {/* Từng dòng Sân */}
-                  {state.courts.map((court, courtIdx) => {
-                    const rowNum = courtIdx + 2;
-                    const courtMatches = grid.get(court) ?? [];
-                    const slotMins = state.slotMinutes || 30;
-
-                    return (
-                      <React.Fragment key={court}>
-                        {/* Cột Sân: STICKY left-0 z-20 (chỉ hiển thị tên sân, không icon) */}
-                        <div
-                          className="sticky left-0 z-20 border-b border-r border-line/20 bg-card/95 p-1 text-xs font-bold text-ink backdrop-blur-xs flex items-center justify-center text-center shadow-xs select-none truncate w-[80px]"
-                          style={{
-                            gridRow: rowNum,
-                            gridColumn: 1,
-                            minHeight: `${rowHeight}px`,
-                            height: `${rowHeight}px`,
-                            maxHeight: `${rowHeight}px`,
-                          }}
-                        >
-                          <span className="truncate">{court}</span>
-                        </div>
-
-                        {/* Các ô giờ của Sân này: Nền nhận kéo thả (Drop Target) với vạch chia 5 phút */}
-                        {slotIdxs.map((s) => (
-                          <div
-                            key={`${court}-${s}`}
-                            className="relative border-b border-r border-line/10 p-0.5 transition hover:bg-accent/10 group overflow-hidden"
-                            style={{
-                              gridRow: rowNum,
-                              gridColumn: s + 2,
-                              minHeight: `${rowHeight}px`,
-                              height: `${rowHeight}px`,
-                              maxHeight: `${rowHeight}px`,
-                            }}
-                            onDragOver={(e) => {
-                              e.preventDefault();
-                              e.dataTransfer.dropEffect = "move";
-                            }}
-                            onDrop={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              const draggedId = e.dataTransfer.getData("text/plain") || dragMatch;
-                              if (!draggedId) return;
-                              const draggedMatch = state.matches.find((x) => x.id === draggedId);
-                              if (!draggedMatch) return;
-
-                              const rect = e.currentTarget.getBoundingClientRect();
-                              let targetSlot = s;
-                              let targetOffset = 0;
-
-                              if (dragGrabPxRef.current !== null) {
-                                // Tính vị trí mép trái thực tế của thẻ đang kéo trên trục thời gian
-                                const slot0Left = rect.left - s * colWidth;
-                                const ghostLeftX = e.clientX - dragGrabPxRef.current;
-                                const deltaPx = ghostLeftX - (slot0Left + 4);
-                                const rawTotalMinutes = (deltaPx / colWidth) * slotMins;
-                                const snappedTotalMinutes = Math.max(
-                                  0,
-                                  Math.round(rawTotalMinutes / 5) * 5,
-                                );
-                                targetSlot = Math.floor(snappedTotalMinutes / slotMins);
-                                targetOffset = snappedTotalMinutes % slotMins;
-                              } else {
-                                // Kéo từ danh sách chờ bên phải sang
-                                const offsetX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
-                                const ratio = offsetX / rect.width;
-                                const numSteps = Math.max(1, Math.floor(slotMins / 5));
-                                const stepIdx = Math.min(numSteps - 1, Math.floor(ratio * numSteps));
-                                targetOffset = stepIdx * 5;
-                              }
-
-                              const droppedStartMins = targetSlot * slotMins + targetOffset;
-
-                              // Kiểm tra nếu kéo thả chồng khít 100% lên một trận khác trên cùng sân -> Hoán đổi vị trí 2 trận
-                              const exactTargetMatch = matches.find((other) => {
-                                if (other.id === draggedId || other.timeSlot === undefined) return false;
-                                const otherCourt = state.courts.includes(other.court)
-                                  ? other.court
-                                  : state.courts[0];
-                                if (otherCourt !== court) return false;
-                                const otherStartMins =
-                                  (other.timeSlot ?? 0) * slotMins + (other.offsetMinutes ?? 0);
-                                return otherStartMins === droppedStartMins;
-                              });
-
-                              recordTimelineState();
-
-                              if (exactTargetMatch) {
-                                const srcCourt = draggedMatch.court;
-                                const srcSlot = draggedMatch.timeSlot;
-                                const srcOffset = draggedMatch.offsetMinutes ?? 0;
-
-                                const dstCourt = exactTargetMatch.court;
-                                const dstSlot = exactTargetMatch.timeSlot;
-                                const dstOffset = exactTargetMatch.offsetMinutes ?? 0;
-
-                                update({
-                                  matches: state.matches.map((item) => {
-                                    if (item.id === draggedId) {
-                                      return {
-                                        ...item,
-                                        court: dstCourt,
-                                        timeSlot: dstSlot,
-                                        offsetMinutes: dstOffset,
-                                      };
-                                    }
-                                    if (item.id === exactTargetMatch.id) {
-                                      return {
-                                        ...item,
-                                        court: srcCourt,
-                                        timeSlot: srcSlot,
-                                        offsetMinutes: srcSlot !== undefined ? srcOffset : 0,
-                                      };
-                                    }
-                                    return item;
-                                  }),
-                                });
-                                setDragMatch(null);
-                                dragGrabPxRef.current = null;
-                                setNote("Đã hoán đổi vị trí 2 trận đấu trên timeline.");
-                                return;
-                              }
-
-                              updateMatch(draggedId, {
-                                court,
-                                timeSlot: targetSlot,
-                                offsetMinutes: targetOffset,
-                              });
-                              setDragMatch(null);
-                              dragGrabPxRef.current = null;
-                              setNote(
-                                `Đã chuyển trận sang ${court} (${addMinutes(
-                                  state.startTime,
-                                  droppedStartMins,
-                                )})`,
-                              );
-                            }}
-                          >
-                            {/* Vạch chia 5 phút khi hover để kéo thả chính xác (+5p, +10p, +15p...) */}
-                            <div className="pointer-events-none absolute inset-0 hidden group-hover:flex">
-                              {Array.from({ length: Math.max(1, Math.floor(slotMins / 5)) }).map((_, stepI) => (
-                                <div
-                                  key={stepI}
-                                  className="flex-1 border-r border-accent/20 border-dashed last:border-r-0 flex items-end justify-center pb-0.5"
-                                >
-                                  <span className="text-[8px] font-mono text-accent font-semibold">+{(stepI + 1) * 5}p</span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
-
-                        {/* Lớp chứa tất cả các thẻ trận đấu trên sân này (Cards Layer) nằm trên nền drop targets */}
-                        <div
-                          key={`${court}-cards-layer`}
-                          className="relative pointer-events-none w-full h-full overflow-visible z-10"
-                          style={{
-                            gridRow: rowNum,
-                            gridColumn: `2 / span ${slotIdxs.length}`,
-                            height: `${rowHeight}px`,
-                          }}
-                        >
-                          {courtMatches.map(({ match: m }, cardIdx) => {
-                            const minWidth = Math.max(36, Math.round((5 / slotMins) * colWidth));
-                            const cardWidth = Math.max(
-                              minWidth,
-                              Math.round(((m.durationMinutes ?? slotMins) / slotMins) * colWidth - 9),
-                            );
-                            const leftOffset =
-                              Math.round((((m.timeSlot ?? 0) * slotMins + (m.offsetMinutes ?? 0)) / slotMins) * colWidth) + 4;
-
-                            return (
-                              <div
-                                key={m.id}
-                                draggable={true}
-                                onDragStart={(e) => {
-                                  if ((e.target as HTMLElement).closest("[data-no-drag]")) {
-                                    e.preventDefault();
-                                    return;
-                                  }
-                                  const rect = e.currentTarget.getBoundingClientRect();
-                                  dragGrabPxRef.current = e.clientX - rect.left;
-                                  e.dataTransfer.setData("text/plain", m.id);
-                                  e.dataTransfer.effectAllowed = "move";
-                                  // Cho phép chuyển sang trạng thái drag ngay sau khi event dragstart được browser khởi tạo
-                                  setTimeout(() => setDragMatch(m.id), 0);
-                                }}
-                                onDragEnd={() => {
-                                  setDragMatch(null);
-                                  dragGrabPxRef.current = null;
-                                }}
-                                className={`timeline-card-wrapper pointer-events-auto cursor-grab active:cursor-grabbing absolute transition-[opacity] ${
-                                  dragMatch === m.id ? "opacity-30 !pointer-events-none" : ""
-                                } ${dragMatch && dragMatch !== m.id ? "pointer-events-none" : ""} hover:z-30`}
-                                style={{
-                                  top: "4px",
-                                  bottom: "5px",
-                                  width: `${cardWidth}px`,
-                                  left: `${leftOffset}px`,
-                                  zIndex: 10 + cardIdx * 2,
-                                }}
-                              >
-                                <MatchCard
-                                  {...cardProps(m, true)}
-                                  colWidth={colWidth}
-                                  rowHeight={rowHeight}
-                                  slotMinutes={slotMins}
-                                />
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </React.Fragment>
-                    );
-                  })}
-                </div>
-              </div>
+              {renderTimelineGrid()}
             </div>
 
             {/* Cột trận chờ xếp lịch bên phải - ghim cố định chạy theo màn hình khi cuộn */}
@@ -4118,7 +4364,11 @@ function ManagePage() {
                             >
                               <div className="flex items-center justify-between gap-1 text-[10px] text-line/60 pb-1 border-b border-line/10">
                                 <span className="font-bold text-ink">
-                                  {m.stage === "ko" ? m.koRound || groupTag(m.groupName) : groupTag(m.groupName)}
+                                  {m.stage === "ko"
+                                    ? m.koRound || groupTag(m.groupName)
+                                    : !m.groupName || m.groupName.toLowerCase().includes("vòng tròn") || m.groupName === "rr"
+                                      ? `V${m.round}`
+                                      : groupTag(m.groupName)}
                                 </span>
                               </div>
                               <div className="mt-1 flex items-center justify-between gap-1 text-[11px]">
@@ -4284,15 +4534,82 @@ function ManagePage() {
       {/* MODAL TOÀN MÀN HÌNH XEM SƠ ĐỒ NHÁNH LOẠI TRỰC TIẾP */}
       {isFullscreenKo && (
         <div className="fixed inset-0 z-50 bg-background/95 backdrop-blur-md flex flex-col p-1 sm:p-4 overflow-hidden">
-          {/* Nút đóng nổi trên điện thoại (tối giản, không chiếm diện tích) */}
-          <button
-            type="button"
-            onClick={() => setIsFullscreenKo(false)}
-            className="sm:hidden fixed top-3 right-3 z-50 size-9 rounded-full bg-black/75 text-white flex items-center justify-center font-bold text-base shadow-xl backdrop-blur-xs cursor-pointer active:scale-95 transition"
-            title="Đóng toàn màn hình"
-          >
-            ✕
-          </button>
+          {/* Thanh điều khiển nổi trên điện thoại (tự tính toán fit 100%, xoay ngang, zoom, đóng) */}
+          <div className="sm:hidden fixed top-2 left-2 right-2 z-50 flex items-center justify-between gap-1.5 bg-card/95 backdrop-blur-md p-1.5 rounded-2xl border border-line/20 shadow-xl">
+            <div className="flex items-center gap-1 overflow-x-auto">
+              {/* Nút Xoay ngang / Đứng */}
+              <button
+                type="button"
+                onClick={() => {
+                  const nextRotate = !koRotate;
+                  setKoRotate(nextRotate);
+                  setKoZoom(calculateOptimalKoScale(nextRotate));
+                }}
+                className={`px-2 py-1 rounded-xl text-[11px] font-bold border transition shrink-0 cursor-pointer ${
+                  koRotate ? "bg-[#0a3320] text-white border-[#0a3320]" : "bg-paper text-ink border-line/25"
+                }`}
+                title="Xoay ngang màn hình để xem trọn nhánh đấu"
+              >
+                {koRotate ? "🔄 Đứng" : "🔄 Xoay ngang"}
+              </button>
+
+              {/* Nút Fit tự động */}
+              <button
+                type="button"
+                onClick={() => {
+                  setKoZoom(calculateOptimalKoScale(koRotate));
+                  toast.success("Đã căn vừa toàn bộ nhánh đấu!");
+                }}
+                className="px-2 py-1 rounded-xl text-[11px] font-bold bg-[#0a3320] text-white border border-[#0a3320] shadow-2xs shrink-0 cursor-pointer"
+                title="Tự động tính toán để thấy toàn bộ nhánh đấu trong 1 màn hình"
+              >
+                📐 Fit 100%
+              </button>
+
+              {/* Thu phóng */}
+              <div className="flex items-center gap-0.5 bg-paper px-1.5 py-0.5 rounded-lg border border-line/20 text-xs shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setKoZoom((z) => Math.max(0.15, Number((z - 0.08).toFixed(2))))}
+                  className="size-5 rounded bg-line/10 flex items-center justify-center font-bold text-xs cursor-pointer"
+                >
+                  -
+                </button>
+                <span className="w-8 text-center font-mono font-bold text-[10px] text-accent">
+                  {Math.round(koZoom * 100)}%
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setKoZoom((z) => Math.min(2.0, Number((z + 0.08).toFixed(2))))}
+                  className="size-5 rounded bg-line/10 flex items-center justify-center font-bold text-xs cursor-pointer"
+                >
+                  +
+                </button>
+              </div>
+
+              {/* Lựa chọn 2 nhánh / 1 nhánh */}
+              <button
+                type="button"
+                onClick={() => {
+                  setKoLayout((prev) => (prev === "two_sided" ? "single" : "two_sided"));
+                  setTimeout(() => setKoZoom(calculateOptimalKoScale(koRotate)), 50);
+                }}
+                className="px-1.5 py-1 rounded-lg text-[10px] font-bold bg-secondary text-ink border border-line/20 shrink-0 cursor-pointer"
+              >
+                {koLayout === "two_sided" ? "↔️ 2 bên" : "➡️ 1 nhánh"}
+              </button>
+            </div>
+
+            {/* Nút Đóng */}
+            <button
+              type="button"
+              onClick={() => setIsFullscreenKo(false)}
+              className="size-7 rounded-full bg-black/80 hover:bg-black text-white flex items-center justify-center font-bold text-xs shadow-md shrink-0 cursor-pointer ml-1"
+              title="Đóng toàn màn hình"
+            >
+              ✕
+            </button>
+          </div>
 
           {/* Thanh công cụ điều khiển: chỉ hiển thị trên máy tính/tablet */}
           <div className="hidden sm:flex flex-wrap items-center justify-between gap-3 border-b border-line/15 pb-3 px-2">
@@ -4304,7 +4621,10 @@ function ManagePage() {
               <div className="flex items-center gap-1 rounded-lg bg-card p-0.5 ring-1 ring-line/20 text-xs">
                 <button
                   type="button"
-                  onClick={() => setKoLayout("two_sided")}
+                  onClick={() => {
+                    setKoLayout("two_sided");
+                    setTimeout(() => setKoZoom(calculateOptimalKoScale(koRotate)), 50);
+                  }}
                   className={`px-2.5 py-1 rounded-md font-bold transition cursor-pointer ${
                     koLayout === "two_sided"
                       ? "bg-accent text-accent-foreground shadow-2xs"
@@ -4316,7 +4636,10 @@ function ManagePage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setKoLayout("single")}
+                  onClick={() => {
+                    setKoLayout("single");
+                    setTimeout(() => setKoZoom(calculateOptimalKoScale(koRotate)), 50);
+                  }}
                   className={`px-2.5 py-1 rounded-md font-bold transition cursor-pointer ${
                     koLayout === "single"
                       ? "bg-accent text-accent-foreground shadow-2xs"
@@ -4330,12 +4653,25 @@ function ManagePage() {
             </div>
 
             <div className="flex items-center gap-2">
+              {/* Nút Fit tự động */}
+              <button
+                type="button"
+                onClick={() => {
+                  setKoZoom(calculateOptimalKoScale(koRotate));
+                  toast.success("Đã căn vừa sơ đồ nhánh đấu!");
+                }}
+                className="btn-accent text-xs !py-1 px-2.5 font-bold cursor-pointer"
+                title="Tự động tính toán để thấy toàn bộ nhánh đấu trong 1 màn hình"
+              >
+                📐 Fit vừa màn hình
+              </button>
+
               {/* Thu phóng */}
               <div className="flex items-center gap-1 bg-card px-2.5 py-1 rounded-lg ring-1 ring-line/20 text-xs font-medium">
                 <span className="text-line/60">Thu phóng:</span>
                 <button
                   type="button"
-                  onClick={() => setKoZoom((z) => Math.max(0.3, Number((z - 0.1).toFixed(1))))}
+                  onClick={() => setKoZoom((z) => Math.max(0.15, Number((z - 0.1).toFixed(2))))}
                   className="size-6 flex items-center justify-center rounded bg-line/10 hover:bg-line/20 font-bold cursor-pointer"
                   title="Thu nhỏ"
                 >
@@ -4344,7 +4680,7 @@ function ManagePage() {
                 <span className="w-12 text-center font-mono font-bold text-accent">{Math.round(koZoom * 100)}%</span>
                 <button
                   type="button"
-                  onClick={() => setKoZoom((z) => Math.min(2.0, Number((z + 0.1).toFixed(1))))}
+                  onClick={() => setKoZoom((z) => Math.min(2.0, Number((z + 0.1).toFixed(2))))}
                   className="size-6 flex items-center justify-center rounded bg-line/10 hover:bg-line/20 font-bold cursor-pointer"
                   title="Phóng to"
                 >
@@ -4384,16 +4720,452 @@ function ManagePage() {
             </div>
           </div>
 
-          {/* Vùng hiển thị toàn màn hình: trên mobile tràn viền và tự động thích ứng */}
-          <div className="flex-1 overflow-auto p-1 sm:p-6 flex items-start justify-center touch-pan-x touch-pan-y">
+          {/* Vùng hiển thị toàn màn hình: trên mobile tràn viền và tự động thích ứng với xoay ngang */}
+          <div className="flex-1 overflow-auto p-1 sm:p-6 flex items-center justify-center touch-pan-x touch-pan-y relative select-none">
             <div
               style={{
-                transform: `scale(${koZoom})`,
-                transformOrigin: "top center",
-                transition: "transform 0.1s ease-out",
+                transform: koRotate
+                  ? `rotate(90deg) scale(${koZoom})`
+                  : `scale(${koZoom})`,
+                transformOrigin: "center center",
+                transition: "transform 0.15s ease-out",
               }}
+              className="shrink-0"
             >
               {renderKoBracketTree()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL TOÀN MÀN HÌNH TIMELINE SÂN */}
+      {isFullscreenTimeline && (
+        <div className="fixed inset-0 z-50 bg-paper flex flex-col overflow-hidden">
+          {/* Header điều khiển nổi / thanh công cụ */}
+          <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-card border-b border-line/15 z-30 shadow-xs shrink-0">
+            <div className="flex items-center gap-2">
+              <span className="font-head text-xs sm:text-sm font-bold text-ink flex items-center gap-1.5">
+                📅 Toàn màn hình Timeline ({ev.name})
+              </span>
+              <span className="text-[11px] text-line/60 hidden sm:inline">
+                {state.courts.length} sân · {slotIdxs.length} khung giờ
+              </span>
+            </div>
+
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <button
+                type="button"
+                onClick={handleFitTimelineScreen}
+                className="rounded-lg bg-[#0a3320] text-white px-3 py-1.5 text-xs font-bold shrink-0 cursor-pointer shadow-2xs hover:bg-[#0a3320]/90"
+                title="Tự động căn chỉnh độ rộng cột và chiều cao sân để vừa khít màn hình"
+              >
+                📐 Fit vừa màn hình
+              </button>
+
+              {/* Zoom ngang */}
+              <div className="flex items-center gap-1 bg-paper px-2 py-0.5 rounded-lg border border-line/20 text-xs">
+                <span className="text-[10px] text-line/60 hidden sm:inline">Zoom ngang:</span>
+                <button
+                  type="button"
+                  onClick={() => setColWidth((w) => Math.max(25, w - 8))}
+                  className="size-5 rounded bg-line/10 hover:bg-line/20 flex items-center justify-center font-bold text-xs cursor-pointer"
+                  title="Thu nhỏ cột giờ"
+                >
+                  -
+                </button>
+                <input
+                  type="range"
+                  min="25"
+                  max="350"
+                  step="2"
+                  value={colWidth}
+                  onChange={(e) => setColWidth(Number(e.target.value))}
+                  className="h-1.5 w-16 sm:w-20 cursor-pointer accent-accent"
+                />
+                <button
+                  type="button"
+                  onClick={() => setColWidth((w) => Math.min(350, w + 8))}
+                  className="size-5 rounded bg-line/10 hover:bg-line/20 flex items-center justify-center font-bold text-xs cursor-pointer"
+                  title="Phóng to cột giờ"
+                >
+                  +
+                </button>
+                <span className="text-[10px] font-mono text-line/50 w-7 text-right">{colWidth}px</span>
+              </div>
+
+              {/* Zoom dọc */}
+              <div className="flex items-center gap-1 bg-paper px-2 py-0.5 rounded-lg border border-line/20 text-xs">
+                <span className="text-[10px] text-line/60 hidden sm:inline">Zoom dọc:</span>
+                <button
+                  type="button"
+                  onClick={() => setRowHeight((h) => Math.max(35, h - 8))}
+                  className="size-5 rounded bg-line/10 hover:bg-line/20 flex items-center justify-center font-bold text-xs cursor-pointer"
+                  title="Thu nhỏ hàng sân"
+                >
+                  -
+                </button>
+                <input
+                  type="range"
+                  min="35"
+                  max="250"
+                  step="2"
+                  value={rowHeight}
+                  onChange={(e) => setRowHeight(Number(e.target.value))}
+                  className="h-1.5 w-14 sm:w-20 cursor-pointer accent-accent"
+                />
+                <button
+                  type="button"
+                  onClick={() => setRowHeight((h) => Math.min(250, h + 8))}
+                  className="size-5 rounded bg-line/10 hover:bg-line/20 flex items-center justify-center font-bold text-xs cursor-pointer"
+                  title="Phóng to hàng sân"
+                >
+                  +
+                </button>
+                <span className="text-[10px] font-mono text-line/50 w-7 text-right">{rowHeight}px</span>
+              </div>
+
+              {/* Nút Đóng */}
+              <button
+                type="button"
+                onClick={() => setIsFullscreenTimeline(false)}
+                className="rounded-lg bg-black/80 hover:bg-black text-white px-3 py-1.5 text-xs font-bold cursor-pointer transition shadow-sm ml-1"
+              >
+                ✕ Đóng (Esc)
+              </button>
+            </div>
+          </div>
+
+          {/* Vùng hiển thị toàn màn hình */}
+          <div className="flex-1 overflow-auto p-1 sm:p-2 relative bg-card/30 flex flex-col">
+            {renderTimelineGrid()}
+          </div>
+        </div>
+      )}
+
+      {/* MODAL XUẤT ẢNH / PDF SƠ ĐỒ THI ĐẤU VÒNG BẢNG */}
+      {isExportGroupModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex flex-col p-2 sm:p-4 overflow-hidden animate-in fade-in duration-200">
+          {/* Header thanh công cụ của modal */}
+          <div className="flex flex-wrap items-center justify-between gap-3 bg-card p-3 rounded-2xl border border-line/20 shadow-xl z-20 shrink-0">
+            <div className="flex items-center gap-3">
+              <div className="grid size-9 place-items-center rounded-lg bg-accent">
+                <span className="font-head text-base font-bold text-accent-foreground">📸</span>
+              </div>
+              <div>
+                <h2 className="font-head text-sm sm:text-base font-bold text-ink tracking-tight">
+                  Xuất ảnh / PDF Sơ đồ thi đấu
+                </h2>
+                <p className="text-[11px] text-line/60">
+                  {state.name || "Giải đấu"} • {ev.name} ({ev.bracket === "rr" ? "Vòng tròn" : "Vòng bảng"}) • {rounds.length} vòng đấu
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* Bố cục chia hàng khi có nhiều vòng */}
+              {rounds.length > 4 && (
+                <div className="flex items-center gap-1 bg-paper p-1 rounded-lg border border-line/20 text-xs select-none">
+                  <span className="text-[11px] text-line/60 font-semibold px-1.5">Bố cục:</span>
+                  <button
+                    type="button"
+                    onClick={() => setSplitExportRows(true)}
+                    className={`px-2.5 py-1 rounded-md text-xs font-bold transition cursor-pointer ${
+                      splitExportRows
+                        ? "bg-[#0a3320] text-white shadow-xs"
+                        : "text-line/70 hover:text-ink hover:bg-card"
+                    }`}
+                  >
+                    Chia 2 hàng ({Math.ceil(rounds.length / 2)} vòng/hàng)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSplitExportRows(false)}
+                    className={`px-2.5 py-1 rounded-md text-xs font-bold transition cursor-pointer ${
+                      !splitExportRows
+                        ? "bg-[#0a3320] text-white shadow-xs"
+                        : "text-line/70 hover:text-ink hover:bg-card"
+                    }`}
+                  >
+                    1 hàng ngang
+                  </button>
+                </div>
+              )}
+
+              {/* Toggle điểm số */}
+              <label className="flex items-center gap-1.5 text-xs font-semibold text-line/80 bg-paper px-2.5 py-1.5 rounded-lg border border-line/20 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={includeScoresInExport}
+                  onChange={(e) => setIncludeScoresInExport(e.target.checked)}
+                  className="rounded border-line/30 accent-accent"
+                />
+                <span>Kèm điểm số</span>
+              </label>
+
+              {/* Nút Tải Ảnh PNG */}
+              <button
+                type="button"
+                disabled={isExportingImage || isExportingPdf}
+                onClick={handleDownloadGroupScheduleImage}
+                className="btn-accent text-xs font-bold !py-1.5 px-3 flex items-center gap-1.5 shadow-sm cursor-pointer disabled:opacity-50"
+              >
+                {isExportingImage ? "⏳ Đang tạo ảnh..." : "🖼️ Tải file Ảnh (PNG)"}
+              </button>
+
+              {/* Nút Tải PDF */}
+              <button
+                type="button"
+                disabled={isExportingImage || isExportingPdf}
+                onClick={handleDownloadGroupSchedulePdf}
+                className="rounded-lg bg-[#0a3320] text-white hover:bg-[#0a3320]/90 px-3 py-1.5 text-xs font-bold flex items-center gap-1.5 shadow-sm cursor-pointer disabled:opacity-50 transition"
+              >
+                {isExportingPdf ? "⏳ Đang tạo PDF..." : "📄 Tải file PDF"}
+              </button>
+
+              {/* Nút In */}
+              <button
+                type="button"
+                onClick={() => window.print()}
+                className="btn-ghost text-xs font-bold !py-1.5 px-2.5 flex items-center gap-1 cursor-pointer"
+                title="In trực tiếp sơ đồ thi đấu"
+              >
+                🖨️ In
+              </button>
+
+              {/* Nút Đóng */}
+              <button
+                type="button"
+                onClick={() => setIsExportGroupModalOpen(false)}
+                className="rounded-lg bg-black/80 hover:bg-black text-white px-3 py-1.5 text-xs font-bold cursor-pointer transition shadow-sm ml-1"
+              >
+                ✕ Đóng
+              </button>
+            </div>
+          </div>
+
+          {/* Vùng xem trước sơ đồ (preview & xuất file) */}
+          <div className="flex-1 overflow-auto p-2 sm:p-6 mt-2 flex items-start justify-center">
+            <div
+              ref={exportGroupScheduleRef}
+              data-export-schedule="true"
+              className="p-6 sm:p-8 rounded-2xl shadow-2xl min-w-max"
+              style={{ backgroundColor: "#fbfaf6", color: "#111827", border: "1px solid #e5e7eb" }}
+            >
+              {/* Header của bản in/ảnh */}
+              <div className="pb-4 mb-6" style={{ borderBottom: "2px solid #e5e7eb" }}>
+                <div className="flex items-center justify-between gap-6">
+                  <div className="flex items-center gap-3">
+                    <div className="grid size-11 place-items-center rounded-xl bg-accent">
+                      <span className="font-head text-xl font-bold leading-none text-accent-foreground">
+                        P
+                      </span>
+                    </div>
+                    <div>
+                      <div className="font-['Verdana',sans-serif] italic text-base font-bold uppercase tracking-tight text-[#0a3320]">
+                        NẢY COURT
+                      </div>
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.18em]" style={{ color: "#6b7280" }}>
+                        HỆ THỐNG ĐIỀU HÀNH GIẢI PICKLEBALL
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="text-right">
+                    <h1 className="font-head text-xl sm:text-2xl font-black uppercase tracking-tight text-[#0a3320]">
+                      {state.name || "LỊCH THI ĐẤU PICKLEBALL"}
+                    </h1>
+                    <p className="text-xs font-bold text-accent mt-0.5">
+                      {ev.name} • {ev.bracket === "rr" ? "VÒNG TRÒN TÍNH ĐIỂM" : "VÒNG BẢNG THI ĐẤU"}
+                    </p>
+                    <div className="text-[11px] mt-1 flex items-center justify-end gap-3" style={{ color: "#6b7280" }}>
+                      {state.date && <span>📅 Ngày: <strong style={{ color: "#111827" }}>{state.date}</strong></span>}
+                      <span>Sân: <strong style={{ color: "#111827" }}>{state.courts.length} sân</strong></span>
+                      <span>👥 Đội tham gia: <strong style={{ color: "#111827" }}>{entries.length}</strong></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Lưới các cột vòng thi đấu (hỗ trợ chia 2 hàng khi có nhiều vòng đấu) */}
+              {rounds.length === 0 ? (
+                <div className="p-12 text-center text-sm" style={{ color: "#6b7280" }}>
+                  Chưa có lịch thi đấu để hiển thị.
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  {exportRoundRows.map((rowRounds, rowIdx) => (
+                    <div key={rowIdx}>
+                      {exportRoundRows.length > 1 && (
+                        <div
+                          className="text-xs font-bold uppercase tracking-wider mb-2.5 flex items-center gap-2 select-none"
+                          style={{ color: "#4b5563" }}
+                        >
+                          <span className="h-px bg-gray-300/80 flex-1" />
+                          <span
+                            className="px-2.5 py-0.5 rounded-md text-[11px] font-bold tracking-wide"
+                            style={{
+                              backgroundColor: "#f3f4f6",
+                              color: "#374151",
+                              border: "1px solid #e5e7eb"
+                            }}
+                          >
+                            Phần {rowIdx + 1} • Vòng {rowRounds[0]} — Vòng {rowRounds[rowRounds.length - 1]}
+                          </span>
+                          <span className="h-px bg-gray-300/80 flex-1" />
+                        </div>
+                      )}
+                      <div className="flex gap-4 items-start">
+                        {rowRounds.map((r) => {
+                          const roundMatchesList = groupMatches
+                            .filter((m) => m.round === r)
+                            .sort((a, b) => a.groupName.localeCompare(b.groupName));
+
+                          return (
+                            <div key={r} className="w-[280px] shrink-0">
+                              {/* Tiêu đề vòng trong ô màu cam với chữ xám nhỏ số lượng trận */}
+                              <div
+                                className="rounded-xl h-[42px] flex items-center justify-center gap-1.5 text-center font-head text-sm font-bold uppercase tracking-wider shadow-xs px-2"
+                                style={{
+                                  fontFamily: "'Space Grotesk', sans-serif",
+                                  backgroundColor: "#ffedd5",
+                                  color: "#c2410c",
+                                  border: "1px solid #fed7aa"
+                                }}
+                              >
+                                <span>Vòng {r}</span>
+                                <span
+                                  className="text-xs font-normal lowercase tracking-normal"
+                                  style={{ color: "#78716c" }}
+                                >
+                                  ({roundMatchesList.length} trận)
+                                </span>
+                              </div>
+
+                              {/* Danh sách thẻ trận sạch sẽ đúng như yêu cầu */}
+                              <div className="mt-3.5 space-y-3">
+                                {roundMatchesList.map((m) => {
+                                  const entryA = getMatchEntryA(m, state.entries);
+                                  const entryB = getMatchEntryB(m, state.entries);
+                                  const nameA = resolveSideLabel(m, "aId");
+                                  const nameB = resolveSideLabel(m, "bId");
+                                  const c = groupColor(m.groupName);
+                                  const isRoundRobin =
+                                    !m.groupName ||
+                                    m.groupName.toLowerCase().includes("vòng tròn") ||
+                                    m.groupName === "rr" ||
+                                    m.groupName.toLowerCase().includes("toàn thể");
+                                  const displayTag = isRoundRobin ? `V${m.round}` : `${groupTag(m.groupName)} · V${m.round}`;
+                                  const aWin = m.scoreA !== null && m.scoreB !== null && m.scoreA > m.scoreB;
+                                  const bWin = m.scoreA !== null && m.scoreB !== null && m.scoreB > m.scoreA;
+
+                                  return (
+                                    <div
+                                      key={m.id}
+                                      className="rounded-xl p-2.5 flex flex-col justify-between text-left shadow-2xs"
+                                      style={{
+                                        backgroundColor: c.bg,
+                                        border: "1px solid #d1d5db",
+                                        color: "#111827"
+                                      }}
+                                    >
+                                      {/* Ký hiệu bảng, vòng và sân ở góc trên bên trái - hoàn toàn KHÔNG có icon ở chữ sân */}
+                                      <div className="flex items-center justify-between gap-1">
+                                        <div className="flex items-center gap-1.5 min-w-0">
+                                          <span
+                                            className="rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide shrink-0 shadow-2xs"
+                                            style={{
+                                              backgroundColor: c.dot,
+                                              color: "#ffffff",
+                                              fontFamily: "'Space Grotesk', sans-serif"
+                                            }}
+                                          >
+                                            {displayTag}
+                                          </span>
+                                          {m.court && (
+                                            <span
+                                              className="text-[10px] font-bold px-1.5 py-0.5 rounded shadow-2xs truncate"
+                                              style={{
+                                                backgroundColor: "#ffffff",
+                                                color: "#0a3320",
+                                                border: "1px solid rgba(0,0,0,0.12)"
+                                              }}
+                                            >
+                                              {m.court}
+                                            </span>
+                                          )}
+                                        </div>
+                                      </div>
+
+                                      {/* Tên các cặp thi đấu (và ô điểm nếu có chọn kèm điểm số) */}
+                                      <div className="mt-2 space-y-1.5">
+                                        <div className="flex items-center justify-between gap-2">
+                                          <div className="flex items-center gap-1 min-w-0 flex-1 text-xs font-semibold" style={{ color: "#111827" }}>
+                                            <PlayerNameDisplay
+                                              entry={entryA}
+                                              fallback={nameA}
+                                              activePlayerNames={activePlayerNames}
+                                              isWinning={includeScoresInExport && aWin}
+                                              truncate={false}
+                                            />
+                                          </div>
+                                          {includeScoresInExport && (
+                                            <div
+                                              className="w-9 px-1 py-0.5 text-xs rounded-md text-center font-bold shrink-0"
+                                              style={{
+                                                fontFamily: "'Space Grotesk', sans-serif",
+                                                backgroundColor: aWin ? "#ffedd5" : "#ffffff",
+                                                color: aWin ? "#c2410c" : "#111827",
+                                                border: aWin ? "1.5px solid #ea580c" : "1px solid #d1d5db"
+                                              }}
+                                            >
+                                              {m.scoreA !== null ? m.scoreA : "—"}
+                                            </div>
+                                          )}
+                                        </div>
+
+                                        <div className="flex items-center justify-between gap-2">
+                                          <div className="flex items-center gap-1 min-w-0 flex-1 text-xs font-semibold" style={{ color: "#111827" }}>
+                                            <PlayerNameDisplay
+                                              entry={entryB}
+                                              fallback={nameB}
+                                              activePlayerNames={activePlayerNames}
+                                              isWinning={includeScoresInExport && bWin}
+                                              truncate={false}
+                                            />
+                                          </div>
+                                          {includeScoresInExport && (
+                                            <div
+                                              className="w-9 px-1 py-0.5 text-xs rounded-md text-center font-bold shrink-0"
+                                              style={{
+                                                fontFamily: "'Space Grotesk', sans-serif",
+                                                backgroundColor: bWin ? "#ffedd5" : "#ffffff",
+                                                color: bWin ? "#c2410c" : "#111827",
+                                                border: bWin ? "1.5px solid #ea580c" : "1px solid #d1d5db"
+                                              }}
+                                            >
+                                              {m.scoreB !== null ? m.scoreB : "—"}
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Chân trang ghi chú */}
+              <div className="mt-8 pt-3 flex items-center justify-between text-[10px]" style={{ borderTop: "1px solid #e5e7eb", color: "#6b7280" }}>
+                <span>Nảy Court • Quản lý & Vận hành giải Pickleball chuyên nghiệp</span>
+                <span>https://naycourt.ai.studio</span>
+              </div>
             </div>
           </div>
         </div>
@@ -4417,31 +5189,11 @@ function ManagePage() {
               <p className="eyebrow">Danh sách sân ({state.courts.length})</p>
               <div className="mt-2.5 max-h-44 space-y-2 overflow-y-auto pr-1">
                 {state.courts.map((court) => {
-                  const currentIcon = state.courtIcons?.[court] || "🎾";
                   return (
                     <div
                       key={court}
                       className="flex items-center gap-2 rounded-lg bg-paper p-2 ring-1 ring-line/10"
                     >
-                      <select
-                        className="rounded bg-card px-1.5 py-1 text-base outline-none ring-1 ring-line/20"
-                        value={currentIcon}
-                        onChange={(e) => {
-                          update({
-                            courtIcons: {
-                              ...(state.courtIcons || {}),
-                              [court]: e.target.value,
-                            },
-                          });
-                        }}
-                      >
-                        {["🎾", "🏓", "🏟️", "⚡", "🥇", "🎯", "🎪", "🏆", "🌟"].map((ic) => (
-                          <option key={ic} value={ic}>
-                            {ic}
-                          </option>
-                        ))}
-                      </select>
-
                       <input
                         className="field flex-1 !py-1 text-xs"
                         value={court}

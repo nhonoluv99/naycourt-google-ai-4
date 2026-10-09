@@ -74,6 +74,36 @@ export const CITY_NAMES: Record<string, string> = {
  * Điểm DUPR cập nhật chuẩn xác theo hệ thống DUPR quốc tế
  */
 export const OFFICIAL_DUPR_PLAYERS: RatedPlayer[] = [
+  // --- VĐV DUPR Việt Nam (Đồng bộ theo dashboard.dupr.com) ---
+  {
+    id: "dupr-dat-luc-wnx2jk",
+    name: "Đạt Lục",
+    gender: "nam",
+    club: "Pickleball Hồ Chí Minh",
+    province: "Quận 10, Thành phố Hồ Chí Minh, VN",
+    duprDoubles: 3.669,
+    duprSingles: 0,
+    pvnaDoubles: 0,
+    pvnaSingles: 0,
+    duprId: "WNX2JK",
+    isDuprPlayer: true,
+    isPvnaPlayer: false,
+  },
+  {
+    id: "dupr-dat-luc-v4qmj6",
+    name: "Đạt Lục",
+    gender: "nam",
+    club: "Pickleball Hồ Chí Minh",
+    province: "District 6, Ho Chi Minh City, VN",
+    duprDoubles: 3.500,
+    duprSingles: 0,
+    pvnaDoubles: 0,
+    pvnaSingles: 0,
+    duprId: "V4QMJ6",
+    isDuprPlayer: true,
+    isPvnaPlayer: false,
+  },
+
   // --- Nam Top DUPR (Đôi & Đơn) - Đồng bộ theo dashboard.dupr.com & dupr.com/rankings ---
   {
     id: "dupr-ben-johns",

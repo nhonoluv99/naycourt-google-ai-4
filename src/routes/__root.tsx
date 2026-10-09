@@ -257,7 +257,7 @@ function Header({ isWide }: { isWide: boolean }) {
               </button>
 
               {profileOpen && (
-                <div className="absolute right-0 top-full mt-2 w-52 rounded-2xl border border-line/15 bg-card p-2 shadow-xl z-50 animate-in fade-in slide-in-from-top-2 duration-150">
+                <div className="absolute left-0 sm:left-auto sm:right-0 top-full mt-2 w-52 max-w-[calc(100vw-24px)] rounded-2xl border border-line/15 bg-card p-2 shadow-xl z-50 animate-in fade-in slide-in-from-top-2 duration-150">
                   <div className="flex flex-col gap-1">
                     <button
                       type="button"

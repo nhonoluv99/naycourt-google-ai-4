@@ -167,7 +167,7 @@ const initialState: TournamentState = {
   startTime: "08:00",
   slotMinutes: 30,
   courts: ["Sân 1", "Sân 2"],
-  courtIcons: { "Sân 1": "🎾", "Sân 2": "🏓" },
+  courtIcons: {},
   referees: [],
   events: [],
   entries: [],
@@ -2386,14 +2386,14 @@ export const BRACKET_LABEL: Record<BracketType, string> = {
 /* ---------------- Màu bảng & timeline ---------------- */
 
 const GROUP_COLORS = [
-  { bg: "oklch(0.955 0.03 25)", text: "oklch(0.5 0.19 25)", dot: "oklch(0.6 0.2 25)" },
-  { bg: "oklch(0.95 0.035 250)", text: "oklch(0.48 0.16 255)", dot: "oklch(0.58 0.17 255)" },
-  { bg: "oklch(0.95 0.05 155)", text: "oklch(0.45 0.13 155)", dot: "oklch(0.56 0.14 155)" },
-  { bg: "oklch(0.955 0.055 70)", text: "oklch(0.52 0.15 60)", dot: "oklch(0.66 0.17 55)" },
-  { bg: "oklch(0.95 0.04 300)", text: "oklch(0.48 0.15 300)", dot: "oklch(0.58 0.16 300)" },
-  { bg: "oklch(0.95 0.05 195)", text: "oklch(0.45 0.12 200)", dot: "oklch(0.56 0.13 200)" },
-  { bg: "oklch(0.95 0.05 110)", text: "oklch(0.46 0.13 115)", dot: "oklch(0.58 0.14 115)" },
-  { bg: "oklch(0.95 0.04 340)", text: "oklch(0.5 0.16 345)", dot: "oklch(0.6 0.17 345)" },
+  { bg: "#fee2e2", text: "#991b1b", dot: "#dc2626" },
+  { bg: "#eff6ff", text: "#1e40af", dot: "#2563eb" },
+  { bg: "#f0fdf4", text: "#166534", dot: "#16a34a" },
+  { bg: "#fffbeb", text: "#92400e", dot: "#d97706" },
+  { bg: "#faf5ff", text: "#6b21a8", dot: "#9333ea" },
+  { bg: "#ecfeff", text: "#155e75", dot: "#0891b2" },
+  { bg: "#f7fee7", text: "#3f6212", dot: "#65a30d" },
+  { bg: "#fdf2f8", text: "#9d174d", dot: "#db2777" },
 ];
 
 /** Màu cố định cho từng bảng / vòng, để nhìn lịch dễ phân biệt. */
