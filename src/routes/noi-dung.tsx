@@ -160,6 +160,7 @@ function EventsPage() {
                   options={[
                     { id: "don", label: MODE_LABEL.don },
                     { id: "doi", label: MODE_LABEL.doi },
+                    { id: "dong_doi", label: MODE_LABEL.dong_doi },
                   ]}
                   onChange={(mode) => updateEvent(ev.id, { mode })}
                 />
@@ -182,6 +183,29 @@ function EventsPage() {
                   }
                 />
               </div>
+              {ev.mode === "dong_doi" && (
+                <div className="sm:col-span-2 rounded-xl border-2 border-[#0a3320]/20 bg-gradient-to-r from-emerald-50/70 to-teal-50/50 p-4 text-xs leading-relaxed text-line/90 shadow-2xs">
+                  <div className="flex items-center gap-2 font-head font-bold text-sm text-[#0a3320] mb-2">
+                    <span className="text-base">🏆</span>
+                    <span>Thể thức Đồng đội Pickleball (Chuẩn MLP / PPA Tour):</span>
+                  </div>
+                  <ul className="space-y-1.5 list-disc list-inside text-[12px] text-ink/80">
+                    <li><strong>Quy mô đội:</strong> Mỗi đội gồm <strong>4 VĐV</strong> (tiêu chuẩn 2 Nam và 2 Nữ).</li>
+                    <li>
+                      <strong>Cấu trúc 1 lượt đấu (Tie) giữa 2 Đội:</strong> Gồm 4 trận đôi chính:
+                      <span className="block pl-4 mt-0.5 text-ink/70">
+                        • Trận 1: <strong>Đôi Nữ</strong> (Women's Doubles)<br />
+                        • Trận 2: <strong>Đôi Nam</strong> (Men's Doubles)<br />
+                        • Trận 3: <strong>Đôi Nam Nữ 1</strong> (Mixed Doubles 1)<br />
+                        • Trận 4: <strong>Đôi Nam Nữ 2</strong> (Mixed Doubles 2)
+                      </span>
+                    </li>
+                    <li>
+                      <strong>Loạt Tiebreaker — Dreambreaker™:</strong> Nếu hai đội hòa <strong>2 — 2</strong> sau 4 trận đôi, trận <strong>Dreambreaker™</strong> (Đơn luân phiên 21 điểm, mỗi VĐV đánh 4 điểm rồi xoay tua) sẽ được kích hoạt để phân định thắng bại chung cuộc (3 - 2)!
+                    </li>
+                  </ul>
+                </div>
+              )}
               {ev.mode === "doi" ? (
                 <div className="sm:col-span-2">
                   <Lbl>Cơ chế ghép đội</Lbl>

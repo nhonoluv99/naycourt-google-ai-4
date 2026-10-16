@@ -140,7 +140,8 @@ function PlayersPage() {
     );
   }
 
-  const slots = ev.mode === "don" ? 1 : ev.pairMode === "fixed" ? 2 : 1;
+  const isTeamMode = ev.mode === "dong_doi";
+  const slots = isTeamMode ? 4 : ev.mode === "don" ? 1 : ev.pairMode === "fixed" ? 2 : 1;
 
   // State cho Tra cứu DUPR / PVNA
   const [lookupModalOpen, setLookupModalOpen] = useState(false);
@@ -174,8 +175,18 @@ function PlayersPage() {
         {
           id: uid(),
           eventId: ev.id,
+          teamName: isTeamMode ? `Đội ${entries.length + 1}` : undefined,
           players:
-            slots === 2 ? [newSlot, { name: "", rating: null, paid: false }] : [newSlot],
+            slots === 4
+              ? [
+                  newSlot,
+                  { name: "", rating: null, paid: false },
+                  { name: "", rating: null, paid: false },
+                  { name: "", rating: null, paid: false },
+                ]
+              : slots === 2
+              ? [newSlot, { name: "", rating: null, paid: false }]
+              : [newSlot],
           paid: false,
         },
       ]);
@@ -195,11 +206,12 @@ function PlayersPage() {
         {
           id: uid(),
           eventId: ev.id,
+          teamName: isTeamMode ? `Đội ${entries.length + 1}` : undefined,
           players: Array.from({ length: slots }, () => ({ name: "", rating: null })),
           paid: false,
         },
       ]);
-    }, "Thêm VĐV mới vào danh sách");
+    }, isTeamMode ? "Thêm Đội mới vào danh sách" : "Thêm VĐV mới vào danh sách");
   };
 
   const patchEntry = (id: string, patch: Partial<Entry>) =>
@@ -531,7 +543,7 @@ function PlayersPage() {
         <div className="lg:col-span-7">
           <div className="flex flex-wrap items-center gap-2">
             <button className="btn-accent" onClick={addEntry}>
-              + Thêm {ev.mode === "don" ? "VĐV" : slots === 2 ? "đội" : "VĐV"}
+              + Thêm {isTeamMode ? "Đội mới (4 VĐV)" : ev.mode === "don" ? "VĐV" : slots === 2 ? "đội" : "VĐV"}
             </button>
             <button
               type="button"
@@ -617,9 +629,17 @@ function PlayersPage() {
               </p>
               <div className="overflow-x-auto rounded-lg border border-line/15 bg-card p-2 text-[11px]">
                 <p className="font-bold text-[#0a3320] mb-1">
-                  {slots === 2 ? "Format file nội dung Đôi cố định (2 cách):" : "Format file nội dung Đơn hoặc Đôi bốc thăm ngẫu nhiên:"}
+                  {isTeamMode
+                    ? "Format file nội dung Đồng đội (MLP 4 VĐV):"
+                    : slots === 2
+                    ? "Format file nội dung Đôi cố định (2 cách):"
+                    : "Format file nội dung Đơn hoặc Đôi bốc thăm ngẫu nhiên:"}
                 </p>
-                {slots === 2 ? (
+                {isTeamMode ? (
+                  <p className="text-line/70">
+                    Cột A: <code>STT</code>, Cột B: <code>Tên Đội</code>, Cột C: <code>Nam 1</code>, Cột D: <code>Nam 2</code>, Cột E: <code>Nữ 1</code>, Cột F: <code>Nữ 2</code>.
+                  </p>
+                ) : slots === 2 ? (
                   <ul className="list-disc pl-4 space-y-1 text-line/70">
                     <li>
                       <strong>Cách 1 (5 cột chuẩn):</strong> Cột A: <code>STT</code>, Cột B: <code>Tên VĐV 1</code>, Cột C: <code>Điểm trình 1</code>, Cột D: <code>Tên VĐV 2</code>, Cột E: <code>Điểm trình 2</code>.
@@ -648,13 +668,105 @@ function PlayersPage() {
           <div className="panel mt-4 divide-y divide-line/10 overflow-hidden">
             {entries.length === 0 ? (
               <p className="px-3.5 py-4 text-sm text-line/50">
-                Chưa có VĐV. Thêm tay hoặc import file CSV (cột: Tên, Điểm trình
-                {slots === 2 ? ", Tên 2, Điểm trình 2" : ""}).
+                {isTeamMode
+                  ? "Chưa có Đội nào. Bấm nút '+ Thêm Đội mới (4 VĐV)' ở trên để tạo đội."
+                  : `Chưa có VĐV. Thêm tay hoặc import file CSV (cột: Tên, Điểm trình${slots === 2 ? ", Tên 2, Điểm trình 2" : ""}).`}
               </p>
             ) : (
               entries.map((en, i) => {
                 const totalRating = en.players.reduce((sum, p) => sum + (p.rating ?? 0), 0);
-                return slots === 2 ? (
+                return slots === 4 ? (
+                  /* Thể thức Đồng đội (MLP Format) — Mỗi Đội gồm 4 VĐV */
+                  <div key={en.id} className="p-3 sm:p-4 border-b border-line/10 last:border-b-0 bg-card/60">
+                    <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 mb-2.5 border-b border-line/10">
+                      <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+                        <span className="font-head font-bold text-xs text-line/50 w-6">#{i + 1}</span>
+                        <div className="flex items-center gap-1.5 flex-1 max-w-sm">
+                          <span className="text-sm">🛡️</span>
+                          <input
+                            className="field font-bold text-xs sm:text-sm !py-1 !px-2 flex-1 bg-paper border border-line/20"
+                            placeholder={`Tên Đội (VD: Đội ${i + 1}, Team Hà Nội...)`}
+                            value={en.teamName ?? ""}
+                            onChange={(e) => patchEntry(en.id, { teamName: e.target.value })}
+                          />
+                        </div>
+                        <span className="text-[11px] font-semibold text-accent/90 bg-accent/10 px-2 py-0.5 rounded-md hidden sm:inline">
+                          MLP Team (4 VĐV)
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <div
+                          className="flex h-7 px-2.5 items-center justify-center rounded-lg border border-accent/40 bg-accent/10 text-xs font-bold text-accent tabular-nums"
+                          title="Điểm tổng của cả 4 VĐV trong Đội"
+                        >
+                          Tổng trình: {totalRating > 0 ? formatRating(Number(totalRating.toFixed(4))) : "—"}
+                        </div>
+                        <button
+                          type="button"
+                          className="text-line/40 hover:text-destructive p-1 cursor-pointer"
+                          onClick={() => removeEntry(en.id)}
+                          aria-label="Xoá đội"
+                          title="Xóa đội này"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {en.players.map((p, pi) => {
+                        const roleLabel = pi === 0 ? "👨 Nam 1" : pi === 1 ? "👨 Nam 2" : pi === 2 ? "👩 Nữ 1" : "👩 Nữ 2";
+                        return (
+                          <div key={pi} className="flex items-center gap-1.5 bg-paper p-1.5 rounded-lg border border-line/15">
+                            <input
+                              type="checkbox"
+                              title={`Đóng phí: ${p.name || roleLabel}`}
+                              className="size-3.5 shrink-0 rounded accent-[oklch(0.615_0.145_154.2)] cursor-pointer"
+                              checked={Boolean(p.paid)}
+                              onChange={(e) => patchPlayer(en.id, pi, { paid: e.target.checked })}
+                            />
+                            <span className="text-[11px] font-semibold text-line/70 shrink-0 min-w-[55px]">
+                              {roleLabel}:
+                            </span>
+                            <div className="group/slot relative flex-1 min-w-0">
+                              <input
+                                className="field w-full pr-6 !text-xs !py-1 !px-2"
+                                placeholder="Nhập tên VĐV"
+                                value={p.name}
+                                onChange={(e) => patchPlayer(en.id, pi, { name: e.target.value })}
+                              />
+                              <button
+                                type="button"
+                                tabIndex={-1}
+                                onClick={() => {
+                                  setTargetSlot({
+                                    entryId: en.id,
+                                    playerIdx: pi,
+                                    initialQuery: p.name,
+                                    slotLabel: `${p.name || roleLabel} (${en.teamName || `Đội ${i + 1}`})`,
+                                  });
+                                  setLookupModalOpen(true);
+                                }}
+                                className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 text-line/40 hover:text-line cursor-pointer"
+                                title="DURP/PVNA"
+                              >
+                                <svg className="size-3 stroke-line/40 hover:stroke-line/70" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                                  <circle cx="11" cy="11" r="7" />
+                                  <path d="m21 21-4.35-4.35" />
+                                </svg>
+                              </button>
+                            </div>
+                            <RatingInput
+                              value={p.rating}
+                              onChange={(rating) => patchPlayer(en.id, pi, { rating })}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : slots === 2 ? (
                   <div key={en.id} className="border-b border-line/10 last:border-b-0">
                     {/* Giao diện điện thoại: mỗi cặp VĐV là 1 card gọn gàng, không bị chồng chéo */}
                     <div className="sm:hidden p-3 space-y-2.5 bg-card">

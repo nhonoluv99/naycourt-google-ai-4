@@ -13,6 +13,7 @@ import {
   buildTimeline,
   computeIndividualStandings,
   computeStandings,
+  createDefaultMlpSubMatches,
   entryName,
   generateAlphabeticalKnockout,
   generateEmptyKnockout,
@@ -30,6 +31,7 @@ import {
   type Entry,
   type IndividualStandingRow,
   type Match,
+  type TeamSubMatch,
   type TEvent,
 } from "@/lib/tournament-store";
 
@@ -340,6 +342,19 @@ function PlayerNameDisplay({
   isMatchLive?: boolean;
   truncate?: boolean;
 }) {
+  if (entry && entry.teamName && entry.teamName.trim()) {
+    return (
+      <span
+        className={`${truncate ? "truncate" : "break-words leading-tight"} ${
+          isWinning ? "font-bold text-[#c2410c]" : "font-bold text-[#111827]"
+        }`}
+        style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+      >
+        🛡️ {entry.teamName.trim()}
+      </span>
+    );
+  }
+
   if (!entry || entry.players.length === 0) {
     const isLive = Boolean(isMatchLive) || activePlayerNames.has((fallback || "").toLowerCase());
     return (
@@ -349,7 +364,9 @@ function PlayerNameDisplay({
             ? "text-red-600 dark:text-red-400 font-semibold"
             : isWinning
               ? "font-bold text-[#e44c11]"
-              : "text-ink/85 font-medium"
+              : truncate
+                ? "text-ink/85 font-medium"
+                : "text-[#111827] font-bold"
         }`}
         style={{ fontFamily: "'Space Grotesk', sans-serif" }}
       >
@@ -371,14 +388,18 @@ function PlayerNameDisplay({
         const isLive = Boolean(isMatchLive) || activePlayerNames.has(pName.toLowerCase());
         return (
           <span key={idx} className={truncate ? "inline-flex items-center shrink-0" : "inline-flex items-center"}>
-            {idx > 0 && <span className="text-line/40 mx-1">/</span>}
+            {idx > 0 && (
+              <span className={truncate ? "text-line/40 mx-1" : "text-[#6b7280] font-bold mx-1"}>/</span>
+            )}
             <span
               className={`${
                 isLive
                   ? "text-red-600 dark:text-red-400 font-semibold"
                   : isWinning
                     ? "font-bold text-[#e44c11]"
-                    : "text-ink/85 font-medium"
+                    : truncate
+                      ? "text-ink/85 font-medium"
+                      : "text-[#111827] font-bold"
               }`}
               style={{ fontFamily: "'Space Grotesk', sans-serif" }}
               title={isLive ? `${pName} đang thi đấu!` : undefined}
@@ -389,6 +410,309 @@ function PlayerNameDisplay({
         );
       })}
     </span>
+  );
+}
+
+function TeamMatchModal({
+  match,
+  entries,
+  onClose,
+  onSave,
+}: {
+  match: Match;
+  entries: Entry[];
+  onClose: () => void;
+  onSave: (
+    updatedSubMatches: TeamSubMatch[],
+    overallScoreA: number,
+    overallScoreB: number,
+    done: boolean,
+  ) => void;
+}) {
+  const entryA = getMatchEntryA(match, entries);
+  const entryB = getMatchEntryB(match, entries);
+  const nameA = entryName(entryA) || "Đội A";
+  const nameB = entryName(entryB) || "Đội B";
+
+  const initialSubMatches = useMemo(() => {
+    if (match.teamSubMatches && match.teamSubMatches.length > 0) {
+      return match.teamSubMatches;
+    }
+    return createDefaultMlpSubMatches(entryA, entryB);
+  }, [match, entryA, entryB]);
+
+  const [subMatches, setSubMatches] = useState<TeamSubMatch[]>(initialSubMatches);
+
+  const updateSubScore = (
+    id: string,
+    key: "scoreA" | "scoreB",
+    val: number | null,
+  ) => {
+    setSubMatches((prev) =>
+      prev.map((sm) => (sm.id === id ? { ...sm, [key]: val } : sm)),
+    );
+  };
+
+  const updateSubPlayers = (
+    id: string,
+    key: "teamAPlayers" | "teamBPlayers",
+    val: string,
+  ) => {
+    setSubMatches((prev) =>
+      prev.map((sm) => (sm.id === id ? { ...sm, [key]: val } : sm)),
+    );
+  };
+
+  // Tính tổng số trận thắng
+  const { winsA, winsB, isTied22, allCompleted } = useMemo(() => {
+    let a = 0;
+    let b = 0;
+    // Kiểm tra 4 trận đôi đầu tiên
+    const first4 = subMatches.slice(0, 4);
+    first4.forEach((sm) => {
+      if (sm.scoreA !== null && sm.scoreB !== null) {
+        if (sm.scoreA > sm.scoreB) a++;
+        else if (sm.scoreB > sm.scoreA) b++;
+      }
+    });
+
+    const is22 = a === 2 && b === 2;
+
+    // Trận thứ 5: Dreambreaker (nếu có đấu và hòa 2-2)
+    const db = subMatches[4];
+    if (is22 && db && db.scoreA !== null && db.scoreB !== null) {
+      if (db.scoreA > db.scoreB) a++;
+      else if (db.scoreB > db.scoreA) b++;
+    }
+
+    const completed =
+      (a >= 3 || b >= 3) ||
+      (a === 2 && b === 2 && db && db.scoreA !== null && db.scoreB !== null && db.scoreA !== db.scoreB);
+
+    return { winsA: a, winsB: b, isTied22: is22, allCompleted: completed };
+  }, [subMatches]);
+
+  const handleReset = () => {
+    setSubMatches(createDefaultMlpSubMatches(entryA, entryB));
+  };
+
+  const handleSave = () => {
+    onSave(subMatches, winsA, winsB, allCompleted);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5 overflow-y-auto animate-in fade-in duration-200">
+      <div className="bg-card w-full max-w-3xl rounded-2xl border border-line/20 shadow-2xl overflow-hidden flex flex-col my-auto max-h-[92vh]">
+        {/* Header */}
+        <div className="bg-gradient-to-r from-[#0a3320] to-[#124b30] p-4 text-white flex items-center justify-between shrink-0">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-lg">🏆</span>
+              <h2 className="font-head text-base sm:text-lg font-bold tracking-tight">
+                Quản lý trận Đấu Đồng Đội (MLP / PPA Format)
+              </h2>
+            </div>
+            <p className="text-xs text-white/80 mt-0.5">
+              Vòng {match.round} • {match.groupName ? `Bảng ${match.groupName}` : "Vòng bảng"} • Sân: {match.court || "Chưa chọn sân"}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="size-8 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center font-bold text-sm cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Bảng tổng tỉ số */}
+        <div className="bg-paper p-4 border-b border-line/15 shrink-0 flex items-center justify-between gap-4">
+          <div className="flex-1 text-right min-w-0">
+            <div className="font-head text-sm sm:text-base font-extrabold text-[#0a3320] truncate">
+              {nameA}
+            </div>
+            <div className="text-[11px] text-line/60">Đội A</div>
+          </div>
+
+          <div className="flex items-center gap-3 px-4 py-2 rounded-xl bg-card border border-line/20 shadow-xs shrink-0">
+            <span
+              className={`font-mono text-2xl sm:text-3xl font-black ${
+                winsA > winsB ? "text-[#c2410c]" : "text-ink"
+              }`}
+            >
+              {winsA}
+            </span>
+            <span className="text-line/40 font-bold text-lg">—</span>
+            <span
+              className={`font-mono text-2xl sm:text-3xl font-black ${
+                winsB > winsA ? "text-[#c2410c]" : "text-ink"
+              }`}
+            >
+              {winsB}
+            </span>
+          </div>
+
+          <div className="flex-1 text-left min-w-0">
+            <div className="font-head text-sm sm:text-base font-extrabold text-[#0a3320] truncate">
+              {nameB}
+            </div>
+            <div className="text-[11px] text-line/60">Đội B</div>
+          </div>
+        </div>
+
+        {/* Trạng thái thông báo */}
+        {allCompleted && (
+          <div className="bg-emerald-50 border-b border-emerald-200 px-4 py-2 text-center text-xs font-bold text-emerald-800 shrink-0">
+            🎉 {winsA > winsB ? nameA : nameB} giành chiến thắng chung cuộc ({winsA} — {winsB})!
+          </div>
+        )}
+        {isTied22 && !allCompleted && (
+          <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 text-center text-xs font-bold text-amber-800 animate-pulse shrink-0">
+            ⚡ Hai đội đang hòa 2 — 2! Kích hoạt trận Dreambreaker™ để phân định thắng bại!
+          </div>
+        )}
+
+        {/* Danh sách 5 trận con */}
+        <div className="p-3 sm:p-5 space-y-3.5 overflow-y-auto flex-1">
+          {subMatches.map((sm) => {
+            const isDreambreaker = sm.type === "dreambreaker";
+            const aWon = sm.scoreA !== null && sm.scoreB !== null && sm.scoreA > sm.scoreB;
+            const bWon = sm.scoreA !== null && sm.scoreB !== null && sm.scoreB > sm.scoreA;
+
+            return (
+              <div
+                key={sm.id}
+                className={`p-3.5 rounded-xl border transition-all ${
+                  isDreambreaker
+                    ? isTied22
+                      ? "bg-amber-50/70 border-amber-300 ring-2 ring-amber-400/30"
+                      : "bg-paper/60 border-line/15 opacity-75"
+                    : "bg-card border-line/20 shadow-2xs"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="font-head text-xs font-bold uppercase tracking-wider text-ink">
+                      {sm.title}
+                    </span>
+                    {isDreambreaker && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-200 text-amber-900">
+                        Tiebreaker 21 điểm
+                      </span>
+                    )}
+                  </div>
+                  {aWon && (
+                    <span className="text-[11px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-md">
+                      ✓ {nameA} thắng
+                    </span>
+                  )}
+                  {bWon && (
+                    <span className="text-[11px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-md">
+                      ✓ {nameB} thắng
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-12 gap-2 items-center">
+                  {/* Cặp Đội A */}
+                  <div className="col-span-5 text-right">
+                    <input
+                      type="text"
+                      className="field text-xs text-right !py-1 !px-2 font-semibold text-ink bg-paper border border-line/20 w-full"
+                      value={sm.teamAPlayers ?? ""}
+                      placeholder="VĐV Đội A"
+                      onChange={(e) => updateSubPlayers(sm.id, "teamAPlayers", e.target.value)}
+                    />
+                  </div>
+
+                  {/* Ô nhập điểm */}
+                  <div className="col-span-2 flex items-center justify-center gap-1.5">
+                    <input
+                      type="number"
+                      min="0"
+                      max="99"
+                      value={sm.scoreA ?? ""}
+                      placeholder="0"
+                      onChange={(e) =>
+                        updateSubScore(
+                          sm.id,
+                          "scoreA",
+                          e.target.value === "" ? null : Number(e.target.value),
+                        )
+                      }
+                      className={`w-11 text-center font-mono font-bold text-sm !py-1 rounded-lg border outline-none ${
+                        aWon
+                          ? "bg-emerald-50 border-emerald-400 text-emerald-800"
+                          : "bg-paper border-line/30 text-ink"
+                      }`}
+                    />
+                    <span className="text-line/40 font-bold text-xs">:</span>
+                    <input
+                      type="number"
+                      min="0"
+                      max="99"
+                      value={sm.scoreB ?? ""}
+                      placeholder="0"
+                      onChange={(e) =>
+                        updateSubScore(
+                          sm.id,
+                          "scoreB",
+                          e.target.value === "" ? null : Number(e.target.value),
+                        )
+                      }
+                      className={`w-11 text-center font-mono font-bold text-sm !py-1 rounded-lg border outline-none ${
+                        bWon
+                          ? "bg-emerald-50 border-emerald-400 text-emerald-800"
+                          : "bg-paper border-line/30 text-ink"
+                      }`}
+                    />
+                  </div>
+
+                  {/* Cặp Đội B */}
+                  <div className="col-span-5 text-left">
+                    <input
+                      type="text"
+                      className="field text-xs text-left !py-1 !px-2 font-semibold text-ink bg-paper border border-line/20 w-full"
+                      value={sm.teamBPlayers ?? ""}
+                      placeholder="VĐV Đội B"
+                      onChange={(e) => updateSubPlayers(sm.id, "teamBPlayers", e.target.value)}
+                    />
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Footer controls */}
+        <div className="bg-paper p-3.5 border-t border-line/15 shrink-0 flex flex-wrap items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={handleReset}
+            className="btn-ghost text-xs font-semibold !py-1.5 px-3 cursor-pointer"
+          >
+            ↺ Đặt lại tất cả trận con
+          </button>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="btn-ghost text-xs font-bold !py-1.5 px-3 cursor-pointer"
+            >
+              Hủy
+            </button>
+            <button
+              type="button"
+              onClick={handleSave}
+              className="btn-accent text-xs font-bold !py-1.5 px-4 cursor-pointer shadow-xs"
+            >
+              💾 Lưu & Cập nhật kết quả vào giải
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -421,6 +745,8 @@ type CardProps = {
   colWidth?: number;
   rowHeight?: number;
   slotMinutes?: number;
+  isTeamMode?: boolean;
+  onManageTeamMatch?: (m: Match) => void;
   key?: React.Key;
 };
 
@@ -453,6 +779,8 @@ function MatchCard({
   colWidth = 210,
   rowHeight = 128,
   slotMinutes = 30,
+  isTeamMode,
+  onManageTeamMatch,
 }: CardProps) {
   const c = groupColor(m.groupName);
   const aWin = m.scoreA !== null && m.scoreB !== null && m.scoreA > m.scoreB;
@@ -509,6 +837,14 @@ function MatchCard({
           >
             {displayTag}
           </span>
+          {isTeamMode && (
+            <span
+              className="rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide shrink-0 bg-[#0a3320] text-white"
+              style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+            >
+              MLP
+            </span>
+          )}
           {hasConflict && (
             <span className="rounded bg-red-600 px-1 py-0.2 text-[9px] font-bold text-white shrink-0">
               Trùng giờ
@@ -607,14 +943,26 @@ function MatchCard({
                 </button>
               )}
             </div>
-            <Link
-              to="/cham-diem/$matchId"
-              params={{ matchId: m.id } as any}
-              style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-              className="btn-ghost !px-1.5 !py-0.5 text-[10px] flex items-center gap-0.5 whitespace-nowrap font-medium cursor-pointer shrink-0"
-            >
-              ⚡ Chấm điểm
-            </Link>
+            {isTeamMode ? (
+              <button
+                type="button"
+                onClick={() => onManageTeamMatch?.(m)}
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                className="btn-accent !px-1.5 !py-0.5 text-[10px] flex items-center gap-0.5 whitespace-nowrap font-bold cursor-pointer shrink-0 shadow-2xs"
+                title="Quản lý và chấm điểm 5 trận đấu con (Đôi Nữ, Đôi Nam, Mixed 1, Mixed 2, Dreambreaker)"
+              >
+                👥 MLP
+              </button>
+            ) : (
+              <Link
+                to="/cham-diem/$matchId"
+                params={{ matchId: m.id } as any}
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                className="btn-ghost !px-1.5 !py-0.5 text-[10px] flex items-center gap-0.5 whitespace-nowrap font-medium cursor-pointer shrink-0"
+              >
+                ⚡ Chấm điểm
+              </Link>
+            )}
           </div>
         ) : null
       ) : (
@@ -675,14 +1023,26 @@ function MatchCard({
                 {m.status === "live" ? "⏸ Tạm dừng" : "▶ Bắt đầu"}
               </button>
             )}
-            <Link
-              to="/cham-diem/$matchId"
-              params={{ matchId: m.id } as any}
-              style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-              className="btn-ghost !px-2 !py-1 text-[11px] flex items-center gap-1"
-            >
-              ⚡ Chấm điểm
-            </Link>
+            {isTeamMode ? (
+              <button
+                type="button"
+                onClick={() => onManageTeamMatch?.(m)}
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                className="btn-accent !px-2.5 !py-1 text-[11px] flex items-center gap-1 font-bold shadow-2xs cursor-pointer"
+                title="Quản lý và chấm điểm 5 trận đấu con (Đôi Nữ, Đôi Nam, Mixed 1, Mixed 2, Dreambreaker)"
+              >
+                👥 Trận Đồng đội (MLP)
+              </button>
+            ) : (
+              <Link
+                to="/cham-diem/$matchId"
+                params={{ matchId: m.id } as any}
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                className="btn-ghost !px-2 !py-1 text-[11px] flex items-center gap-1"
+              >
+                ⚡ Chấm điểm
+              </Link>
+            )}
           </div>
         </div>
       )}
@@ -1435,23 +1795,26 @@ function ManagePage() {
   // Modal xuất ảnh / PDF sơ đồ thi đấu vòng bảng
   const [isExportGroupModalOpen, setIsExportGroupModalOpen] = useState(false);
   const [includeScoresInExport, setIncludeScoresInExport] = useState(false);
-  const [splitExportRows, setSplitExportRows] = useState(true);
   const [isExportingImage, setIsExportingImage] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const exportGroupScheduleRef = useRef<HTMLDivElement>(null);
 
+  // Modal quản lý trận đấu Đồng đội (MLP Format)
+  const [teamMatchToManage, setTeamMatchToManage] = useState<Match | null>(null);
+
   useEffect(() => {
-    if (!isFullscreenKo && !isFullscreenTimeline && !isExportGroupModalOpen) return;
+    if (!isFullscreenKo && !isFullscreenTimeline && !isExportGroupModalOpen && !teamMatchToManage) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setIsFullscreenKo(false);
         setIsFullscreenTimeline(false);
         setIsExportGroupModalOpen(false);
+        setTeamMatchToManage(null);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isFullscreenKo, isFullscreenTimeline, isExportGroupModalOpen]);
+  }, [isFullscreenKo, isFullscreenTimeline, isExportGroupModalOpen, teamMatchToManage]);
 
   const recordTimelineState = () => {
     setTimelineHistory((prev) => [...prev.slice(-30), state.matches]);
@@ -1959,26 +2322,33 @@ function ManagePage() {
     onDropOnMatch: handleMatchDrop,
     hasConflict: compact && conflictsSet.has(m.id),
     compact,
+    isTeamMode: ev?.mode === "dong_doi",
+    onManageTeamMatch: (target) => setTeamMatchToManage(target),
   });
 
   /* -------- Vòng bảng theo cột vòng -------- */
   const rounds = [...new Set(groupMatches.map((m) => m.round))].sort((a, b) => (a ?? 0) - (b ?? 0));
 
-  // Tách các vòng thành 2 hàng khi có nhiều vòng (vd: 9 vòng -> 5 vòng trên, 4 vòng dưới)
+  // Tự động phân chia các vòng thành nhiều hàng cân đối đẹp mắt (10 vòng -> 2 hàng x 5, 12 vòng -> 2 hàng x 6, 15 vòng -> 3 hàng x 5)
   const exportRoundRows = useMemo(() => {
-    if (!splitExportRows || rounds.length <= 4) {
-      return [rounds];
-    }
-    if (rounds.length <= 10) {
-      const half = Math.ceil(rounds.length / 2);
-      return [rounds.slice(0, half), rounds.slice(half)];
-    }
+    const n = rounds.length;
+    if (n <= 6) return [rounds];
+    let numRows = 2;
+    if (n > 18) numRows = 4;
+    else if (n > 12) numRows = 3;
+    else numRows = 2;
+
     const rows: number[][] = [];
-    for (let i = 0; i < rounds.length; i += 5) {
-      rows.push(rounds.slice(i, i + 5));
+    let startIndex = 0;
+    for (let r = 0; r < numRows; r++) {
+      const remainingItems = n - startIndex;
+      const remainingRows = numRows - r;
+      const count = Math.ceil(remainingItems / remainingRows);
+      rows.push(rounds.slice(startIndex, startIndex + count));
+      startIndex += count;
     }
     return rows;
-  }, [rounds, splitExportRows]);
+  }, [rounds]);
 
   /* -------- Timeline -------- */
   const timelinePrintRef = useRef<HTMLDivElement>(null);
@@ -2491,15 +2861,24 @@ function ManagePage() {
   }, [calculateOptimalKoScale]);
 
   const handleFitTimelineScreen = useCallback(() => {
-    const screenW = typeof window !== "undefined" ? window.innerWidth : 390;
-    const screenH = typeof window !== "undefined" ? window.innerHeight : 844;
-    const availW = Math.max(100, screenW - 85);
-    const idealW = Math.max(25, Math.floor(availW / Math.max(1, slotIdxs.length)));
-    const availH = Math.max(120, screenH - 120);
-    const idealH = Math.max(38, Math.floor(availH / Math.max(1, state.courts.length)));
+    const isMobile = typeof window !== "undefined" && window.innerWidth < 768;
+    const screenW = typeof window !== "undefined" ? window.innerWidth : 1200;
+    const screenH = typeof window !== "undefined" ? window.innerHeight : 800;
+
+    const courtColW = isMobile ? 75 : 85;
+    const availW = Math.max(120, screenW - courtColW - (isMobile ? 16 : 40));
+    const countSlots = Math.max(1, slotIdxs.length);
+    // Tính toán độ rộng để toàn bộ các khung giờ được chọn co vừa khít vào màn hình (hỗ trợ zoom nhỏ xuống từ 20px)
+    const idealW = Math.max(20, Math.floor(availW / countSlots));
+
+    const headerH = isMobile ? 180 : 160;
+    const availH = Math.max(150, screenH - headerH);
+    const countCourts = Math.max(1, state.courts.length);
+    const idealH = Math.max(isMobile ? 50 : 65, Math.floor(availH / countCourts));
+
     setColWidth(idealW);
     setRowHeight(idealH);
-    toast.success("Đã căn vừa khít màn hình!");
+    toast.success(`Đã căn vừa khít màn hình (${idealW}px/cột)!`);
   }, [slotIdxs.length, state.courts.length]);
 
   const handleDownloadGroupScheduleImage = async () => {
@@ -3715,14 +4094,6 @@ function ManagePage() {
                 onChange={(e) => {
                   const val = e.target.value === "all" ? null : Number(e.target.value);
                   setTimelineEndHour(val);
-                  const targetH = val ?? 24;
-                  const totalH = Math.max(1, targetH - startH);
-                  const slotsCount = Math.max(2, Math.ceil((totalH * 60) / Math.max(5, state.slotMinutes || 30)));
-                  const screenW = typeof window !== "undefined" ? window.innerWidth : 380;
-                  const avail = Math.max(120, screenW - 95);
-                  const idealW = Math.max(30, Math.floor(avail / slotsCount));
-                  setColWidth(idealW);
-                  setRowHeight(Math.max(45, Math.min(rowHeight, 75)));
                 }}
                 className="rounded-lg bg-paper px-2 py-1 text-xs font-bold text-ink border border-line/20 outline-hidden flex-1"
               >
@@ -3737,14 +4108,23 @@ function ManagePage() {
               </select>
               <button
                 type="button"
-                onClick={() => {
-                  setIsFullscreenTimeline(true);
-                  handleFitTimelineScreen();
-                }}
-                className="rounded-lg bg-[#0a3320] text-white px-3 py-1.5 text-xs font-bold shrink-0 cursor-pointer shadow-2xs hover:bg-[#0a3320]/90 flex items-center gap-1"
-                title="Mở toàn màn hình và tự động căn vừa khít màn hình"
+                onClick={handleFitTimelineScreen}
+                className="rounded-lg bg-[#0a3320] text-white px-2.5 py-1.5 text-xs font-bold shrink-0 cursor-pointer shadow-2xs hover:bg-[#0a3320]/90 flex items-center gap-1"
+                title="Tự động co vừa khít toàn bộ khung giờ đã chọn vào màn hình"
               >
-                ⛶ Fit toàn màn
+                📐 Fit vừa màn
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setColWidth(140);
+                  setRowHeight(90);
+                  toast.success("Đã dãn rộng timeline để đọc rõ chữ!");
+                }}
+                className="rounded-lg bg-card text-ink border border-line/20 px-2 py-1.5 text-xs font-semibold shrink-0 cursor-pointer shadow-2xs hover:bg-paper flex items-center gap-1"
+                title="Kéo dài bảng timeline thoải mái để đọc rõ tên VĐV"
+              >
+                ↔️ Dãn rộng
               </button>
             </div>
 
@@ -3761,18 +4141,18 @@ function ManagePage() {
               ⛶ Toàn màn hình
             </button>
 
-            {/* Thanh trượt zoom ngang (cho phép zoom out rộng hết cỡ từ 30px) */}
+            {/* Thanh trượt zoom ngang (hỗ trợ zoom nhỏ xuống từ 20px) */}
             <div className="flex items-center gap-2 rounded-lg bg-card px-2.5 py-1 ring-1 ring-line/20 shadow-2xs">
               <span className="text-[11px] font-medium text-line/60">Zoom ngang:</span>
               <input
                 type="range"
-                min="30"
-                max="450"
-                step="2"
+                min="20"
+                max="400"
+                step="1"
                 value={colWidth}
                 onChange={(e) => setColWidth(Number(e.target.value))}
                 className="h-1.5 w-20 cursor-pointer accent-accent"
-                title={`Độ rộng cột giờ: ${colWidth}px`}
+                title={`Độ rộng cột giờ: ${colWidth}px (kéo nhỏ để thu gọn màn hình)`}
               />
               <span className="w-9 text-[10px] font-mono text-line/50 text-right">{colWidth}px</span>
             </div>
@@ -4756,10 +5136,22 @@ function ManagePage() {
               <button
                 type="button"
                 onClick={handleFitTimelineScreen}
-                className="rounded-lg bg-[#0a3320] text-white px-3 py-1.5 text-xs font-bold shrink-0 cursor-pointer shadow-2xs hover:bg-[#0a3320]/90"
+                className="rounded-lg bg-[#0a3320] text-white px-2.5 py-1.5 text-xs font-bold shrink-0 cursor-pointer shadow-2xs hover:bg-[#0a3320]/90"
                 title="Tự động căn chỉnh độ rộng cột và chiều cao sân để vừa khít màn hình"
               >
                 📐 Fit vừa màn hình
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setColWidth(140);
+                  setRowHeight(90);
+                  toast.success("Đã dãn rộng timeline để đọc rõ chữ!");
+                }}
+                className="rounded-lg bg-paper text-ink border border-line/20 px-2 py-1.5 text-xs font-semibold shrink-0 cursor-pointer shadow-2xs hover:bg-card"
+                title="Kéo dài bảng timeline thoải mái để đọc rõ tên VĐV"
+              >
+                ↔️ Dãn rộng
               </button>
 
               {/* Zoom ngang */}
@@ -4767,7 +5159,7 @@ function ManagePage() {
                 <span className="text-[10px] text-line/60 hidden sm:inline">Zoom ngang:</span>
                 <button
                   type="button"
-                  onClick={() => setColWidth((w) => Math.max(25, w - 8))}
+                  onClick={() => setColWidth((w) => Math.max(20, w - 8))}
                   className="size-5 rounded bg-line/10 hover:bg-line/20 flex items-center justify-center font-bold text-xs cursor-pointer"
                   title="Thu nhỏ cột giờ"
                 >
@@ -4775,9 +5167,9 @@ function ManagePage() {
                 </button>
                 <input
                   type="range"
-                  min="25"
+                  min="20"
                   max="350"
-                  step="2"
+                  step="1"
                   value={colWidth}
                   onChange={(e) => setColWidth(Number(e.target.value))}
                   className="h-1.5 w-16 sm:w-20 cursor-pointer accent-accent"
@@ -4862,35 +5254,6 @@ function ManagePage() {
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
-              {/* Bố cục chia hàng khi có nhiều vòng */}
-              {rounds.length > 4 && (
-                <div className="flex items-center gap-1 bg-paper p-1 rounded-lg border border-line/20 text-xs select-none">
-                  <span className="text-[11px] text-line/60 font-semibold px-1.5">Bố cục:</span>
-                  <button
-                    type="button"
-                    onClick={() => setSplitExportRows(true)}
-                    className={`px-2.5 py-1 rounded-md text-xs font-bold transition cursor-pointer ${
-                      splitExportRows
-                        ? "bg-[#0a3320] text-white shadow-xs"
-                        : "text-line/70 hover:text-ink hover:bg-card"
-                    }`}
-                  >
-                    Chia 2 hàng ({Math.ceil(rounds.length / 2)} vòng/hàng)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setSplitExportRows(false)}
-                    className={`px-2.5 py-1 rounded-md text-xs font-bold transition cursor-pointer ${
-                      !splitExportRows
-                        ? "bg-[#0a3320] text-white shadow-xs"
-                        : "text-line/70 hover:text-ink hover:bg-card"
-                    }`}
-                  >
-                    1 hàng ngang
-                  </button>
-                </div>
-              )}
-
               {/* Toggle điểm số */}
               <label className="flex items-center gap-1.5 text-xs font-semibold text-line/80 bg-paper px-2.5 py-1.5 rounded-lg border border-line/20 cursor-pointer select-none">
                 <input
@@ -4995,25 +5358,6 @@ function ManagePage() {
                 <div className="space-y-6">
                   {exportRoundRows.map((rowRounds, rowIdx) => (
                     <div key={rowIdx}>
-                      {exportRoundRows.length > 1 && (
-                        <div
-                          className="text-xs font-bold uppercase tracking-wider mb-2.5 flex items-center gap-2 select-none"
-                          style={{ color: "#4b5563" }}
-                        >
-                          <span className="h-px bg-gray-300/80 flex-1" />
-                          <span
-                            className="px-2.5 py-0.5 rounded-md text-[11px] font-bold tracking-wide"
-                            style={{
-                              backgroundColor: "#f3f4f6",
-                              color: "#374151",
-                              border: "1px solid #e5e7eb"
-                            }}
-                          >
-                            Phần {rowIdx + 1} • Vòng {rowRounds[0]} — Vòng {rowRounds[rowRounds.length - 1]}
-                          </span>
-                          <span className="h-px bg-gray-300/80 flex-1" />
-                        </div>
-                      )}
                       <div className="flex gap-4 items-start">
                         {rowRounds.map((r) => {
                           const roundMatchesList = groupMatches
@@ -5049,57 +5393,23 @@ function ManagePage() {
                                   const nameA = resolveSideLabel(m, "aId");
                                   const nameB = resolveSideLabel(m, "bId");
                                   const c = groupColor(m.groupName);
-                                  const isRoundRobin =
-                                    !m.groupName ||
-                                    m.groupName.toLowerCase().includes("vòng tròn") ||
-                                    m.groupName === "rr" ||
-                                    m.groupName.toLowerCase().includes("toàn thể");
-                                  const displayTag = isRoundRobin ? `V${m.round}` : `${groupTag(m.groupName)} · V${m.round}`;
                                   const aWin = m.scoreA !== null && m.scoreB !== null && m.scoreA > m.scoreB;
                                   const bWin = m.scoreA !== null && m.scoreB !== null && m.scoreB > m.scoreA;
 
                                   return (
                                     <div
                                       key={m.id}
-                                      className="rounded-xl p-2.5 flex flex-col justify-between text-left shadow-2xs"
+                                      className="rounded-xl p-3 flex flex-col justify-between text-left shadow-2xs"
                                       style={{
                                         backgroundColor: c.bg,
                                         border: "1px solid #d1d5db",
                                         color: "#111827"
                                       }}
                                     >
-                                      {/* Ký hiệu bảng, vòng và sân ở góc trên bên trái - hoàn toàn KHÔNG có icon ở chữ sân */}
-                                      <div className="flex items-center justify-between gap-1">
-                                        <div className="flex items-center gap-1.5 min-w-0">
-                                          <span
-                                            className="rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide shrink-0 shadow-2xs"
-                                            style={{
-                                              backgroundColor: c.dot,
-                                              color: "#ffffff",
-                                              fontFamily: "'Space Grotesk', sans-serif"
-                                            }}
-                                          >
-                                            {displayTag}
-                                          </span>
-                                          {m.court && (
-                                            <span
-                                              className="text-[10px] font-bold px-1.5 py-0.5 rounded shadow-2xs truncate"
-                                              style={{
-                                                backgroundColor: "#ffffff",
-                                                color: "#0a3320",
-                                                border: "1px solid rgba(0,0,0,0.12)"
-                                              }}
-                                            >
-                                              {m.court}
-                                            </span>
-                                          )}
-                                        </div>
-                                      </div>
-
                                       {/* Tên các cặp thi đấu (và ô điểm nếu có chọn kèm điểm số) */}
-                                      <div className="mt-2 space-y-1.5">
+                                      <div className="space-y-2">
                                         <div className="flex items-center justify-between gap-2">
-                                          <div className="flex items-center gap-1 min-w-0 flex-1 text-xs font-semibold" style={{ color: "#111827" }}>
+                                          <div className="flex items-center gap-1.5 min-w-0 flex-1 text-[15px] font-bold leading-snug" style={{ color: "#111827" }}>
                                             <PlayerNameDisplay
                                               entry={entryA}
                                               fallback={nameA}
@@ -5124,7 +5434,7 @@ function ManagePage() {
                                         </div>
 
                                         <div className="flex items-center justify-between gap-2">
-                                          <div className="flex items-center gap-1 min-w-0 flex-1 text-xs font-semibold" style={{ color: "#111827" }}>
+                                          <div className="flex items-center gap-1.5 min-w-0 flex-1 text-[15px] font-bold leading-snug" style={{ color: "#111827" }}>
                                             <PlayerNameDisplay
                                               entry={entryB}
                                               fallback={nameB}
@@ -5385,6 +5695,25 @@ function ManagePage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* MODAL QUẢN LÝ TRẬN ĐỒNG ĐỘI (MLP FORMAT) */}
+      {teamMatchToManage && (
+        <TeamMatchModal
+          match={teamMatchToManage}
+          entries={state.entries}
+          onClose={() => setTeamMatchToManage(null)}
+          onSave={(updatedSubMatches, overallScoreA, overallScoreB, done) => {
+            updateMatch(teamMatchToManage.id, {
+              teamSubMatches: updatedSubMatches,
+              scoreA: overallScoreA,
+              scoreB: overallScoreB,
+              status: done ? "done" : "live",
+            });
+            setTeamMatchToManage(null);
+            toast.success("Đã cập nhật kết quả trận đấu đồng đội!");
+          }}
+        />
       )}
     </div>
   );

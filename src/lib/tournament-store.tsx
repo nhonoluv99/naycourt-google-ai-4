@@ -21,14 +21,20 @@ import {
 
 /* ---------------- Kiểu dữ liệu ---------------- */
 
-export type PlayerSlot = { name: string; rating: number | null; paid?: boolean };
+export type PlayerSlot = {
+  name: string;
+  rating: number | null;
+  paid?: boolean;
+  gender?: "nam" | "nu";
+};
 
-/** Một "đội" đăng ký trong nội dung (đơn = 1 người, đôi = 2 người). */
+/** Một "đội" đăng ký trong nội dung (đơn = 1 người, đôi = 2 người, đồng đội = 4 người). */
 export type Entry = {
   id: string;
   eventId: string;
   players: PlayerSlot[];
   paid: boolean;
+  teamName?: string;
 };
 
 export type Group = { name: string; entryIds: string[] };
@@ -67,6 +73,24 @@ export type LiveState = {
   playerIcons?: Record<string, string>;
 };
 
+export type TeamSubMatchType =
+  | "women_doubles"
+  | "men_doubles"
+  | "mixed_doubles_1"
+  | "mixed_doubles_2"
+  | "dreambreaker"
+  | "custom";
+
+export type TeamSubMatch = {
+  id: string;
+  type: TeamSubMatchType;
+  title: string;
+  teamAPlayers?: string;
+  teamBPlayers?: string;
+  scoreA: number | null;
+  scoreB: number | null;
+};
+
 export type Match = {
   id: string;
   eventId: string;
@@ -96,9 +120,11 @@ export type Match = {
   status: MatchStatus;
   note?: string;
   live?: LiveState;
+  /** Danh sách các trận đấu con khi thi đấu thể thức Đồng đội (MLP Format) */
+  teamSubMatches?: TeamSubMatch[];
 };
 
-export type EventMode = "don" | "doi";
+export type EventMode = "don" | "doi" | "dong_doi";
 export type BracketType = "rr" | "rr_ko";
 export type PairMode = "random" | "fixed";
 
@@ -626,8 +652,77 @@ export function useTournament() {
 
 export function entryName(e: Entry | undefined | null): string {
   if (!e) return "—";
+  if (e.teamName && e.teamName.trim()) {
+    return e.teamName.trim();
+  }
   const names = e.players.map((p) => p.name.trim()).filter(Boolean);
   return names.length ? names.join(" & ") : "Chưa đặt tên";
+}
+
+/** Tạo 5 trận đấu con tiêu chuẩn MLP (Đôi nữ, Đôi nam, Mixed 1, Mixed 2, Dreambreaker) */
+export function createDefaultMlpSubMatches(
+  entryA?: Entry | null,
+  entryB?: Entry | null,
+): TeamSubMatch[] {
+  const pA = entryA?.players || [];
+  const pB = entryB?.players || [];
+
+  const getNamePair = (players: PlayerSlot[], idx1: number, idx2: number, fallback: string) => {
+    const n1 = players[idx1]?.name?.trim();
+    const n2 = players[idx2]?.name?.trim();
+    if (n1 && n2) return `${n1} & ${n2}`;
+    if (n1) return n1;
+    if (n2) return n2;
+    return fallback;
+  };
+
+  return [
+    {
+      id: "sub-wd",
+      type: "women_doubles",
+      title: "Trận 1: Đôi Nữ (Women's Doubles)",
+      teamAPlayers: getNamePair(pA, 2, 3, "Nữ 1 & Nữ 2"),
+      teamBPlayers: getNamePair(pB, 2, 3, "Nữ 1 & Nữ 2"),
+      scoreA: null,
+      scoreB: null,
+    },
+    {
+      id: "sub-md",
+      type: "men_doubles",
+      title: "Trận 2: Đôi Nam (Men's Doubles)",
+      teamAPlayers: getNamePair(pA, 0, 1, "Nam 1 & Nam 2"),
+      teamBPlayers: getNamePair(pB, 0, 1, "Nam 1 & Nam 2"),
+      scoreA: null,
+      scoreB: null,
+    },
+    {
+      id: "sub-xd1",
+      type: "mixed_doubles_1",
+      title: "Trận 3: Đôi Nam Nữ 1 (Mixed 1)",
+      teamAPlayers: getNamePair(pA, 0, 2, "Nam 1 & Nữ 1"),
+      teamBPlayers: getNamePair(pB, 0, 2, "Nam 1 & Nữ 1"),
+      scoreA: null,
+      scoreB: null,
+    },
+    {
+      id: "sub-xd2",
+      type: "mixed_doubles_2",
+      title: "Trận 4: Đôi Nam Nữ 2 (Mixed 2)",
+      teamAPlayers: getNamePair(pA, 1, 3, "Nam 2 & Nữ 2"),
+      teamBPlayers: getNamePair(pB, 1, 3, "Nam 2 & Nữ 2"),
+      scoreA: null,
+      scoreB: null,
+    },
+    {
+      id: "sub-db",
+      type: "dreambreaker",
+      title: "Trận 5: Dreambreaker™ (Đơn luân phiên hòa 2-2)",
+      teamAPlayers: entryA?.teamName || "Đội A (4 VĐV luân phiên)",
+      teamBPlayers: entryB?.teamName || "Đội B (4 VĐV luân phiên)",
+      scoreA: null,
+      scoreB: null,
+    },
+  ];
 }
 
 /** Kiểm tra xem nội dung có phải là Đôi đấu vòng tròn đổi partner ngẫu nhiên không */
@@ -2377,7 +2472,11 @@ export function propagateKnockout(
   return updated.map((m) => (next.has(m.id) ? { ...m, ...next.get(m.id)! } : m));
 }
 
-export const MODE_LABEL: Record<EventMode, string> = { don: "Đơn", doi: "Đôi" };
+export const MODE_LABEL: Record<EventMode, string> = {
+  don: "Đơn",
+  doi: "Đôi",
+  dong_doi: "Đồng đội (MLP)",
+};
 export const BRACKET_LABEL: Record<BracketType, string> = {
   rr: "Vòng tròn",
   rr_ko: "Chia bảng + loại trực tiếp",
