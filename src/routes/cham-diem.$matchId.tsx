@@ -751,14 +751,16 @@ function LiveScoringPage() {
     } else {
       // Đổi lượt giao cho Đội đối phương (Side-out)
       const nextServeTeam: 0 | 1 = (1 - live.serveTeam) as 0 | 1;
-      const nextScore = nextServeTeam === 0 ? live.a : live.b;
-      const isEven = nextScore % 2 === 0;
 
-      // Chuẩn luật: Đội mới giao bóng: nếu điểm chẵn thì người ở ô Phải giao, nếu lẻ thì người ở ô Trái giao!
+      // Chuẩn luật Pickleball đôi Side-out:
+      // Khi mất giao (Side-out), lượt giao chuyển sang cho đội đối phương.
+      // Đội mới nhận quyền giao bóng luôn bắt đầu với lượt giao đầu tiên (Server 1).
+      // Người đang đứng ở ô bên phải (pos[0]) LUÔN LUÔN là người giao bóng trước (Server 1) từ ô bên phải!
+      // Người nhận bóng đầu tiên là đối thủ đứng ở ô bên phải chéo đối diện (pos[0]).
       const servingTeamPos = nextServeTeam === 0 ? posA : posB;
       const opponentPos = nextServeTeam === 0 ? posB : posA;
-      const nextServerIdx = doubles ? (isEven ? servingTeamPos[0] : servingTeamPos[1]) : 0;
-      const nextReceiverIdx = doubles ? (isEven ? opponentPos[0] : opponentPos[1]) : 0;
+      const nextServerIdx = doubles ? (servingTeamPos[0] ?? 0) : 0;
+      const nextReceiverIdx = doubles ? (opponentPos[0] ?? 0) : 0;
 
       push({
         serveTeam: nextServeTeam,
@@ -807,8 +809,12 @@ function LiveScoringPage() {
       // Nửa sân bên phải: ô Trên là Phải (Chẵn), ô Dưới là Trái (Lẻ)
       const isPlayerInTop = side === "right" ? isRightCourtActive : !isRightCourtActive;
       return {
-        top: isPlayerInTop ? { name: pName, note: pNote, isServ } : { name: "", note: "", isServ: false },
-        bottom: !isPlayerInTop ? { name: pName, note: pNote, isServ } : { name: "", note: "", isServ: false },
+        top: isPlayerInTop
+          ? { name: pName, note: pNote, isServ, playerIdx: 0, teamIdx }
+          : { name: "", note: "", isServ: false, playerIdx: 0, teamIdx },
+        bottom: !isPlayerInTop
+          ? { name: pName, note: pNote, isServ, playerIdx: 0, teamIdx }
+          : { name: "", note: "", isServ: false, playerIdx: 0, teamIdx },
       };
     }
 
@@ -834,11 +840,15 @@ function LiveScoringPage() {
         name: topName,
         note: live.playerIcons?.[topName]?.trim() || "",
         isServ: isServingTeam && activeServerIdx === topPlayerIdx,
+        playerIdx: topPlayerIdx,
+        teamIdx,
       },
       bottom: {
         name: bottomName,
         note: live.playerIcons?.[bottomName]?.trim() || "",
         isServ: isServingTeam && activeServerIdx === bottomPlayerIdx,
+        playerIdx: bottomPlayerIdx,
+        teamIdx,
       },
     };
   };
@@ -872,13 +882,40 @@ function LiveScoringPage() {
   );
 
   const renderCourtCell = (
-    cell: { name: string; note: string; isServ: boolean },
+    cell: {
+      name: string;
+      note: string;
+      isServ: boolean;
+      playerIdx?: number;
+      teamIdx?: 0 | 1;
+    },
     extraClass = "",
   ) => {
     const cleanNote = cell.note.replace(/^\(+|\)+$/g, "").trim();
+    const canSwitchServer =
+      doubles &&
+      cell.teamIdx === live.serveTeam &&
+      !cell.isServ &&
+      typeof cell.playerIdx === "number";
+
     return (
       <div
-        className={`flex flex-col items-center justify-center px-2 py-1 text-center select-none ${extraClass}`}
+        className={`flex flex-col items-center justify-center px-2 py-1 text-center select-none transition ${
+          canSwitchServer ? "cursor-pointer hover:bg-accent/10 active:scale-95" : ""
+        } ${extraClass}`}
+        onClick={
+          canSwitchServer
+            ? () => {
+                setLive({ serverIdx: cell.playerIdx });
+                toast.success(`Đã đổi quyền giao bóng cho ${cell.name}!`);
+              }
+            : undefined
+        }
+        title={
+          canSwitchServer
+            ? `Bấm để đổi người giao bóng sang ${cell.name}`
+            : undefined
+        }
       >
         {cell.name ? (
           <>
