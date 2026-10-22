@@ -35,6 +35,8 @@ export type Entry = {
   players: PlayerSlot[];
   paid: boolean;
   teamName?: string;
+  /** Đánh dấu vận động viên / đội bỏ cuộc giữa chừng (hủy bỏ toàn bộ kết quả trước đó) */
+  withdrawn?: boolean;
 };
 
 export type Group = { name: string; entryIds: string[] };
@@ -128,6 +130,18 @@ export type EventMode = "don" | "doi" | "dong_doi";
 export type BracketType = "rr" | "rr_ko";
 export type PairMode = "random" | "fixed";
 
+export type RankingCriterion = "points" | "diff" | "h2h" | "draw";
+
+export const RANKING_CRITERIA_LABELS: Record<
+  RankingCriterion,
+  { label: string; desc: string; icon: string }
+> = {
+  points: { label: "Tổng số điểm", desc: "Điểm trận thắng / hòa / thua", icon: "🏆" },
+  diff: { label: "Hiệu số điểm", desc: "Điểm thắng trừ điểm thua", icon: "⚖️" },
+  h2h: { label: "Đối đầu trực tiếp", desc: "Thành tích khi 2 đội gặp nhau", icon: "⚔️" },
+  draw: { label: "Bốc thăm / Chỉ số phụ", desc: "Bốc thăm phân định nếu hòa các chỉ số", icon: "🎲" },
+};
+
 export type TEvent = {
   id: string;
   name: string;
@@ -141,6 +155,8 @@ export type TEvent = {
   groupCount: number;
   advancePerGroup: number;
   groups: Group[];
+  /** Số lượng vòng đấu dự kiến trong nội dung đôi đổi partner ngẫu nhiên (undefined hoặc 0 = tối đa theo số VĐV) */
+  randomRoundsCount?: number;
 };
 
 export type TournamentState = {
@@ -162,6 +178,8 @@ export type TournamentState = {
   selectedEventId?: string;
   /** Trạng thái khóa nhánh KO theo từng nội dung */
   koLocked?: Record<string, boolean>;
+  /** Thứ tự ưu tiên tính bảng xếp hạng của giải: Mặc định: Điểm -> Hiệu số -> Đối đầu -> Bốc thăm */
+  rankingCriteria?: RankingCriterion[];
 };
 
 const STORAGE_KEY = "nay-court-tournament-v3";
@@ -182,6 +200,7 @@ export function makeEvent(name = "Nội dung mới"): TEvent {
     groupCount: 2,
     advancePerGroup: 2,
     groups: [],
+    randomRoundsCount: 3,
   };
 }
 
@@ -198,6 +217,7 @@ const initialState: TournamentState = {
   events: [],
   entries: [],
   matches: [],
+  rankingCriteria: ["points", "diff", "h2h", "draw"],
 };
 
 type Ctx = {
@@ -220,6 +240,7 @@ type Ctx = {
   saveCurrentToArchive: () => Promise<string | null>;
   activeTournamentId: string | null;
   hasUnsavedChanges: () => boolean;
+  isDirty: boolean;
   markSaved: () => void;
   discardChanges: () => void;
   clearActiveTournament: () => void;
@@ -252,6 +273,10 @@ function sanitizeLoadedState(rawState: TournamentState): TournamentState {
     ...merged,
     matches,
     referees: hasAnyMatchReferee ? cleanedRefs : [],
+    rankingCriteria:
+      rawState.rankingCriteria && rawState.rankingCriteria.length > 0
+        ? rawState.rankingCriteria
+        : ["points", "diff", "h2h", "draw"],
   };
 }
 
@@ -337,10 +362,13 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       return null;
     }
   });
-  const savedSnapshotRef = useRef<string>(JSON.stringify(state));
+  const [savedSnapshot, setSavedSnapshot] = useState<string>(() => JSON.stringify(state));
+  const savedSnapshotRef = useRef<string>(savedSnapshot);
 
   const markSaved = useCallback(() => {
-    savedSnapshotRef.current = JSON.stringify(stateRef.current);
+    const snap = JSON.stringify(stateRef.current);
+    savedSnapshotRef.current = snap;
+    setSavedSnapshot(snap);
   }, []);
 
   const discardChanges = useCallback(() => {
@@ -348,6 +376,7 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
       const original: TournamentState = JSON.parse(savedSnapshotRef.current);
       setState(original);
+      setSavedSnapshot(savedSnapshotRef.current);
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(original));
       } catch {}
@@ -365,6 +394,19 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       localStorage.removeItem("naycourt_active_tour_id");
     } catch {}
   }, []);
+
+  const isDirty = useMemo(() => {
+    try {
+      const current = JSON.stringify(state);
+      if (current === savedSnapshot) return false;
+      if (!state.name.trim() && state.events.length === 0 && state.entries.length === 0) {
+        return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }, [state, savedSnapshot]);
 
   const hasUnsavedChanges = useCallback(() => {
     try {
@@ -517,7 +559,9 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
   const loadTournament = useCallback((newState: TournamentState, archiveId?: string) => {
     const sanitized = sanitizeLoadedState(newState);
     setState(sanitized);
-    savedSnapshotRef.current = JSON.stringify(sanitized);
+    const snap = JSON.stringify(sanitized);
+    savedSnapshotRef.current = snap;
+    setSavedSnapshot(snap);
     const tourId = archiveId || (sanitized as unknown as { id?: string }).id || null;
     setActiveTournamentId(tourId);
     try {
@@ -549,7 +593,12 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
           localStorage.setItem("naycourt_active_tour_id", savedId);
         } catch {}
       }
-      savedSnapshotRef.current = JSON.stringify(stateRef.current);
+      const snap = JSON.stringify(stateRef.current);
+      savedSnapshotRef.current = snap;
+      setSavedSnapshot(snap);
+      if (auth.currentUser) {
+        void syncTournamentToCloud(auth.currentUser.uid, auth.currentUser.email, stateRef.current);
+      }
       return savedId;
     } catch (e) {
       console.error("Lỗi khi lưu giải:", e);
@@ -559,7 +608,9 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
 
   const createNewTournament = useCallback(async () => {
     setState(initialState);
-    savedSnapshotRef.current = JSON.stringify(initialState);
+    const snap = JSON.stringify(initialState);
+    savedSnapshotRef.current = snap;
+    setSavedSnapshot(snap);
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(initialState));
       localStorage.removeItem("naycourt_active_tour_id");
@@ -609,6 +660,7 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       saveCurrentToArchive,
       activeTournamentId,
       hasUnsavedChanges,
+      isDirty,
       markSaved,
       discardChanges,
       clearActiveTournament,
@@ -633,6 +685,7 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       saveCurrentToArchive,
       activeTournamentId,
       hasUnsavedChanges,
+      isDirty,
       markSaved,
       discardChanges,
       clearActiveTournament,
@@ -1079,78 +1132,270 @@ export function getRotatingScheduleIndices(n: number): [[number, number], [numbe
 
 /**
  * Sinh lịch đấu vòng tròn đổi partner ngẫu nhiên cho nội dung đôi:
- * - Sau mỗi trận/vòng, các VĐV sẽ đổi partner sao cho:
- *   1. Mọi VĐV đều đánh SỐ TRẬN BẰNG NHAU TUYỆT ĐỐI.
- *   2. KHÔNG BAO GIỜ BỊ TRÙNG LẶP PARTNER.
- *   3. Phân chia theo từng vòng đấu hợp lý để không bị trùng giờ trên sân.
+/**
+ * Bốc thăm và sinh lịch thi đấu 1 vòng tiếp theo cho nội dung Đôi đổi partner ngẫu nhiên (Rotating Doubles):
+ * - Nếu có nhập điểm trình (DUPR/PVNA): thuật toán cân bằng tổng điểm trình giữa 2 bên trong mỗi trận đấu:
+ *   Trong 4 VĐV [p1, p2, p3, p4] (sắp xếp r1 >= r2 >= r3 >= r4), ghép cặp (p1 + p4) vs (p2 + p3) để tổng điểm 2 bên gần bằng nhau nhất.
+ * - Tránh tối đa việc gặp lại partner đã từng bắt cặp ở các vòng trước.
+ * - Nếu không nhập điểm trình: bốc thăm ngẫu nhiên công bằng, đảm bảo không trùng partner và số trận đều nhau.
+ * - Bỏ qua các VĐV đã đánh dấu bỏ cuộc (withdrawn).
+ */
+export function generateNextRotatingDoublesRound(
+  ev: TEvent,
+  entries: Entry[],
+  existingMatches: Match[],
+  courts: string[],
+): Match[] {
+  // Chỉ lấy VĐV hợp lệ và CHƯA BỎ CUỘC
+  const activeEntries = entries.filter(
+    (e) => !e.withdrawn && e.players.some((p) => p.name.trim()),
+  );
+  const n = activeEntries.length;
+  if (n < 4) return [];
+
+  const courtList = courts.length ? courts : ["Sân 1"];
+  const evMatches = existingMatches.filter((m) => m.eventId === ev.id && m.stage === "group");
+  const existingRounds = evMatches.map((m) => m.round);
+  const nextRound = existingRounds.length > 0 ? Math.max(...existingRounds) + 1 : 1;
+
+  // Lịch sử partner và đối đầu từ các trận trước
+  const partnerCounts = new Map<string, number>();
+  const opponentCounts = new Map<string, number>();
+  const playCounts = new Map<string, number>();
+
+  activeEntries.forEach((e) => playCounts.set(e.id, 0));
+
+  const makeKey = (id1: string, id2: string) => (id1 < id2 ? `${id1}_${id2}` : `${id2}_${id1}`);
+
+  evMatches.forEach((m) => {
+    const teamA = m.aEntryIds || (m.aId ? [m.aId] : []);
+    const teamB = m.bEntryIds || (m.bId ? [m.bId] : []);
+
+    if (teamA.length === 2) {
+      const k = makeKey(teamA[0]!, teamA[1]!);
+      partnerCounts.set(k, (partnerCounts.get(k) || 0) + 1);
+    }
+    if (teamB.length === 2) {
+      const k = makeKey(teamB[0]!, teamB[1]!);
+      partnerCounts.set(k, (partnerCounts.get(k) || 0) + 1);
+    }
+
+    teamA.forEach((a) => {
+      teamB.forEach((b) => {
+        const k = makeKey(a, b);
+        opponentCounts.set(k, (opponentCounts.get(k) || 0) + 1);
+      });
+    });
+
+    [...teamA, ...teamB].forEach((id) => {
+      if (playCounts.has(id)) {
+        playCounts.set(id, playCounts.get(id)! + 1);
+      }
+    });
+  });
+
+  const numMatches = Math.floor(n / 4);
+  const neededPlayersCount = numMatches * 4;
+  const numPairs = numMatches * 2;
+
+  // Sắp xếp các VĐV theo số trận đã chơi tăng dần (người ít trận nhất được ưu tiên đánh)
+  // Kèm chút ngẫu nhiên để các VĐV bằng số trận được xáo trộn công bằng
+  const candidates = [...activeEntries].sort((a, b) => {
+    const diff = (playCounts.get(a.id) || 0) - (playCounts.get(b.id) || 0);
+    if (diff !== 0) return diff;
+    return Math.random() - 0.5;
+  });
+
+  const selectedEntries = candidates.slice(0, neededPlayersCount);
+
+  // Kiểm tra xem có ai có điểm trình không
+  const hasRatings = selectedEntries.some((e) => {
+    const r = e.players[0]?.rating;
+    return typeof r === "number" && !isNaN(r) && r > 0;
+  });
+
+  const getRating = (e: Entry) => {
+    const r = e.players[0]?.rating;
+    return typeof r === "number" && !isNaN(r) && r > 0 ? r : 2.5;
+  };
+
+  let bestMatches: Array<{ a: [Entry, Entry]; b: [Entry, Entry] }> = [];
+
+  if (hasRatings) {
+    // Sắp xếp VĐV theo điểm trình giảm dần
+    const sorted = [...selectedEntries].sort((a, b) => getRating(b) - getRating(a));
+    // Chia làm 2 nhóm bằng nhau: Nhóm trình cao (High) và Nhóm trình thấp (Low)
+    const highPool = sorted.slice(0, numPairs);
+    const lowPool = sorted.slice(numPairs);
+
+    const totalRatings = selectedEntries.reduce((sum, e) => sum + getRating(e), 0);
+    const targetPairRating = totalRatings / numPairs;
+
+    let bestPairingScore = Infinity;
+    let bestPairs: Array<[Entry, Entry]> = [];
+
+    // Tìm cách ghép 1 người trình cao với 1 người trình thấp sao cho:
+    // 1. Tuyệt đối không trùng partner cũ (penalty cực lớn nếu trùng)
+    // 2. Tổng điểm trình mỗi cặp đều nhau nhất có thể
+    for (let iter = 0; iter < 1200; iter++) {
+      const shuffledLow = [...lowPool].sort(() => Math.random() - 0.5);
+      const currentPairs: Array<[Entry, Entry]> = [];
+      let penalty = 0;
+
+      for (let i = 0; i < numPairs; i++) {
+        const h = highPool[i]!;
+        const l = shuffledLow[i]!;
+        currentPairs.push([h, l]);
+
+        const key = makeKey(h.id, l.id);
+        const repeatCount = partnerCounts.get(key) || 0;
+        penalty += repeatCount * 1_000_000;
+
+        const pairRating = getRating(h) + getRating(l);
+        penalty += Math.abs(pairRating - targetPairRating) * 150;
+      }
+
+      if (penalty < bestPairingScore) {
+        bestPairingScore = penalty;
+        bestPairs = currentPairs;
+        if (bestPairingScore === 0) break;
+      }
+    }
+
+    // Sau khi đã có các cặp cân đều (1 cao + 1 thấp), xếp các cặp đấu đối kháng ngẫu nhiên (random)
+    let bestMatchScore = Infinity;
+    for (let iter = 0; iter < 500; iter++) {
+      const shuffledPairs = [...bestPairs].sort(() => Math.random() - 0.5);
+      const roundMatches: Array<{ a: [Entry, Entry]; b: [Entry, Entry] }> = [];
+      let mPenalty = 0;
+
+      for (let m = 0; m < numMatches; m++) {
+        const pairA = shuffledPairs[m * 2]!;
+        const pairB = shuffledPairs[m * 2 + 1]!;
+        roundMatches.push({ a: pairA, b: pairB });
+
+        // Hạn chế gặp lại đối thủ cũ
+        const oppKeys = [
+          makeKey(pairA[0].id, pairB[0].id),
+          makeKey(pairA[0].id, pairB[1].id),
+          makeKey(pairA[1].id, pairB[0].id),
+          makeKey(pairA[1].id, pairB[1].id),
+        ];
+        oppKeys.forEach((k) => {
+          mPenalty += (opponentCounts.get(k) || 0) * 20;
+        });
+
+        // Điểm trình 2 cặp trong 1 trận cân bằng nhau
+        const rateA = getRating(pairA[0]) + getRating(pairA[1]);
+        const rateB = getRating(pairB[0]) + getRating(pairB[1]);
+        mPenalty += Math.abs(rateA - rateB) * 50;
+      }
+
+      if (mPenalty < bestMatchScore) {
+        bestMatchScore = mPenalty;
+        bestMatches = roundMatches;
+        if (bestMatchScore === 0) break;
+      }
+    }
+  } else {
+    // Trường hợp không nhập điểm trình: Bốc thăm ngẫu nhiên công bằng, không trùng partner
+    let bestScore = Infinity;
+
+    for (let iter = 0; iter < 1200; iter++) {
+      const shuffled = [...selectedEntries].sort(() => Math.random() - 0.5);
+      const roundMatches: Array<{ a: [Entry, Entry]; b: [Entry, Entry] }> = [];
+      let currentScore = 0;
+
+      for (let m = 0; m < numMatches; m++) {
+        const p4 = shuffled.slice(m * 4, m * 4 + 4);
+        const splits: Array<{ a: [Entry, Entry]; b: [Entry, Entry] }> = [
+          { a: [p4[0]!, p4[1]!], b: [p4[2]!, p4[3]!] },
+          { a: [p4[0]!, p4[2]!], b: [p4[1]!, p4[3]!] },
+          { a: [p4[0]!, p4[3]!], b: [p4[1]!, p4[2]!] },
+        ];
+
+        let bestSplit = splits[0]!;
+        let minSplitPenalty = Infinity;
+
+        for (const sp of splits) {
+          let pen = 0;
+          const kA = makeKey(sp.a[0].id, sp.a[1].id);
+          const kB = makeKey(sp.b[0].id, sp.b[1].id);
+          const repeatA = partnerCounts.get(kA) || 0;
+          const repeatB = partnerCounts.get(kB) || 0;
+
+          pen += repeatA * 1_000_000;
+          pen += repeatB * 1_000_000;
+
+          const oppKeys = [
+            makeKey(sp.a[0].id, sp.b[0].id),
+            makeKey(sp.a[0].id, sp.b[1].id),
+            makeKey(sp.a[1].id, sp.b[0].id),
+            makeKey(sp.a[1].id, sp.b[1].id),
+          ];
+          oppKeys.forEach((k) => {
+            pen += (opponentCounts.get(k) || 0) * 15;
+          });
+
+          if (pen < minSplitPenalty) {
+            minSplitPenalty = pen;
+            bestSplit = sp;
+          }
+        }
+
+        roundMatches.push(bestSplit);
+        currentScore += minSplitPenalty;
+      }
+
+      if (currentScore < bestScore) {
+        bestScore = currentScore;
+        bestMatches = roundMatches;
+        if (bestScore === 0) break;
+      }
+    }
+  }
+
+  const newMatches: Match[] = [];
+  bestMatches.forEach((bm, idx) => {
+    newMatches.push({
+      id: uid(),
+      eventId: ev.id,
+      stage: "group",
+      groupName: "Vòng tròn",
+      round: nextRound,
+      aId: bm.a[0].id,
+      bId: bm.b[0].id,
+      aEntryIds: [bm.a[0].id, bm.a[1].id],
+      bEntryIds: [bm.b[0].id, bm.b[1].id],
+      scoreA: null,
+      scoreB: null,
+      court: courtList[idx % courtList.length] || "Sân 1",
+      referee: "",
+      status: "pending",
+    });
+  });
+
+  return newMatches;
+}
+
+/**
+ * Sinh lịch đấu vòng tròn đổi partner ngẫu nhiên cho nội dung đôi:
+ * - Khi bấm tạo lịch ban đầu: CHỈ TẠO 1 VÒNG ĐẦU TIÊN (Vòng 1).
+ * - Các vòng sau sẽ được người dùng bấm "Bốc thăm tiếp Vòng X" theo số lượng vòng cài đặt.
+ * - Ghép 1 người điểm thấp với 1 người điểm cao để cân bằng điểm trình, xếp trận đấu random.
  */
 export function generateRotatingDoublesMatches(
   ev: TEvent,
   entries: Entry[],
   courts: string[],
 ): Match[] {
-  const n = entries.length;
-  if (n < 4) return [];
+  const activeEntries = entries.filter(
+    (e) => !e.withdrawn && e.players.some((p) => p.name.trim()),
+  );
+  if (activeEntries.length < 4) return [];
 
-  const courtList = courts.length ? courts : ["Sân 1"];
-  const schedulePairs = getRotatingScheduleIndices(n);
-  if (schedulePairs.length === 0) return [];
-
-  // Phân chia các trận vào từng Round sao cho trong cùng 1 round không VĐV nào phải đánh cùng lúc 2 sân
-  const maxMatchesPerRound = Math.max(1, Math.floor(n / 4));
-  const remaining = new Set<number>(schedulePairs.keys());
-  const roundMap = new Map<number, number>();
-  const courtMap = new Map<number, string>();
-
-  let round = 1;
-  while (remaining.size > 0) {
-    const playersInRound = new Set<number>();
-    let courtIdx = 0;
-    for (const mIdx of [...remaining]) {
-      if (courtIdx >= maxMatchesPerRound) break;
-      const [pA, pB] = schedulePairs[mIdx]!;
-      const players = [...pA, ...pB];
-      if (players.some((p) => playersInRound.has(p))) continue;
-
-      players.forEach((p) => playersInRound.add(p));
-      roundMap.set(mIdx, round);
-      courtMap.set(mIdx, courtList[courtIdx % courtList.length]!);
-      remaining.delete(mIdx);
-      courtIdx++;
-    }
-    round++;
-    if (round > 250) break;
-  }
-
-  const matches: Match[] = [];
-  schedulePairs.forEach(([pairA, pairB], mIdx) => {
-    const pA1 = entries[pairA[0]]!;
-    const pA2 = entries[pairA[1]]!;
-    const pB1 = entries[pairB[0]]!;
-    const pB2 = entries[pairB[1]]!;
-
-    matches.push({
-      id: uid(),
-      eventId: ev.id,
-      stage: "group",
-      groupName: "Vòng tròn",
-      round: roundMap.get(mIdx) ?? 1,
-      aId: pA1.id,
-      bId: pB1.id,
-      aEntryIds: [pA1.id, pA2.id],
-      bEntryIds: [pB1.id, pB2.id],
-      scoreA: null,
-      scoreB: null,
-      court: courtMap.get(mIdx) ?? courtList[0]!,
-      referee: "",
-      status: "pending",
-    });
-  });
-
-  // Sắp xếp các trận theo số thứ tự round tăng dần để lịch hiển thị tuần tự và tự nhiên
-  matches.sort((a, b) => a.round - b.round);
-
-  return matches;
+  // Khi bấm tạo lịch ban đầu: chỉ tạo đúng 1 vòng đầu tiên (Vòng 1)
+  return generateNextRotatingDoublesRound(ev, activeEntries, [], courts);
 }
 
 /**
@@ -1324,10 +1569,16 @@ export function computeIndividualStandings(
   entries: Entry[],
   matches: Match[],
   ev: Pick<TEvent, "winPoints" | "lossPoints" | "drawPoints">,
+  criteria: RankingCriterion[] = ["points", "diff", "h2h", "draw"],
+  withdrawnEntryIds: Set<string> = new Set(),
 ): IndividualStandingRow[] {
   const rows = new Map<string, IndividualStandingRow>();
   entries.forEach((e) => {
     const p = e.players[0];
+    const isWithdrawn = Boolean(e.withdrawn || withdrawnEntryIds.has(e.id));
+    if (isWithdrawn) {
+      withdrawnEntryIds.add(e.id);
+    }
     rows.set(e.id, {
       entryId: e.id,
       playerName: p?.name?.trim() || "VĐV",
@@ -1348,6 +1599,10 @@ export function computeIndividualStandings(
     if (m.scoreA === null || m.scoreB === null) return;
     const teamAIds = m.aEntryIds ? m.aEntryIds : m.aId ? [m.aId] : [];
     const teamBIds = m.bEntryIds ? m.bEntryIds : m.bId ? [m.bId] : [];
+
+    // Nếu trận đấu có bất kỳ VĐV nào đã bỏ cuộc, hủy bỏ toàn bộ kết quả trận đấu này
+    const hasWithdrawn = [...teamAIds, ...teamBIds].some((id) => withdrawnEntryIds.has(id));
+    if (hasWithdrawn) return;
 
     teamAIds.forEach((id) => {
       const row = rows.get(id);
@@ -1389,13 +1644,44 @@ export function computeIndividualStandings(
   return [...rows.values()]
     .map((r) => ({ ...r, diff: r.pointsFor - r.pointsAgainst }))
     .sort((x, y) => {
-      // 1. Tổng điểm
-      if (y.points !== x.points) return y.points - x.points;
-      // 2. Hiệu số
-      if (y.diff !== x.diff) return y.diff - x.diff;
-      // 3. Tổng điểm ghi được
+      const xWithdrawn = withdrawnEntryIds.has(x.entryId);
+      const yWithdrawn = withdrawnEntryIds.has(y.entryId);
+      if (xWithdrawn && !yWithdrawn) return 1;
+      if (!xWithdrawn && yWithdrawn) return -1;
+      if (xWithdrawn && yWithdrawn) return 0;
+
+      for (const crit of criteria) {
+        if (crit === "points") {
+          if (y.points !== x.points) return y.points - x.points;
+        } else if (crit === "diff") {
+          if (y.diff !== x.diff) return y.diff - x.diff;
+        } else if (crit === "h2h") {
+          const h2h = matches.find((m) => {
+            if (m.scoreA === null || m.scoreB === null) return false;
+            const aIds: string[] = m.aEntryIds || (m.aId ? [m.aId] : []);
+            const bIds: string[] = m.bEntryIds || (m.bId ? [m.bId] : []);
+            return (
+              (aIds.includes(x.entryId) && bIds.includes(y.entryId)) ||
+              (aIds.includes(y.entryId) && bIds.includes(x.entryId))
+            );
+          });
+          if (h2h && h2h.scoreA !== null && h2h.scoreB !== null && h2h.scoreA !== h2h.scoreB) {
+            const aIds: string[] = h2h.aEntryIds || (h2h.aId ? [h2h.aId] : []);
+            const xWon =
+              (aIds.includes(x.entryId) && h2h.scoreA > h2h.scoreB) ||
+              (!aIds.includes(x.entryId) && h2h.scoreB > h2h.scoreA);
+            const yWon =
+              (aIds.includes(y.entryId) && h2h.scoreA > h2h.scoreB) ||
+              (!aIds.includes(y.entryId) && h2h.scoreB > h2h.scoreA);
+            if (xWon && !yWon) return -1;
+            if (yWon && !xWon) return 1;
+          }
+        } else if (crit === "draw") {
+          if (y.pointsFor !== x.pointsFor) return y.pointsFor - x.pointsFor;
+        }
+      }
+
       if (y.pointsFor !== x.pointsFor) return y.pointsFor - x.pointsFor;
-      // 4. Số trận thắng
       return y.win - x.win;
     });
 }
@@ -1404,6 +1690,8 @@ export function computeStandings(
   entryIds: string[],
   matches: Match[],
   ev: Pick<TEvent, "winPoints" | "lossPoints" | "drawPoints">,
+  criteria: RankingCriterion[] = ["points", "diff", "h2h", "draw"],
+  withdrawnEntryIds: Set<string> = new Set(),
 ): StandingRow[] {
   const rows = new Map<string, StandingRow>();
   entryIds.forEach((id) =>
@@ -1419,8 +1707,17 @@ export function computeStandings(
       points: 0,
     }),
   );
+
   matches.forEach((m) => {
     if (m.scoreA === null || m.scoreB === null) return;
+    // Nếu có đội bỏ cuộc, hủy bỏ toàn bộ kết quả trận đấu này (không tính cho cả 2 bên)
+    if (
+      (m.aId && withdrawnEntryIds.has(m.aId)) ||
+      (m.bId && withdrawnEntryIds.has(m.bId))
+    ) {
+      return;
+    }
+
     const a = m.aId ? rows.get(m.aId) : null;
     const b = m.bId ? rows.get(m.bId) : null;
     if (!a || !b) return;
@@ -1447,29 +1744,43 @@ export function computeStandings(
       b.points += ev.drawPoints;
     }
   });
+
   return [...rows.values()]
     .map((r) => ({ ...r, diff: r.pointsFor - r.pointsAgainst }))
     .sort((x, y) => {
-      // 1. Tổng điểm
-      if (y.points !== x.points) return y.points - x.points;
-      // 2. Hiệu số
-      if (y.diff !== x.diff) return y.diff - x.diff;
-      // 3. Đối đầu trực tiếp (Head-to-head)
-      const h2h = matches.find(
-        (m) =>
-          m.scoreA !== null &&
-          m.scoreB !== null &&
-          ((m.aId === x.entryId && m.bId === y.entryId) ||
-            (m.aId === y.entryId && m.bId === x.entryId)),
-      );
-      if (h2h && h2h.scoreA !== null && h2h.scoreB !== null && h2h.scoreA !== h2h.scoreB) {
-        const xScore = h2h.aId === x.entryId ? h2h.scoreA : h2h.scoreB;
-        const yScore = h2h.aId === y.entryId ? h2h.scoreA : h2h.scoreB;
-        if (xScore !== yScore) {
-          return yScore - xScore;
+      // Đội bỏ cuộc luôn xếp ở cuối bảng
+      const xWithdrawn = withdrawnEntryIds.has(x.entryId);
+      const yWithdrawn = withdrawnEntryIds.has(y.entryId);
+      if (xWithdrawn && !yWithdrawn) return 1;
+      if (!xWithdrawn && yWithdrawn) return -1;
+      if (xWithdrawn && yWithdrawn) return 0;
+
+      for (const crit of criteria) {
+        if (crit === "points") {
+          if (y.points !== x.points) return y.points - x.points;
+        } else if (crit === "diff") {
+          if (y.diff !== x.diff) return y.diff - x.diff;
+        } else if (crit === "h2h") {
+          const h2h = matches.find(
+            (m) =>
+              m.scoreA !== null &&
+              m.scoreB !== null &&
+              ((m.aId === x.entryId && m.bId === y.entryId) ||
+                (m.aId === y.entryId && m.bId === x.entryId)),
+          );
+          if (h2h && h2h.scoreA !== null && h2h.scoreB !== null && h2h.scoreA !== h2h.scoreB) {
+            const xScore = h2h.aId === x.entryId ? h2h.scoreA : h2h.scoreB;
+            const yScore = h2h.aId === y.entryId ? h2h.scoreA : h2h.scoreB;
+            if (xScore !== yScore) {
+              return yScore - xScore;
+            }
+          }
+        } else if (crit === "draw") {
+          if (y.pointsFor !== x.pointsFor) return y.pointsFor - x.pointsFor;
         }
       }
-      // 4. Tổng điểm ghi được
+
+      // Fallback cuối cùng: tổng điểm ghi được
       return y.pointsFor - x.pointsFor;
     });
 }
@@ -2095,6 +2406,366 @@ export function generateEmptyKnockout(
 }
 
 /**
+ * Tạo nhánh KO theo Tổng số đội KO đã chọn (chuẩn thi đấu không sử dụng suất BYE):
+ * - Lấy đủ chính xác số đội KO đã chọn (ví dụ: 8 đội từ 3 bảng gồm: 3 đội Nhất, 3 đội Nhì, và bổ sung 2 đội Ba có hiệu số trung bình cao nhất).
+ * - Công thức xếp hạng đội hạng Ba: hiệu số chia cho số trận đã đánh ở vòng bảng (diff / matchesPlayed), nếu bằng nhau xét điểm trung bình mỗi trận.
+ * - Các cặp đấu Vòng 1 xếp không bị trùng bảng, phân đều sang 2 nhánh.
+ * - Khi toàn bộ vòng bảng kết thúc: tự động điền tên các đội vào nhánh.
+ */
+export function generateTotalKoKnockout(
+  ev: TEvent,
+  entries: Entry[],
+  groupMatches: Match[],
+  totalTeams: number,
+  courts: string[],
+): Match[] {
+  let size = 2;
+  while (size < Math.max(2, totalTeams)) {
+    size *= 2;
+  }
+
+  const courtList = courts.length ? courts : ["Sân 1"];
+  let courtCursor = 0;
+  const numMatchesR1 = size / 2;
+
+  // Nếu không có chia bảng (ít hơn 2 bảng)
+  if (!ev.groups || ev.groups.length < 2) {
+    const seedOrder = getBracketSeedOrder(size);
+    const matches: Match[] = [];
+    let roundIdx = 1;
+    let current = size;
+
+    while (current >= 2) {
+      const label = KO_LABEL(current);
+      const matchCount = current / 2;
+      for (let i = 0; i < matchCount; i++) {
+        const isFirst = current === size;
+        const seedA = isFirst ? seedOrder[2 * i] : undefined;
+        const seedB = isFirst ? seedOrder[2 * i + 1] : undefined;
+        const entryA = seedA && seedA <= entries.length ? entries[seedA - 1]?.id ?? null : null;
+        const entryB = seedB && seedB <= entries.length ? entries[seedB - 1]?.id ?? null : null;
+        const pA = seedA ? `Hạt giống ${seedA}` : "";
+        const pB = seedB ? `Hạt giống ${seedB}` : "";
+
+        matches.push({
+          id: uid(),
+          eventId: ev.id,
+          stage: "ko",
+          groupName: label,
+          round: roundIdx,
+          koRound: label,
+          slot: i,
+          aId: entryA,
+          bId: entryB,
+          customPlaceholderA: pA,
+          customPlaceholderB: pB,
+          scoreA: null,
+          scoreB: null,
+          court: courtList[courtCursor++ % courtList.length]!,
+          referee: "",
+          status: "pending",
+        });
+      }
+      roundIdx++;
+      current /= 2;
+    }
+
+    if (ev.thirdPlace && size >= 4) {
+      matches.push({
+        id: uid(),
+        eventId: ev.id,
+        stage: "ko",
+        groupName: "Tranh hạng 3",
+        round: roundIdx - 1,
+        koRound: "Tranh hạng 3",
+        slot: 99,
+        aId: null,
+        bId: null,
+        scoreA: null,
+        scoreB: null,
+        court: courtList[courtCursor++ % courtList.length]!,
+        referee: "",
+        status: "pending",
+      });
+    }
+
+    return propagateKnockout(matches, ev.id, ev, groupMatches);
+  }
+
+  // Trường hợp chia từ 2 bảng trở lên
+  const groups = ev.groups;
+  const cleanGName = (name: string, idx: number) =>
+    name.replace(/^Bảng\s+/i, "").trim().toUpperCase() || String.fromCharCode(65 + idx);
+
+  const byGroup = groups.map((g, idx) => ({
+    group: g,
+    key: cleanGName(g.name, idx),
+    rows: computeStandings(
+      g.entryIds,
+      groupMatches.filter((m) => m.groupName === g.name),
+      ev,
+    ),
+  }));
+
+  const allGroupMatchesDone =
+    groupMatches.length > 0 && groupMatches.every((m) => m.status === "done");
+  const hasAnyGroupScore = groupMatches.some((m) => m.scoreA !== null && m.scoreB !== null);
+
+  // 1. Thu thập danh sách đội theo từng thứ hạng trong bảng
+  interface TeamCandidate {
+    entryId: string | null;
+    groupKey: string;
+    rankInGroup: number;
+    played: number;
+    points: number;
+    diff: number;
+    pointsFor: number;
+    avgDiff: number; // Hiệu số trung bình mỗi trận = diff / played
+    avgPoints: number;
+    avgPointsFor: number;
+  }
+
+  const getRankList = (rankIdx: number): TeamCandidate[] => {
+    const list: TeamCandidate[] = byGroup.map((bg) => {
+      const row = bg.rows[rankIdx];
+      const played = row ? (row.played || (row.win + row.loss + (row.draw || 0))) : 0;
+      const diff = row?.diff ?? 0;
+      const points = row?.points ?? 0;
+      const pointsFor = row?.pointsFor ?? 0;
+      return {
+        entryId: row?.entryId ?? null,
+        groupKey: bg.key,
+        rankInGroup: rankIdx + 1,
+        played,
+        points,
+        diff,
+        pointsFor,
+        avgDiff: played > 0 ? diff / played : 0,
+        avgPoints: played > 0 ? points / played : 0,
+        avgPointsFor: played > 0 ? pointsFor / played : 0,
+      };
+    });
+
+    // Sắp xếp các đội cùng thứ hạng theo tiêu chuẩn:
+    // Với Nhất bảng: điểm số, hiệu số, điểm ghi
+    // Với Nhì & Ba bảng: công thức hiệu số chia cho số trận đã đánh (avgDiff), điểm trung bình (avgPoints)
+    list.sort((a, b) => {
+      if (rankIdx === 0) {
+        if (b.points !== a.points) return b.points - a.points;
+        if (b.diff !== a.diff) return b.diff - a.diff;
+        if (b.pointsFor !== a.pointsFor) return b.pointsFor - a.pointsFor;
+        return a.groupKey.localeCompare(b.groupKey);
+      }
+      // Đội hạng 2, 3, 4: So sánh theo hiệu số trung bình mỗi trận (diff / played)
+      if (Math.abs(b.avgDiff - a.avgDiff) > 0.0001) {
+        return b.avgDiff - a.avgDiff;
+      }
+      if (Math.abs(b.avgPoints - a.avgPoints) > 0.0001) {
+        return b.avgPoints - a.avgPoints;
+      }
+      if (Math.abs(b.avgPointsFor - a.avgPointsFor) > 0.0001) {
+        return b.avgPointsFor - a.avgPointsFor;
+      }
+      if (b.pointsFor !== a.pointsFor) {
+        return b.pointsFor - a.pointsFor;
+      }
+      return a.groupKey.localeCompare(b.groupKey);
+    });
+
+    return list;
+  };
+
+  const rank1Teams = getRankList(0); // Đội Nhất các bảng
+  const rank2Teams = getRankList(1); // Đội Nhì các bảng
+  const rank3Teams = getRankList(2); // Đội Ba các bảng (đã sort theo diff / played)
+  const rank4Teams = getRankList(3); // Đội Tư các bảng nếu cần
+
+  // 2. Tuyển chọn đủ chính xác `size` đội vào vòng KO (không để BYE)
+  interface QualifiedTeam {
+    entryId: string | null;
+    placeholder: string;
+    groupKey: string;
+    rankInGroup: number;
+    isWildcard?: boolean;
+  }
+
+  const qualified: QualifiedTeam[] = [];
+  let remainingNeeded = size;
+
+  // Lấy đội Nhất bảng
+  const take1Count = Math.min(remainingNeeded, rank1Teams.length);
+  for (let i = 0; i < take1Count; i++) {
+    const t = rank1Teams[i]!;
+    qualified.push({
+      entryId: t.entryId,
+      placeholder: `1${t.groupKey}`,
+      groupKey: t.groupKey,
+      rankInGroup: 1,
+    });
+  }
+  remainingNeeded -= take1Count;
+
+  // Lấy đội Nhì bảng
+  if (remainingNeeded > 0) {
+    const take2Count = Math.min(remainingNeeded, rank2Teams.length);
+    for (let i = 0; i < take2Count; i++) {
+      const t = rank2Teams[i]!;
+      qualified.push({
+        entryId: t.entryId,
+        placeholder: `2${t.groupKey}`,
+        groupKey: t.groupKey,
+        rankInGroup: 2,
+      });
+    }
+    remainingNeeded -= take2Count;
+  }
+
+  // Lấy đội Hạng Ba xuất sắc nhất theo hiệu số trung bình mỗi trận (Wildcards)
+  if (remainingNeeded > 0) {
+    const take3Count = Math.min(remainingNeeded, rank3Teams.length);
+    for (let i = 0; i < take3Count; i++) {
+      const t = rank3Teams[i]!;
+      qualified.push({
+        entryId: t.entryId,
+        placeholder: `3${t.groupKey}`,
+        groupKey: t.groupKey,
+        rankInGroup: 3,
+        isWildcard: true,
+      });
+    }
+    remainingNeeded -= take3Count;
+  }
+
+  // Nếu vẫn còn thiếu (ví dụ 2 bảng chọn 8 đội), tiếp tục lấy đội Hạng Tư
+  if (remainingNeeded > 0) {
+    const take4Count = Math.min(remainingNeeded, rank4Teams.length);
+    for (let i = 0; i < take4Count; i++) {
+      const t = rank4Teams[i]!;
+      qualified.push({
+        entryId: t.entryId,
+        placeholder: `4${t.groupKey}`,
+        groupKey: t.groupKey,
+        rankInGroup: 4,
+        isWildcard: true,
+      });
+    }
+    remainingNeeded -= take4Count;
+  }
+
+  // 3. Phân cặp Vòng 1 theo thứ tự hạt giống tournament binary tree
+  // và giải quyết triệt để xung đột cùng bảng
+  const seedOrder = getBracketSeedOrder(size);
+  interface InitialKoSlot {
+    aId: string | null;
+    bId: string | null;
+    placeholderA: string;
+    placeholderB: string;
+    teamA: QualifiedTeam;
+    teamB: QualifiedTeam;
+  }
+
+  const firstRoundSlots: InitialKoSlot[] = [];
+  for (let i = 0; i < numMatchesR1; i++) {
+    const seedA = seedOrder[2 * i]!;
+    const seedB = seedOrder[2 * i + 1]!;
+    const tA = qualified[seedA - 1] || qualified[0]!;
+    const tB = qualified[seedB - 1] || qualified[qualified.length - 1]!;
+
+    firstRoundSlots.push({
+      aId: allGroupMatchesDone ? tA.entryId : null,
+      bId: allGroupMatchesDone ? tB.entryId : null,
+      placeholderA: tA.placeholder,
+      placeholderB: tB.placeholder,
+      teamA: tA,
+      teamB: tB,
+    });
+  }
+
+  // Tránh việc 2 đội cùng bảng gặp nhau ở Vòng 1 (hoán đổi đối thủ)
+  for (let i = 0; i < firstRoundSlots.length; i++) {
+    const slot = firstRoundSlots[i]!;
+    if (slot.teamA.groupKey === slot.teamB.groupKey) {
+      for (let j = 0; j < firstRoundSlots.length; j++) {
+        if (j === i) continue;
+        const otherSlot = firstRoundSlots[j]!;
+        if (
+          otherSlot.teamA.groupKey !== slot.teamB.groupKey &&
+          slot.teamA.groupKey !== otherSlot.teamB.groupKey
+        ) {
+          const tempTeam = slot.teamB;
+          slot.teamB = otherSlot.teamB;
+          otherSlot.teamB = tempTeam;
+
+          slot.placeholderB = slot.teamB.placeholder;
+          otherSlot.placeholderB = otherSlot.teamB.placeholder;
+          if (allGroupMatchesDone) {
+            slot.bId = slot.teamB.entryId;
+            otherSlot.bId = otherSlot.teamB.entryId;
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  // 4. Sinh tất cả các trận đấu cho toàn bộ các vòng KO
+  const matches: Match[] = [];
+  let roundIdx = 1;
+  let current = size;
+
+  while (current >= 2) {
+    const label = KO_LABEL(current);
+    const matchCount = current / 2;
+    for (let i = 0; i < matchCount; i++) {
+      const isFirst = current === size;
+      const slotData = isFirst ? firstRoundSlots[i] : null;
+
+      matches.push({
+        id: uid(),
+        eventId: ev.id,
+        stage: "ko",
+        groupName: label,
+        round: roundIdx,
+        koRound: label,
+        slot: i,
+        aId: slotData?.aId ?? null,
+        bId: slotData?.bId ?? null,
+        customPlaceholderA: slotData?.placeholderA,
+        customPlaceholderB: slotData?.placeholderB,
+        scoreA: null,
+        scoreB: null,
+        court: courtList[courtCursor++ % courtList.length]!,
+        referee: "",
+        status: "pending",
+      });
+    }
+    roundIdx++;
+    current /= 2;
+  }
+
+  if (ev.thirdPlace && size >= 4) {
+    matches.push({
+      id: uid(),
+      eventId: ev.id,
+      stage: "ko",
+      groupName: "Tranh hạng 3",
+      round: roundIdx - 1,
+      koRound: "Tranh hạng 3",
+      slot: 99,
+      aId: null,
+      bId: null,
+      scoreA: null,
+      scoreB: null,
+      court: courtList[courtCursor++ % courtList.length]!,
+      referee: "",
+      status: "pending",
+    });
+  }
+
+  return propagateKnockout(matches, ev.id, ev, groupMatches);
+}
+
+/**
  * Tự động xếp nhánh loại trực tiếp theo quy luật thứ hạng chữ cái bảng (A, B, C, D...):
  * - Không xét điểm số hay hiệu số giữa các bảng trên BXH, mà cố định theo vị trí chữ cái bảng:
  *   + Nhánh trái (nửa đầu vòng 1): 1A vs 2B, 1C vs 2D, 1E vs 2F, 1G vs 2H...
@@ -2330,8 +3001,11 @@ export function propagateKnockout(
 
     const isRankToken = (placeholder?: string) => {
       if (!placeholder) return false;
-      const clean = placeholder.trim();
-      return /^(?:Nhất|Nhì|Ba|Tư|I|II|III|IV|[1-4])\s*(?:bảng\s*)?([A-Za-z0-9]+)$/i.test(clean);
+      const clean = placeholder.replace(/[*#()]/g, "").trim();
+      return (
+        /^(?:Nhất|Nhì|Ba|Tư|I|II|III|IV|[1-4])\s*(?:bảng\s*)?([A-Za-z0-9]+)$/i.test(clean) ||
+        /^(?:Ba|3)\s*(?:tốt|xuất sắc)?\s*\d*$/i.test(clean)
+      );
     };
 
     const resolveTeam = (placeholder?: string) => {
@@ -2339,11 +3013,12 @@ export function propagateKnockout(
       const clean = placeholder.trim();
       if (/^bye$/i.test(clean)) return null;
 
-      // Hỗ trợ cả 1A, 2A, 1B, 2E... lẫn Nhất A, Nhì B, I A, II B...
-      const m1 = /^(?:Nhất|I|1)\s*(?:bảng\s*)?([A-Za-z0-9]+)$/i.exec(clean);
-      const m2 = /^(?:Nhì|II|2)\s*(?:bảng\s*)?([A-Za-z0-9]+)$/i.exec(clean);
-      const m3 = /^(?:Ba|III|3)\s*(?:bảng\s*)?([A-Za-z0-9]+)$/i.exec(clean);
-      const m4 = /^(?:Tư|IV|4)\s*(?:bảng\s*)?([A-Za-z0-9]+)$/i.exec(clean);
+      // Hỗ trợ cả 1A, 2A, 1B, 2E, 3B*, 3C* lẫn Nhất A, Nhì B, I A, II B, Ba C*...
+      const cleanWithoutDecor = clean.replace(/[*#]/g, "").trim();
+      const m1 = /^(?:Nhất|I|1)\s*(?:bảng\s*)?([A-Za-z0-9]+)$/i.exec(cleanWithoutDecor);
+      const m2 = /^(?:Nhì|II|2)\s*(?:bảng\s*)?([A-Za-z0-9]+)$/i.exec(cleanWithoutDecor);
+      const m3 = /^(?:Ba|III|3)\s*(?:bảng\s*)?([A-Za-z0-9]+)$/i.exec(cleanWithoutDecor);
+      const m4 = /^(?:Tư|IV|4)\s*(?:bảng\s*)?([A-Za-z0-9]+)$/i.exec(cleanWithoutDecor);
 
       const findStandings = (token: string) => {
         const target = token.trim().toLowerCase();
@@ -2361,6 +3036,32 @@ export function propagateKnockout(
       if (m2) return findStandings(m2[1])?.[1]?.entryId ?? null;
       if (m3) return findStandings(m3[1])?.[2]?.entryId ?? null;
       if (m4) return findStandings(m4[1])?.[3]?.entryId ?? null;
+
+      // Xử lý token 3*(1), 3*(2), Ba tốt 1, Ba tốt 2... (Wildcard đội hạng ba có hiệu số trung bình cao nhất)
+      const mWildcard3 = /^(?:Ba\s*(?:tốt|xuất sắc)?|3\*?)\s*(?:\(?(\d+)\)?)?$/i.exec(cleanWithoutDecor);
+      if (mWildcard3) {
+        const wildcardIdx = Math.max(0, parseInt(mWildcard3[1] || "1", 10) - 1);
+        const all3rd: Array<{ entryId: string; avgDiff: number; avgPoints: number; pointsFor: number }> = [];
+        for (const st of standingsByGroup.values()) {
+          if (st && st.length >= 3 && st[2]?.entryId) {
+            const row = st[2];
+            const played = row.played || (row.win + row.loss + (row.draw || 0));
+            all3rd.push({
+              entryId: row.entryId,
+              avgDiff: played > 0 ? row.diff / played : 0,
+              avgPoints: played > 0 ? row.points / played : 0,
+              pointsFor: row.pointsFor || 0,
+            });
+          }
+        }
+        all3rd.sort((a, b) => {
+          if (Math.abs(b.avgDiff - a.avgDiff) > 0.0001) return b.avgDiff - a.avgDiff;
+          if (Math.abs(b.avgPoints - a.avgPoints) > 0.0001) return b.avgPoints - a.avgPoints;
+          return b.pointsFor - a.pointsFor;
+        });
+        return all3rd[wildcardIdx]?.entryId ?? null;
+      }
+
       return null;
     };
 

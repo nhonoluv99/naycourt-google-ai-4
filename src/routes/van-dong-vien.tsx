@@ -217,6 +217,27 @@ function PlayersPage() {
   const patchEntry = (id: string, patch: Partial<Entry>) =>
     setEntries(entries.map((e) => (e.id === id ? { ...e, ...patch } : e)));
 
+  const toggleWithdrawn = (en: Entry) => {
+    const isW = Boolean(en.withdrawn);
+    if (!isW) {
+      setConfirmModal({
+        title: "⚠️ Xác nhận đánh dấu bỏ cuộc",
+        message: `Bạn có chắc chắn muốn đánh dấu "${entryName(en)}" bỏ cuộc?\n\nToàn bộ kết quả các trận thi đấu trước đó của VĐV/đội này sẽ bị HỦY BỎ (không tính điểm, hiệu số cho cả 2 bên trên bảng xếp hạng), và VĐV này sẽ không được xếp vào các vòng tiếp theo.`,
+        confirmText: "Xác nhận bỏ cuộc",
+        cancelText: "Hủy bỏ",
+        isDestructive: true,
+        onConfirm: () => {
+          patchEntry(en.id, { withdrawn: true });
+          setConfirmModal(null);
+          toast.warning(`Đã đánh dấu ${entryName(en)} bỏ cuộc. Kết quả trước đó đã bị hủy trên BXH.`);
+        },
+      });
+    } else {
+      patchEntry(en.id, { withdrawn: false });
+      toast.success(`Đã khôi phục thi đấu cho ${entryName(en)}.`);
+    }
+  };
+
   const patchPlayer = (id: string, idx: number, patch: Partial<Entry["players"][number]>) => {
     if (hasStartedMatches && !confirmedMatchEdit && "name" in patch) {
       requireEditConfirmation(() => {
@@ -702,6 +723,25 @@ function PlayersPage() {
                         >
                           Tổng trình: {totalRating > 0 ? formatRating(Number(totalRating.toFixed(4))) : "—"}
                         </div>
+                        {en.withdrawn ? (
+                          <button
+                            type="button"
+                            onClick={() => toggleWithdrawn(en)}
+                            className="rounded-lg bg-red-100 text-red-700 dark:bg-red-950/80 dark:text-red-300 border border-red-300 px-2 py-0.5 text-xs font-bold cursor-pointer"
+                            title="Bấm để khôi phục lại quyền thi đấu"
+                          >
+                            🚫 Bỏ cuộc (Khôi phục)
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => toggleWithdrawn(en)}
+                            className="text-line/40 hover:text-red-600 text-xs px-2 py-0.5 rounded hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer"
+                            title="Đánh dấu bỏ cuộc: Hủy bỏ toàn bộ kết quả trước đó của đội này"
+                          >
+                            ⚠️ Bỏ cuộc
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="text-line/40 hover:text-destructive p-1 cursor-pointer"
@@ -782,6 +822,25 @@ function PlayersPage() {
                           >
                             Tổng: {totalRating > 0 ? formatRating(Number(totalRating.toFixed(4))) : "—"}
                           </div>
+                          {en.withdrawn ? (
+                            <button
+                              type="button"
+                              onClick={() => toggleWithdrawn(en)}
+                              className="rounded-lg bg-red-100 text-red-700 dark:bg-red-950/80 dark:text-red-300 border border-red-300 px-2 py-0.5 text-xs font-bold cursor-pointer"
+                              title="Bấm để khôi phục lại quyền thi đấu"
+                            >
+                              🚫 Bỏ cuộc
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => toggleWithdrawn(en)}
+                              className="text-line/40 hover:text-red-600 text-xs px-1.5 py-0.5 rounded hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer"
+                              title="Đánh dấu bỏ cuộc: Hủy bỏ toàn bộ kết quả trước đó của cặp này"
+                            >
+                              ⚠️ Bỏ cuộc
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="text-line/40 hover:text-destructive p-1"
@@ -904,6 +963,25 @@ function PlayersPage() {
                         >
                           <span>{totalRating > 0 ? formatRating(Number(totalRating.toFixed(4))) : "—"}</span>
                         </div>
+                        {en.withdrawn ? (
+                          <button
+                            type="button"
+                            onClick={() => toggleWithdrawn(en)}
+                            className="rounded-lg bg-red-100 text-red-700 dark:bg-red-950/80 dark:text-red-300 border border-red-300 px-2 py-1 text-xs font-bold cursor-pointer shrink-0"
+                            title="Bấm để khôi phục lại quyền thi đấu"
+                          >
+                            🚫 Bỏ cuộc
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => toggleWithdrawn(en)}
+                            className="text-line/40 hover:text-red-600 text-xs px-2 py-1 rounded hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer shrink-0"
+                            title="Đánh dấu bỏ cuộc: Hủy bỏ toàn bộ kết quả trước đó của cặp này"
+                          >
+                            ⚠️ Bỏ cuộc
+                          </button>
+                        )}
                       </div>
                       <button
                         className="text-line/40 hover:text-destructive shrink-0 p-1"
@@ -974,6 +1052,25 @@ function PlayersPage() {
                         </div>
                       ))}
                     </div>
+                    {en.withdrawn ? (
+                      <button
+                        type="button"
+                        onClick={() => toggleWithdrawn(en)}
+                        className="rounded-lg bg-red-100 text-red-700 dark:bg-red-950/80 dark:text-red-300 border border-red-300 px-2 py-0.5 text-xs font-bold cursor-pointer shrink-0"
+                        title="Bấm để khôi phục lại quyền thi đấu"
+                      >
+                        🚫 Bỏ cuộc
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => toggleWithdrawn(en)}
+                        className="text-line/40 hover:text-red-600 text-xs px-2 py-0.5 rounded hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer shrink-0"
+                        title="Đánh dấu bỏ cuộc: Hủy bỏ toàn bộ kết quả trước đó của VĐV này"
+                      >
+                        ⚠️ Bỏ cuộc
+                      </button>
+                    )}
                     <button
                       className="text-line/40 hover:text-destructive shrink-0 p-1"
                       onClick={() => removeEntry(en.id)}

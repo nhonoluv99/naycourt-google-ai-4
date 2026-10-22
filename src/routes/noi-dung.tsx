@@ -125,10 +125,6 @@ function EventsPage() {
       >
         Nội dung thi đấu
       </h1>
-      <p className="mt-2 max-w-xl text-sm text-line/60">
-        Một giải có thể gồm nhiều nội dung, ví dụ Đôi nữ 4.3, Đôi hỗn hợp 5.0, Đơn nam 6.5. Mỗi nội
-        dung có cấu hình riêng và chỉnh lại được bất cứ lúc nào.
-      </p>
 
       <div className="mt-6 space-y-4">
         {state.events.map((ev) => (
@@ -224,17 +220,48 @@ function EventsPage() {
                     }
                     onChange={(pairMode) => updateEvent(ev.id, { pairMode })}
                   />
-                  {ev.bracket === "rr" && (
-                    <div className="mt-2.5 rounded-xl border border-line/20 bg-secondary/30 p-3 text-xs leading-relaxed text-line/80">
-                      {ev.pairMode === "fixed" ? (
-                        <p>
-                          🎯 <strong>Bắt cặp cố định:</strong> Chỉ có 1 partner duy nhất suốt giải. Toàn bộ các đội lần lượt đấu vòng tròn với nhau (không chia bảng, ví dụ 8 cặp thì mỗi đội đấu đủ 7 trận). Xếp hạng ưu tiên theo: <strong>Tổng điểm → Hiệu số → Đối đầu trực tiếp</strong>.
-                        </p>
-                      ) : (
-                        <p>
-                          🎲 <strong>Bắt cặp ngẫu nhiên:</strong> Mỗi VĐV đăng ký 1 dòng cá nhân. Sau mỗi trận hệ thống sẽ đổi partner ngẫu nhiên sao cho tất cả VĐV đều được ghép cặp và đối đầu nhau đủ lượt đều nhau. <strong>Điểm số được tính cá nhân tích lũy qua từng trận đấu</strong>.
-                        </p>
-                      )}
+                  {ev.bracket === "rr" && ev.pairMode === "random" && (
+                    <div className="mt-2.5 rounded-xl border-2 border-[#0a3320]/20 bg-gradient-to-r from-emerald-50/70 to-teal-50/50 p-3 text-xs leading-relaxed text-[#0a3320] font-medium shadow-2xs">
+                      Hệ thống đổi partner ngẫu nhiên sau mỗi vòng
+                    </div>
+                  )}
+
+                  {ev.bracket === "rr" && ev.pairMode === "random" && (
+                    <div className="mt-3.5 space-y-2 rounded-xl border border-line/20 bg-secondary/20 p-3.5">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <Lbl>Số lượng vòng đấu sẽ diễn ra</Lbl>
+                        <span className="text-[11px] text-line/60">
+                          (Tùy chọn số vòng, sau mỗi vòng có nút bốc thăm ngẫu nhiên tiếp)
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-3 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => updateEvent(ev.id, { randomRoundsCount: 0 })}
+                          className={`rounded-lg px-3.5 py-1.5 text-xs font-['Space_Grotesk',sans-serif] font-bold transition-all cursor-pointer border ${
+                            !ev.randomRoundsCount || ev.randomRoundsCount === 0
+                              ? "border-[#FF5C00] bg-orange-50 text-[#FF5C00] ring-1 ring-[#FF5C00]/40 shadow-xs"
+                              : "border-line/20 bg-white text-line/75 hover:border-line/50 hover:bg-black/5"
+                          }`}
+                        >
+                          Tất cả các vòng (Đầy đủ)
+                        </button>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-line/70 font-medium">hoặc:</span>
+                          <input
+                            type="number"
+                            min="1"
+                            max="50"
+                            placeholder="Số vòng"
+                            className="field w-24 !py-1 !px-2.5 text-xs font-bold text-center bg-white"
+                            value={ev.randomRoundsCount && ev.randomRoundsCount > 0 ? ev.randomRoundsCount : ""}
+                            onChange={(e) => {
+                              const v = e.target.value === "" ? 0 : Math.max(1, Math.min(50, Number(e.target.value)));
+                              updateEvent(ev.id, { randomRoundsCount: v });
+                            }}
+                          />
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>

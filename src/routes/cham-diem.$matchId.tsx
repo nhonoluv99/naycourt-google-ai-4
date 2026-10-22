@@ -557,18 +557,19 @@ function LiveScoringPage() {
               : 0;
             const nextPosA: [number, number] = live.posA ? [...live.posA] : [0, 1];
             const nextPosB: [number, number] = live.posB ? [...live.posB] : [0, 1];
-            // Đặt người giao đầu tiên và người nhận đầu tiên vào ô Phải (pos[0] - đối diện chéo nhau)
+            // Tại điểm 0 - 0 (chẵn): Đội giao bóng có người giao đầu (effServerIdx) đứng ở ô Phải (pos[0]).
+            // Đội nhận bóng tại điểm 0: VĐV 0 (Ninh) luôn đứng ở ô Phải (pos[0] = 0), VĐV 1 (Quy) đứng ở ô Trái (pos[1] = 1).
             if (doubles) {
               if (live.serveTeam === 0) {
                 nextPosA[0] = effServerIdx;
                 nextPosA[1] = 1 - effServerIdx;
-                nextPosB[0] = effReceiverIdx;
-                nextPosB[1] = 1 - effReceiverIdx;
+                nextPosB[0] = 0;
+                nextPosB[1] = 1;
               } else {
                 nextPosB[0] = effServerIdx;
                 nextPosB[1] = 1 - effServerIdx;
-                nextPosA[0] = effReceiverIdx;
-                nextPosA[1] = 1 - effReceiverIdx;
+                nextPosA[0] = 0;
+                nextPosA[1] = 1;
               }
             }
             updateMatch(match.id, {
@@ -751,15 +752,35 @@ function LiveScoringPage() {
     } else {
       // Đổi lượt giao cho Đội đối phương (Side-out)
       const nextServeTeam: 0 | 1 = (1 - live.serveTeam) as 0 | 1;
+      const nextTeamScore = nextServeTeam === 0 ? live.a : live.b;
+      const oppTeamScore = nextServeTeam === 0 ? live.b : live.a;
 
-      // Chuẩn luật Pickleball đôi Side-out:
-      // Khi mất giao (Side-out), lượt giao chuyển sang cho đội đối phương.
-      // Đội mới nhận quyền giao bóng luôn bắt đầu với lượt giao đầu tiên (Server 1).
+      let nextPosA: [number, number] = [...posA];
+      let nextPosB: [number, number] = [...posB];
+
+      if (doubles) {
+        // Chuẩn luật Pickleball đôi Side-out (USA Pickleball Rule 4.B.5 / 4.B.6):
+        // Khi mất giao (Side-out), đội nhận quyền giao bóng bắt đầu với lượt giao 1 (Server 1).
+        // Vị trí đứng của đội nhận giao bóng được xác định theo điểm số hiện tại của họ:
+        // - Điểm chẵn (0, 2, 4...): VĐV 0 (người bắt đầu giải/trận ở ô phải - Ninh) đứng ô Phải (pos[0]=0), VĐV 1 (Quy) đứng ô Trái (pos[1]=1)
+        // - Điểm lẻ (1, 3, 5...): VĐV 1 (Quy) đứng ô Phải (pos[0]=1), VĐV 0 (Ninh) đứng ô Trái (pos[1]=0)
+        // Đội mất quyền giao bóng (đối phương) cũng giữ vị trí chuẩn theo điểm số của họ.
+        if (nextServeTeam === 0) {
+          nextPosA = nextTeamScore % 2 === 0 ? [0, 1] : [1, 0];
+          nextPosB = oppTeamScore % 2 === 0 ? [0, 1] : [1, 0];
+        } else {
+          nextPosB = nextTeamScore % 2 === 0 ? [0, 1] : [1, 0];
+          nextPosA = oppTeamScore % 2 === 0 ? [0, 1] : [1, 0];
+        }
+      }
+
+      const servingTeamPos = nextServeTeam === 0 ? nextPosA : nextPosB;
+      const opponentPos = nextServeTeam === 0 ? nextPosB : nextPosA;
+
       // Người đang đứng ở ô bên phải (pos[0]) LUÔN LUÔN là người giao bóng trước (Server 1) từ ô bên phải!
-      // Người nhận bóng đầu tiên là đối thủ đứng ở ô bên phải chéo đối diện (pos[0]).
-      const servingTeamPos = nextServeTeam === 0 ? posA : posB;
-      const opponentPos = nextServeTeam === 0 ? posB : posA;
+      // (Ví dụ ở điểm 0: VĐV 0 là Ninh đứng ở ô bên phải sẽ giao banh 1 trước)
       const nextServerIdx = doubles ? (servingTeamPos[0] ?? 0) : 0;
+      // Người nhận bóng đầu tiên là đối thủ đứng ở ô bên phải chéo đối diện (pos[0])
       const nextReceiverIdx = doubles ? (opponentPos[0] ?? 0) : 0;
 
       push({
@@ -767,6 +788,8 @@ function LiveScoringPage() {
         serverNum: 1,
         serverIdx: nextServerIdx,
         receiverIdx: nextReceiverIdx,
+        posA: nextPosA,
+        posB: nextPosB,
       });
     }
   };

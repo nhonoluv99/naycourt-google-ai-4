@@ -19,6 +19,8 @@ import {
   generateEmptyKnockout,
   generateGroupMatches,
   generateKnockout,
+  generateNextRotatingDoublesRound,
+  generateTotalKoKnockout,
   getActivePlayerNames,
   getMatchEntryA,
   getMatchEntryB,
@@ -27,6 +29,7 @@ import {
   groupTag,
   isRotatingDoubles,
   propagateKnockout,
+  RANKING_CRITERIA_LABELS,
   useTournament,
   type Entry,
   type IndividualStandingRow,
@@ -342,15 +345,26 @@ function PlayerNameDisplay({
   isMatchLive?: boolean;
   truncate?: boolean;
 }) {
+  const isWithdrawn = Boolean(entry?.withdrawn);
+
   if (entry && entry.teamName && entry.teamName.trim()) {
     return (
       <span
         className={`${truncate ? "truncate" : "break-words leading-tight"} ${
-          isWinning ? "font-bold text-[#c2410c]" : "font-bold text-[#111827]"
-        }`}
+          isWithdrawn
+            ? "line-through text-line/40 font-semibold"
+            : isWinning
+              ? "font-bold text-[#c2410c]"
+              : "font-bold text-[#111827]"
+        } inline-flex items-center gap-1`}
         style={{ fontFamily: "'Space Grotesk', sans-serif" }}
       >
-        🛡️ {entry.teamName.trim()}
+        <span>🛡️ {entry.teamName.trim()}</span>
+        {isWithdrawn && (
+          <span className="no-underline rounded bg-red-100 text-red-700 dark:bg-red-950/80 dark:text-red-300 text-[9px] font-bold px-1 py-0.2 border border-red-300 shrink-0">
+            Bỏ cuộc
+          </span>
+        )}
       </span>
     );
   }
@@ -374,6 +388,7 @@ function PlayerNameDisplay({
       </span>
     );
   }
+
   return (
     <span
       className={
@@ -393,13 +408,15 @@ function PlayerNameDisplay({
             )}
             <span
               className={`${
-                isLive
-                  ? "text-red-600 dark:text-red-400 font-semibold"
-                  : isWinning
-                    ? "font-bold text-[#e44c11]"
-                    : truncate
-                      ? "text-ink/85 font-medium"
-                      : "text-[#111827] font-bold"
+                isWithdrawn
+                  ? "line-through text-line/40 font-medium"
+                  : isLive
+                    ? "text-red-600 dark:text-red-400 font-semibold"
+                    : isWinning
+                      ? "font-bold text-[#e44c11]"
+                      : truncate
+                        ? "text-ink/85 font-medium"
+                        : "text-[#111827] font-bold"
               }`}
               style={{ fontFamily: "'Space Grotesk', sans-serif" }}
               title={isLive ? `${pName} đang thi đấu!` : undefined}
@@ -409,6 +426,11 @@ function PlayerNameDisplay({
           </span>
         );
       })}
+      {isWithdrawn && (
+        <span className="no-underline rounded bg-red-100 text-red-700 dark:bg-red-950/80 dark:text-red-300 text-[9px] font-bold px-1 py-0.2 border border-red-300 shrink-0 ml-1">
+          Bỏ cuộc
+        </span>
+      )}
     </span>
   );
 }
@@ -716,6 +738,297 @@ function TeamMatchModal({
   );
 }
 
+function KoSlotPickerModal({
+  pickerSlot,
+  matches,
+  entries,
+  ev,
+  groupMatches,
+  onClose,
+  onAssignTeam,
+  onAssignPlaceholder,
+  onClearSlot,
+}: {
+  pickerSlot: { matchId: string; side: "aId" | "bId" };
+  matches: Match[];
+  entries: Entry[];
+  ev: TEvent;
+  groupMatches: Match[];
+  onClose: () => void;
+  onAssignTeam: (entryId: string, seedBadge?: string) => void;
+  onAssignPlaceholder: (placeholder: string) => void;
+  onClearSlot: () => void;
+}) {
+  const [search, setSearch] = useState("");
+  const targetMatch = matches.find((m) => m.id === pickerSlot.matchId);
+  const targetSide = pickerSlot.side;
+  const currentEntryId = targetSide === "aId" ? targetMatch?.aId : targetMatch?.bId;
+  const currentPlaceholder =
+    targetSide === "aId" ? targetMatch?.customPlaceholderA : targetMatch?.customPlaceholderB;
+  const currentEntry = entries.find((e) => e.id === currentEntryId);
+
+  // Nhóm các đội theo bảng và tính thứ hạng BXH hiện tại
+  const cleanGName = (name: string, idx: number) =>
+    name.replace(/^Bảng\s+/i, "").trim().toUpperCase() || String.fromCharCode(65 + idx);
+
+  const groupsWithStandings = useMemo(() => {
+    return ev.groups.map((g, idx) => {
+      const gMatches = groupMatches.filter((m) => m.groupName === g.name);
+      const standings = computeStandings(g.entryIds, gMatches, ev);
+      const key = cleanGName(g.name, idx);
+      return {
+        group: g,
+        key,
+        standings,
+      };
+    });
+  }, [ev, groupMatches]);
+
+  // Kiểm tra đội đang nằm ở trận KO nào
+  const getPlacedInfo = (entryId: string) => {
+    const found = matches.find(
+      (m) =>
+        m.eventId === ev.id &&
+        m.stage === "ko" &&
+        (m.aId === entryId || m.bId === entryId),
+    );
+    if (!found) return null;
+    const isThisSlot =
+      found.id === targetMatch?.id &&
+      ((targetSide === "aId" && found.aId === entryId) ||
+        (targetSide === "bId" && found.bId === entryId));
+    return {
+      match: found,
+      isThisSlot,
+      label: found.koRound || `Vòng ${found.round}`,
+    };
+  };
+
+  const filteredGroups = useMemo(() => {
+    const s = search.trim().toLowerCase();
+    if (!s) return groupsWithStandings;
+    return groupsWithStandings
+      .map((gw) => ({
+        ...gw,
+        standings: gw.standings.filter((row) => {
+          const ent = entries.find((e) => e.id === row.entryId);
+          if (!ent) return false;
+          const eName = entryName(ent).toLowerCase();
+          const pNames = ent.players.map((p) => p.name.toLowerCase()).join(" ");
+          return eName.includes(s) || pNames.includes(s) || gw.key.toLowerCase().includes(s);
+        }),
+      }))
+      .filter((gw) => gw.standings.length > 0);
+  }, [groupsWithStandings, entries, search]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 p-0 sm:p-4 backdrop-blur-xs animate-in fade-in duration-150">
+      <div className="w-full sm:max-w-lg max-h-[88vh] rounded-t-2xl sm:rounded-2xl bg-card p-4 sm:p-5 shadow-2xl ring-1 ring-line/20 flex flex-col border border-line/10 animate-in slide-in-from-bottom-6 sm:zoom-in-95 duration-150">
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3 border-b border-line/10 pb-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-xl">🎯</span>
+              <h3 className="font-head text-base sm:text-lg font-bold text-ink">
+                Chọn đội xếp vào ô thi đấu
+              </h3>
+            </div>
+            <p className="mt-1 text-xs text-line/70 flex items-center gap-1.5 flex-wrap">
+              <span className="font-bold text-[#e44c11]">
+                {targetMatch?.koRound || `Vòng ${targetMatch?.round}`}
+              </span>
+              <span>•</span>
+              <span className="font-semibold text-ink">
+                {targetSide === "aId" ? "Nhánh trên (Đội 1)" : "Nhánh dưới (Đội 2)"}
+              </span>
+              {currentPlaceholder && (
+                <span className="rounded bg-secondary px-1.5 py-0.5 text-[10px] font-bold text-line/80">
+                  Ký hiệu: {currentPlaceholder.replace(/[*#]/g, "")}
+                </span>
+              )}
+            </p>
+          </div>
+          <button
+            type="button"
+            className="rounded-lg p-1.5 text-line/50 hover:bg-muted hover:text-ink cursor-pointer"
+            onClick={onClose}
+          >
+            <svg className="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Hiện trạng & Nút Xóa ô */}
+        <div className="mt-2.5 flex items-center justify-between gap-2 rounded-xl bg-secondary/50 p-2.5 border border-line/10">
+          <div className="min-w-0 flex-1 text-xs">
+            <span className="text-line/60">Đang ở ô này: </span>
+            {currentEntry ? (
+              <span className="font-bold text-ink">{entryName(currentEntry)}</span>
+            ) : currentPlaceholder ? (
+              <span className="font-bold text-amber-600">
+                Chờ ({currentPlaceholder.replace(/[*#]/g, "")})
+              </span>
+            ) : (
+              <span className="italic text-line/50">Trống (chưa xếp)</span>
+            )}
+          </div>
+          {(currentEntryId || currentPlaceholder) && (
+            <button
+              type="button"
+              className="shrink-0 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-600 px-2.5 py-1 text-xs font-bold transition-colors cursor-pointer border border-red-500/20"
+              onClick={onClearSlot}
+            >
+              🗑️ Xóa / Để trống
+            </button>
+          )}
+        </div>
+
+        {/* Tìm kiếm */}
+        <div className="mt-3">
+          <input
+            type="text"
+            className="field w-full text-xs !py-2"
+            placeholder="🔍 Tìm tên VĐV hoặc tên đội..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+
+        {/* Danh sách cuộn */}
+        <div className="mt-3 flex-1 overflow-y-auto space-y-4 pr-1 max-h-[50vh]">
+          {/* Nhanh: Ký hiệu vị trí hạt giống chờ (1A, 2A, 3C...) */}
+          <div className="rounded-xl border border-line/15 bg-paper/60 p-2.5">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-line/60 mb-2">
+              ⚡ Gán nhanh ký hiệu chờ (1A, 2B, 3C...)
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {groupsWithStandings.flatMap((gw) =>
+                [1, 2, 3, 4].slice(0, Math.min(4, gw.group.entryIds.length)).map((rank) => {
+                  const badge = `${rank}${gw.key}`;
+                  const isCurrent = currentPlaceholder?.replace(/[*#]/g, "") === badge;
+                  return (
+                    <button
+                      key={badge}
+                      type="button"
+                      className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer border ${
+                        isCurrent
+                          ? "bg-accent text-accent-foreground border-accent shadow-xs"
+                          : rank === 1
+                            ? "bg-orange-500/15 text-[#e44c11] border-orange-500/30 hover:bg-orange-500/25"
+                            : rank === 2
+                              ? "bg-[#0a3320]/15 text-[#0a3320] border-[#0a3320]/30 hover:bg-[#0a3320]/25"
+                              : "bg-[#cedbea] text-[#001592] border-[#001592]/30 hover:bg-[#cedbea]/80"
+                      }`}
+                      style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                      onClick={() => onAssignPlaceholder(badge)}
+                      title={`Gán vị trí ${badge} vào ô này`}
+                    >
+                      {badge}
+                    </button>
+                  );
+                }),
+              )}
+            </div>
+          </div>
+
+          {/* Danh sách các đội theo từng bảng */}
+          {filteredGroups.map((gw) => (
+            <div key={gw.group.name} className="rounded-xl border border-line/15 bg-card overflow-hidden">
+              <div className="bg-secondary/70 px-3 py-1.5 font-bold text-xs flex items-center justify-between border-b border-line/10">
+                <span className="text-ink">Bảng {gw.key} ({gw.group.name})</span>
+                <span className="text-[11px] text-line/60">{gw.standings.length} đội</span>
+              </div>
+              <div className="divide-y divide-line/10">
+                {gw.standings.map((row, rIdx) => {
+                  const entry = entries.find((e) => e.id === row.entryId);
+                  if (!entry) return null;
+                  const rankBadge = `${rIdx + 1}${gw.key}`;
+                  const placed = getPlacedInfo(entry.id);
+
+                  return (
+                    <div
+                      key={entry.id}
+                      className={`flex items-center justify-between gap-2.5 p-2.5 transition-colors ${
+                        placed?.isThisSlot ? "bg-accent/10" : "hover:bg-muted/40"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <span
+                          className={`shrink-0 px-2 py-0.5 rounded text-[11px] font-bold border ${
+                            rIdx === 0
+                              ? "bg-orange-500/15 text-[#e44c11] border-orange-500/30"
+                              : rIdx === 1
+                                ? "bg-[#0a3320]/15 text-[#0a3320] border-[#0a3320]/30"
+                                : "bg-[#cedbea] text-[#001592] border-[#001592]/30"
+                          }`}
+                          style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                        >
+                          {rankBadge}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-bold text-ink break-words leading-tight">
+                            {entryName(entry)}
+                          </div>
+                          {entry.players.length > 0 && entry.teamName && (
+                            <div className="text-[11px] text-line/60 truncate">
+                              {entry.players.map((p) => p.name).join(" / ")}
+                            </div>
+                          )}
+                          {placed && !placed.isThisSlot && (
+                            <div className="text-[10px] text-amber-600 dark:text-amber-400 font-medium">
+                              📍 Đang ở: {placed.label}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="shrink-0">
+                        {placed?.isThisSlot ? (
+                          <span className="rounded-lg bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 px-2 py-1 text-[11px] font-bold border border-emerald-500/30">
+                            ✓ Đang ở ô này
+                          </span>
+                        ) : placed ? (
+                          <button
+                            type="button"
+                            className="rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-800 dark:text-amber-200 px-2.5 py-1 text-[11px] font-bold transition-colors cursor-pointer border border-amber-500/30"
+                            onClick={() => onAssignTeam(entry.id, rankBadge)}
+                          >
+                            ⇄ Đổi chỗ vào đây
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="btn-accent !px-2.5 !py-1 text-[11px] font-bold cursor-pointer"
+                            onClick={() => onAssignTeam(entry.id, rankBadge)}
+                          >
+                            ➕ Chọn xếp vào
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Footer */}
+        <div className="mt-4 flex justify-end border-t border-line/10 pt-3">
+          <button
+            type="button"
+            className="btn-ghost text-xs !py-1.5 !px-4 cursor-pointer"
+            onClick={onClose}
+          >
+            Đóng
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 type CardProps = {
   m: Match;
   nameA: string;
@@ -843,6 +1156,14 @@ function MatchCard({
               style={{ fontFamily: "'Space Grotesk', sans-serif" }}
             >
               MLP
+            </span>
+          )}
+          {(entryA?.withdrawn || entryB?.withdrawn) && (
+            <span
+              className="rounded bg-red-600 px-1 py-0.2 text-[9px] font-bold text-white shrink-0 shadow-2xs"
+              title="Trận đấu bị hủy kết quả do có vận động viên bỏ cuộc"
+            >
+              🚫 Đã hủy (Bỏ cuộc)
             </span>
           )}
           {hasConflict && (
@@ -1129,6 +1450,7 @@ function KoCard({
   onReferee,
   onAddReferee,
   onClearReferees,
+  onSelectTeamSlot,
 }: {
   m: Match;
   nameA: string;
@@ -1156,6 +1478,7 @@ function KoCard({
   onReferee?: (r: string) => void;
   onAddReferee?: (r: string) => void;
   onClearReferees?: () => void;
+  onSelectTeamSlot?: (side: "aId" | "bId") => void;
   key?: React.Key;
 }) {
   const aWin = m.scoreA !== null && m.scoreB !== null && m.scoreA > m.scoreB;
@@ -1168,6 +1491,7 @@ function KoCard({
     if (!clean || /^Hạt\s*giống\s*\d+$/i.test(clean)) return null;
     if (/^bye$/i.test(clean)) return "BYE";
     return clean
+      .replace(/[*#]/g, "")
       .replace(/^Nhất\s+/i, "1")
       .replace(/^Nhì\s+/i, "2")
       .replace(/^Ba\s+/i, "3")
@@ -1211,6 +1535,16 @@ function KoCard({
       /hạt\s*giống\s*2\b/i.test(s)
     ) {
       return "bg-[#0a3320]/15 text-[#0a3320] dark:bg-emerald-500/20 dark:text-emerald-300 font-bold border border-[#0a3320]/30";
+    }
+    // Đội Hạng Ba bảng / Hạt giống 3 (ví dụ 3C, 3A, 3B): màu xanh navy trên nền xanh nhạt (#001592 trên #cedbea)
+    if (
+      s.startsWith("3") ||
+      s.includes("ba") ||
+      /^iii\b/i.test(s) ||
+      /seed\s*3\b/i.test(s) ||
+      /hạt\s*giống\s*3\b/i.test(s)
+    ) {
+      return "bg-[#cedbea] text-[#001592] dark:bg-[#cedbea]/30 dark:text-[#88a8ff] font-bold border border-[#001592]/30";
     }
     return "bg-secondary text-line/70 border border-line/20";
   };
@@ -1298,8 +1632,14 @@ function KoCard({
               ? "border-[#e44c11]/50 bg-[#e44c11]/10 dark:bg-[#e44c11]/15 shadow-xs"
               : "border-line/25 dark:border-line/30 bg-muted/25 dark:bg-muted/15"
           } ${row(aWin, isLiveA, isConflictA)} ${
-            m.aId ? "cursor-grab active:cursor-grabbing hover:bg-muted/40" : ""
+            !isKoLocked ? "cursor-pointer hover:border-accent/60 hover:bg-muted/40 transition-colors" : ""
+          } ${
+            !isKoLocked && m.aId ? "active:cursor-grabbing" : ""
           }`}
+          onClick={() => {
+            if (isKoLocked) return;
+            onSelectTeamSlot?.("aId");
+          }}
           draggable={!isKoLocked && Boolean(m.aId || (seedA && !isByeA))}
           onDragStart={(e) => {
             if (isKoLocked) return;
@@ -1307,8 +1647,11 @@ function KoCard({
             onStartDragTeam?.("aId");
           }}
           onDragOver={(e) => e.preventDefault()}
-          onDrop={() => !isKoLocked && onDropTeam("aId")}
-          title={!isKoLocked && m.aId ? "Nắm kéo đội này để hoán đổi hoặc xếp sang trận khác" : undefined}
+          onDrop={(e) => {
+            e.stopPropagation();
+            if (!isKoLocked) onDropTeam("aId");
+          }}
+          title={!isKoLocked ? "Bấm vào để chọn đội xếp vào ô này (tiện lợi trên điện thoại), hoặc kéo thả để đổi chỗ" : undefined}
         >
           <div className="flex items-center gap-1.5 min-w-0 flex-1">
             {seedA && (
@@ -1328,6 +1671,7 @@ function KoCard({
                 activePlayerNames={activePlayerNames}
                 isWinning={aWin}
                 isMatchLive={m.status === "live"}
+                truncate={false}
               />
             )}
             {isConflictA && (
@@ -1355,11 +1699,13 @@ function KoCard({
               </button>
             )}
           </div>
-          {isByeA ? (
-            <span className="text-line/40 font-mono text-xs px-2 select-none">-</span>
-          ) : (
-            <ScoreBox value={m.scoreA} onCommit={(v) => onScore("scoreA", v)} isWinning={aWin} large={isFinal} />
-          )}
+          <div onClick={(e) => e.stopPropagation()} className="shrink-0">
+            {isByeA ? (
+              <span className="text-line/40 font-mono text-xs px-2 select-none">-</span>
+            ) : (
+              <ScoreBox value={m.scoreA} onCommit={(v) => onScore("scoreA", v)} isWinning={aWin} large={isFinal} />
+            )}
+          </div>
         </div>
       </div>
 
@@ -1371,8 +1717,14 @@ function KoCard({
               ? "border-[#e44c11]/50 bg-[#e44c11]/10 dark:bg-[#e44c11]/15 shadow-xs"
               : "border-line/25 dark:border-line/30 bg-muted/25 dark:bg-muted/15"
           } ${row(bWin, isLiveB, isConflictB)} ${
-            !isKoLocked && m.bId ? "cursor-grab active:cursor-grabbing hover:bg-muted/40" : ""
+            !isKoLocked ? "cursor-pointer hover:border-accent/60 hover:bg-muted/40 transition-colors" : ""
+          } ${
+            !isKoLocked && m.bId ? "active:cursor-grabbing" : ""
           }`}
+          onClick={() => {
+            if (isKoLocked) return;
+            onSelectTeamSlot?.("bId");
+          }}
           draggable={!isKoLocked && Boolean(m.bId || (seedB && !isByeB))}
           onDragStart={(e) => {
             if (isKoLocked) return;
@@ -1380,8 +1732,11 @@ function KoCard({
             onStartDragTeam?.("bId");
           }}
           onDragOver={(e) => e.preventDefault()}
-          onDrop={() => !isKoLocked && onDropTeam("bId")}
-          title={!isKoLocked && m.bId ? "Nắm kéo đội này để hoán đổi hoặc xếp sang trận khác" : undefined}
+          onDrop={(e) => {
+            e.stopPropagation();
+            if (!isKoLocked) onDropTeam("bId");
+          }}
+          title={!isKoLocked ? "Bấm vào để chọn đội xếp vào ô này (tiện lợi trên điện thoại), hoặc kéo thả để đổi chỗ" : undefined}
         >
           <div className="flex items-center gap-1.5 min-w-0 flex-1">
             {seedB && (
@@ -1401,6 +1756,7 @@ function KoCard({
                 activePlayerNames={activePlayerNames}
                 isWinning={bWin}
                 isMatchLive={m.status === "live"}
+                truncate={false}
               />
             )}
             {isConflictB && (
@@ -1428,11 +1784,13 @@ function KoCard({
               </button>
             )}
           </div>
-          {isByeB ? (
-            <span className="text-line/40 font-mono text-xs px-2 select-none">-</span>
-          ) : (
-            <ScoreBox value={m.scoreB} onCommit={(v) => onScore("scoreB", v)} isWinning={bWin} large={isFinal} />
-          )}
+          <div onClick={(e) => e.stopPropagation()} className="shrink-0">
+            {isByeB ? (
+              <span className="text-line/40 font-mono text-xs px-2 select-none">-</span>
+            ) : (
+              <ScoreBox value={m.scoreB} onCommit={(v) => onScore("scoreB", v)} isWinning={bWin} large={isFinal} />
+            )}
+          </div>
         </div>
       </div>
 
@@ -1765,6 +2123,12 @@ function ManagePage() {
     placeholder?: string;
   } | null>(null);
 
+  // Modal chọn đội xếp vào ô vòng loại trực tiếp (tiện dụng trên điện thoại / chạm để chọn)
+  const [koSlotPicker, setKoSlotPicker] = useState<{
+    matchId: string;
+    side: "aId" | "bId";
+  } | null>(null);
+
   // Real-time red line
   const [nowMinutes, setNowMinutes] = useState(() => {
     const d = new Date();
@@ -1803,18 +2167,19 @@ function ManagePage() {
   const [teamMatchToManage, setTeamMatchToManage] = useState<Match | null>(null);
 
   useEffect(() => {
-    if (!isFullscreenKo && !isFullscreenTimeline && !isExportGroupModalOpen && !teamMatchToManage) return;
+    if (!isFullscreenKo && !isFullscreenTimeline && !isExportGroupModalOpen && !teamMatchToManage && !koSlotPicker) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setIsFullscreenKo(false);
         setIsFullscreenTimeline(false);
         setIsExportGroupModalOpen(false);
         setTeamMatchToManage(null);
+        setKoSlotPicker(null);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isFullscreenKo, isFullscreenTimeline, isExportGroupModalOpen, teamMatchToManage]);
+  }, [isFullscreenKo, isFullscreenTimeline, isExportGroupModalOpen, teamMatchToManage, koSlotPicker]);
 
   const recordTimelineState = () => {
     setTimelineHistory((prev) => [...prev.slice(-30), state.matches]);
@@ -1984,6 +2349,64 @@ function ManagePage() {
     );
   }, [koMatches]);
 
+  const rankingCriteria = state.rankingCriteria || ["points", "diff", "h2h", "draw"];
+  const withdrawnEntryIds = useMemo(() => {
+    return new Set(state.entries.filter((e) => e.eventId === ev.id && e.withdrawn).map((e) => e.id));
+  }, [state.entries, ev.id]);
+
+  const toggleWithdrawn = (entryId: string) => {
+    const entry = state.entries.find((e) => e.id === entryId);
+    if (!entry) return;
+    const isW = Boolean(entry.withdrawn);
+    if (!isW) {
+      setConfirmModal({
+        title: "⚠️ Xác nhận đánh dấu bỏ cuộc",
+        message: `Bạn có chắc chắn muốn đánh dấu "${entryName(entry)}" bỏ cuộc?\n\nToàn bộ kết quả các trận thi đấu trước đó của VĐV/đội này sẽ bị HỦY BỎ (không tính điểm, hiệu số cho cả 2 bên trên bảng xếp hạng), và VĐV này sẽ không được xếp vào các vòng tiếp theo.`,
+        confirmText: "Xác nhận bỏ cuộc",
+        cancelText: "Hủy bỏ",
+        isDestructive: true,
+        onConfirm: () => {
+          update({
+            entries: state.entries.map((e) => (e.id === entryId ? { ...e, withdrawn: true } : e)),
+          });
+          setConfirmModal(null);
+          toast.warning(`Đã đánh dấu ${entryName(entry)} bỏ cuộc. Kết quả trước đó đã bị hủy trên BXH.`);
+        },
+      });
+    } else {
+      update({
+        entries: state.entries.map((e) => (e.id === entryId ? { ...e, withdrawn: false } : e)),
+      });
+      toast.success(`Đã khôi phục thi đấu cho ${entryName(entry)}.`);
+    }
+  };
+
+  const handleNextRotatingRound = () => {
+    const maxAllowedRounds =
+      ev.randomRoundsCount && ev.randomRoundsCount > 0
+        ? ev.randomRoundsCount
+        : Math.max(1, entries.filter((e) => !e.withdrawn).length - 1);
+    const currentRoundsCount = new Set(groupMatches.map((m) => m.round)).size;
+    if (currentRoundsCount >= maxAllowedRounds) {
+      toast.warning(`Đã bốc thăm đủ ${maxAllowedRounds} vòng theo đúng cài đặt giải.`);
+      return;
+    }
+
+    const nextMatches = generateNextRotatingDoublesRound(
+      ev,
+      entries,
+      groupMatches,
+      state.courts,
+    );
+    if (nextMatches.length === 0) {
+      toast.warning("Không thể tạo thêm vòng đấu (Cần ít nhất 4 VĐV chưa bỏ cuộc).");
+      return;
+    }
+    const nextRoundNum = nextMatches[0]!.round;
+    update({ matches: [...state.matches, ...nextMatches] });
+    toast.success(`🎲 Đã bốc thăm ngẫu nhiên thành công Vòng ${nextRoundNum}!`);
+  };
+
   const requireGroupEditConfirmation = (action: () => void, actionDesc?: string) => {
     if (!hasKoStarted || confirmedGroupEdit) {
       action();
@@ -2019,9 +2442,12 @@ function ManagePage() {
         ],
       });
       if (isRotatingDoubles(ev)) {
-        const k = getRotatingMatchesPerPlayer(entries.length);
+        const targetRounds =
+          ev.randomRoundsCount && ev.randomRoundsCount > 0
+            ? ev.randomRoundsCount
+            : Math.max(1, entries.length > 1 ? entries.length - 1 : 1);
         setNote(
-          `Đã tạo ${fresh.length} trận vòng tròn đổi partner (mỗi VĐV thi đấu đúng ${k} trận, không trùng lặp partner).`,
+          `Đã tạo Vòng 1 cho nội dung đôi bốc thăm ngẫu nhiên (cài đặt ${targetRounds} vòng). Bấm "Bốc thăm tiếp Vòng 2" sau khi thi đấu xong.`,
         );
       } else {
         setNote(`Đã tạo ${fresh.length} trận ${ev.bracket === "rr" ? "vòng tròn" : "vòng bảng"}.`);
@@ -2057,7 +2483,7 @@ function ManagePage() {
     const doBuildKo = () => {
       let fresh: Match[] = [];
       if (koType === "total") {
-        fresh = generateEmptyKnockout(ev, totalKoTeams, state.courts);
+        fresh = generateTotalKoKnockout(ev, entries, groupMatches, totalKoTeams, state.courts);
       } else {
         fresh = generateKnockout(ev, entries, groupMatches, state.courts);
       }
@@ -2071,7 +2497,7 @@ function ManagePage() {
       setTab("ko");
       setNote(
         koType === "total"
-          ? `Đã tạo nhánh KO gồm ${totalKoTeams} đội.`
+          ? `Đã tạo nhánh KO gồm đúng ${totalKoTeams} đội (bổ sung đội hạng 3 có hiệu số TB cao nhất, không dùng BYE).`
           : `Đã tạo ${fresh.length} trận loại trực tiếp.`,
       );
     };
@@ -2102,7 +2528,9 @@ function ManagePage() {
       return;
     }
     const doAutoFill = () => {
-      const fresh = generateAlphabeticalKnockout(ev, entries, groupMatches, totalKoTeams, state.courts);
+      const fresh = koType === "total"
+        ? generateTotalKoKnockout(ev, entries, groupMatches, totalKoTeams, state.courts)
+        : generateAlphabeticalKnockout(ev, entries, groupMatches, totalKoTeams, state.courts);
       if (!fresh.length) {
         setNote("Chưa đủ dữ liệu bảng đấu để tự động xếp.");
         return;
@@ -2113,8 +2541,8 @@ function ManagePage() {
       setTab("ko");
       setNote(
         allGroupStageDone
-          ? "Đã tự động xếp các đội vào 2 nhánh KO theo thứ tự bảng chữ cái."
-          : "Đã tự động xếp ký hiệu thứ hạng bảng (1A, 2B, 1C, 2D...) vào 2 nhánh KO. Tên đội sẽ tự động hiển thị khi xong vòng bảng.",
+          ? `Đã tự động xếp ${totalKoTeams} đội vào nhánh KO (gồm đội Nhất, Nhì và đội Hạng 3 có hiệu số TB cao nhất).`
+          : `Đã tự động xếp ký hiệu thứ hạng vào nhánh KO ${totalKoTeams} đội. Tên đội sẽ tự động hiển thị khi xong vòng bảng.`,
       );
     };
 
@@ -2149,14 +2577,16 @@ function ManagePage() {
             }
           : x,
       );
-      if (m.stage === "group" && koType === "advance" && koMatches.length > 0 && !hasKoStarted && !isKoLocked) {
+      if (m.stage === "group" && koMatches.length > 0 && !hasKoStarted && !isKoLocked) {
         const updatedGroupMatches = patched.filter((x) => x.eventId === ev.id && x.stage === "group");
-        const reseededKo = generateKnockout(ev, entries, updatedGroupMatches, state.courts);
+        const reseededKo = koType === "total"
+          ? generateTotalKoKnockout(ev, entries, updatedGroupMatches, totalKoTeams, state.courts)
+          : generateKnockout(ev, entries, updatedGroupMatches, state.courts);
         const merged = [
           ...patched.filter((x) => !(x.eventId === ev.id && x.stage === "ko")),
           ...reseededKo,
         ];
-        update({ matches: propagateKnockout(merged, ev.id, ev) });
+        update({ matches: propagateKnockout(merged, ev.id, ev, updatedGroupMatches) });
         return;
       }
       update({ matches: propagateKnockout(patched, ev.id, ev) });
@@ -2176,14 +2606,16 @@ function ManagePage() {
         const { live: _live, ...rest } = x;
         return { ...rest, scoreA: null, scoreB: null, status: "pending" as const, startedAt: undefined } as any;
       });
-      if (m.stage === "group" && koType === "advance" && koMatches.length > 0 && !hasKoStarted && !isKoLocked) {
+      if (m.stage === "group" && koMatches.length > 0 && !hasKoStarted && !isKoLocked) {
         const updatedGroupMatches = patched.filter((x) => x.eventId === ev.id && x.stage === "group");
-        const reseededKo = generateKnockout(ev, entries, updatedGroupMatches, state.courts);
+        const reseededKo = koType === "total"
+          ? generateTotalKoKnockout(ev, entries, updatedGroupMatches, totalKoTeams, state.courts)
+          : generateKnockout(ev, entries, updatedGroupMatches, state.courts);
         const merged = [
           ...patched.filter((x) => !(x.eventId === ev.id && x.stage === "ko")),
           ...reseededKo,
         ];
-        update({ matches: propagateKnockout(merged, ev.id, ev) });
+        update({ matches: propagateKnockout(merged, ev.id, ev, updatedGroupMatches) });
         return;
       }
       update({ matches: propagateKnockout(patched, ev.id, ev) });
@@ -2328,6 +2760,25 @@ function ManagePage() {
 
   /* -------- Vòng bảng theo cột vòng -------- */
   const rounds = [...new Set(groupMatches.map((m) => m.round))].sort((a, b) => (a ?? 0) - (b ?? 0));
+
+  const maxAllowedRotatingRounds = useMemo(() => {
+    if (!ev) return 0;
+    if (ev.randomRoundsCount && ev.randomRoundsCount > 0) {
+      return ev.randomRoundsCount;
+    }
+    const activeCount = entries.filter((e) => !e.withdrawn).length;
+    return Math.max(1, activeCount > 1 ? activeCount - 1 : 1);
+  }, [ev, entries]);
+
+  const isRotatingRoundsCompleted = useMemo(() => {
+    if (!isRotatingDoubles(ev)) return false;
+    return rounds.length >= maxAllowedRotatingRounds;
+  }, [ev, rounds.length, maxAllowedRotatingRounds]);
+
+  const canDrawMoreRotatingRounds = useMemo(() => {
+    if (!isRotatingDoubles(ev)) return false;
+    return rounds.length > 0 && !isRotatingRoundsCompleted;
+  }, [ev, rounds.length, isRotatingRoundsCompleted]);
 
   // Tự động phân chia các vòng thành nhiều hàng cân đối đẹp mắt (10 vòng -> 2 hàng x 5, 12 vòng -> 2 hàng x 6, 15 vòng -> 3 hàng x 5)
   const exportRoundRows = useMemo(() => {
@@ -3094,6 +3545,129 @@ function ManagePage() {
     setNote(seedBadge ? `Đã xếp đội (${seedBadge}) vào nhánh.` : "Đã xếp đội vào nhánh.");
   };
 
+  const handleAssignTeamFromPicker = (entryId: string, seedBadge?: string) => {
+    if (!koSlotPicker) return;
+    const targetMatch = state.matches.find((m) => m.id === koSlotPicker.matchId);
+    if (!targetMatch) return;
+    const targetSide = koSlotPicker.side;
+    const placeholderKey = targetSide === "aId" ? "customPlaceholderA" : "customPlaceholderB";
+
+    // Kiểm tra đội này đã nằm ở ô KO nào khác chưa để đổi chỗ (hoán đổi)
+    const sourceMatch = state.matches.find(
+      (m) =>
+        m.eventId === ev.id &&
+        m.stage === "ko" &&
+        (m.aId === entryId || m.bId === entryId),
+    );
+
+    let patched: Match[] = [];
+    if (sourceMatch) {
+      const sourceSide: "aId" | "bId" = sourceMatch.aId === entryId ? "aId" : "bId";
+      if (sourceMatch.id === targetMatch.id && sourceSide === targetSide) {
+        setKoSlotPicker(null);
+        return;
+      }
+      const sourceHolderKey = sourceSide === "aId" ? "customPlaceholderA" : "customPlaceholderB";
+      const sourceVal = sourceMatch[sourceSide];
+      const sourceHolder = sourceMatch[sourceHolderKey];
+
+      const targetVal = targetMatch[targetSide];
+      const targetHolder = targetMatch[placeholderKey];
+
+      patched = state.matches.map((m) => {
+        if (m.id === sourceMatch.id && m.id === targetMatch.id) {
+          return {
+            ...m,
+            [sourceSide]: targetVal,
+            [sourceHolderKey]: targetHolder,
+            [targetSide]: sourceVal,
+            [placeholderKey]: sourceHolder,
+          };
+        }
+        if (m.id === sourceMatch.id) {
+          return {
+            ...m,
+            [sourceSide]: targetVal,
+            [sourceHolderKey]: targetHolder,
+          };
+        }
+        if (m.id === targetMatch.id) {
+          return {
+            ...m,
+            [targetSide]: sourceVal,
+            [placeholderKey]: sourceHolder,
+          };
+        }
+        return m;
+      });
+    } else {
+      patched = state.matches.map((m) =>
+        m.id === targetMatch.id
+          ? {
+              ...m,
+              [targetSide]: entryId,
+              ...(seedBadge ? { [placeholderKey]: seedBadge } : {}),
+              scoreA: null,
+              scoreB: null,
+              status: "pending" as const,
+            }
+          : m,
+      );
+    }
+
+    update({ matches: propagateKnockout(patched, ev.id, ev) });
+    setKoSlotPicker(null);
+    toast.success("Đã xếp đội vào ô thi đấu.");
+  };
+
+  const handleAssignPlaceholderFromPicker = (placeholder: string) => {
+    if (!koSlotPicker) return;
+    const targetMatch = state.matches.find((m) => m.id === koSlotPicker.matchId);
+    if (!targetMatch) return;
+    const targetSide = koSlotPicker.side;
+    const placeholderKey = targetSide === "aId" ? "customPlaceholderA" : "customPlaceholderB";
+
+    const patched = state.matches.map((m) =>
+      m.id === targetMatch.id
+        ? {
+            ...m,
+            [targetSide]: null,
+            [placeholderKey]: placeholder,
+            scoreA: null,
+            scoreB: null,
+            status: "pending" as const,
+          }
+        : m,
+    );
+    update({ matches: propagateKnockout(patched, ev.id, ev) });
+    setKoSlotPicker(null);
+    toast.success(`Đã gán ký hiệu ${placeholder} vào ô thi đấu.`);
+  };
+
+  const handleClearSlotFromPicker = () => {
+    if (!koSlotPicker) return;
+    const targetMatch = state.matches.find((m) => m.id === koSlotPicker.matchId);
+    if (!targetMatch) return;
+    const targetSide = koSlotPicker.side;
+    const placeholderKey = targetSide === "aId" ? "customPlaceholderA" : "customPlaceholderB";
+
+    const patched = state.matches.map((m) =>
+      m.id === targetMatch.id
+        ? {
+            ...m,
+            [targetSide]: null,
+            [placeholderKey]: "",
+            scoreA: null,
+            scoreB: null,
+            status: "pending" as const,
+          }
+        : m,
+    );
+    update({ matches: propagateKnockout(patched, ev.id, ev) });
+    setKoSlotPicker(null);
+    toast.success("Đã để trống ô thi đấu.");
+  };
+
   const TabBtn = ({ id, label }: { id: typeof tab; label: string }) => (
     <button
       className={
@@ -3112,7 +3686,7 @@ function ManagePage() {
     if (customPlaceholder && customPlaceholder.trim()) {
       const clean = customPlaceholder.trim();
       if (/^Hạt\s*giống\s*\d+$/i.test(clean)) return "";
-      return clean;
+      return clean.replace(/[*#]/g, "");
     }
     if (!entryId || !ev) return "";
     const grp = ev.groups.find((g) => g.entryIds.includes(entryId));
@@ -3155,6 +3729,9 @@ function ManagePage() {
         onStatus={(s) => updateMatch(m.id, { status: s, startedAt: s === "live" ? Date.now() : undefined } as any)}
         onReset={() => resetMatch(m)}
         onDropTeam={(side) => dropTeam(m, side)}
+        onSelectTeamSlot={(side) => {
+          if (!isKoLocked) setKoSlotPicker({ matchId: m.id, side });
+        }}
         onClearTeam={(side) => {
           if (isKoLocked) return;
           const placeholderKey = side === "aId" ? "customPlaceholderA" : "customPlaceholderB";
@@ -3221,7 +3798,7 @@ function ManagePage() {
             return (
               <React.Fragment key={r}>
                 <div
-                  className={`w-[275px] shrink-0 flex flex-col ${colIdx === 0 ? "pl-[2px]" : ""}`}
+                  className={`w-[325px] sm:w-[335px] shrink-0 flex flex-col ${colIdx === 0 ? "pl-[2px]" : ""}`}
                   style={colIdx === 0 ? { paddingLeft: "2px" } : undefined}
                 >
                   <div
@@ -3253,7 +3830,7 @@ function ManagePage() {
 
           {/* Trận tranh hạng 3 */}
           {thirdMatch && (
-            <div className="w-[275px] shrink-0 flex flex-col justify-end ml-6">
+            <div className="w-[325px] sm:w-[335px] shrink-0 flex flex-col justify-end ml-6">
               <div
                 className="rounded-xl bg-court/15 py-2.5 text-center font-head text-sm font-bold uppercase tracking-wide text-courtdeep ring-1 ring-court/30"
                 style={{ fontFamily: "'Space Grotesk', sans-serif" }}
@@ -3288,7 +3865,7 @@ function ManagePage() {
           return (
             <React.Fragment key={`left_${r}`}>
               <div
-                className={`w-[275px] shrink-0 flex flex-col ${colIdx === 0 ? "pl-[2px]" : ""}`}
+                className={`w-[325px] sm:w-[335px] shrink-0 flex flex-col ${colIdx === 0 ? "pl-[2px]" : ""}`}
                 style={colIdx === 0 ? { paddingLeft: "2px" } : undefined}
               >
                 <div
@@ -3319,7 +3896,7 @@ function ManagePage() {
         })}
 
         {/* CỘT TRUNG TÂM: Chung kết và Tranh hạng 3 */}
-        <div className="w-[330px] sm:w-[350px] shrink-0 flex flex-col items-stretch px-2.5">
+        <div className="w-[345px] sm:w-[365px] shrink-0 flex flex-col items-stretch px-2.5">
           <div
             className="rounded-xl bg-amber-500/25 py-3 text-center font-head text-base sm:text-lg font-black uppercase tracking-wider text-amber-800 dark:text-amber-200 ring-2 ring-amber-500/50 shadow-md"
             style={{ fontFamily: "'Space Grotesk', sans-serif" }}
@@ -3368,7 +3945,7 @@ function ManagePage() {
                 />
               )}
 
-              <div className="w-[275px] shrink-0 flex flex-col">
+              <div className="w-[325px] sm:w-[335px] shrink-0 flex flex-col">
                 <div
                   className="rounded-xl bg-accent/15 py-2.5 text-center font-head text-sm font-bold uppercase tracking-wide text-accent ring-1 ring-accent/30 shadow-xs"
                   style={{ fontFamily: "'Space Grotesk', sans-serif" }}
@@ -3812,7 +4389,7 @@ function ManagePage() {
                       ? "bg-accent text-accent-foreground shadow-2xs"
                       : "text-line/60 hover:text-ink"
                   }`}
-                  title="Tạo nhánh KO với tổng số đội và để bảng trống để tự do kéo thả"
+                  title="Tạo nhánh KO lấy đúng số đội đã chọn (bổ sung các đội hạng ba có hiệu số trung bình mỗi trận cao nhất, không dùng BYE)"
                 >
                   Tổng số đội KO
                 </button>
@@ -3825,7 +4402,7 @@ function ManagePage() {
                       ? "bg-accent text-accent-foreground shadow-2xs"
                       : "text-line/60 hover:text-ink"
                   }`}
-                  title="Tự động xếp hạt giống theo số lượng đội đi tiếp mỗi bảng"
+                  title="Tự động xếp hạt giống theo số lượng đội đi tiếp mỗi bảng (có thể dùng suất BYE nếu số đội không tròn lũy thừa 2)"
                 >
                   Theo đội đi tiếp / bảng
                 </button>
@@ -4071,6 +4648,26 @@ function ManagePage() {
               >
                 📸 Xuất ảnh / PDF sơ đồ
               </button>
+              {isRotatingDoubles(ev) && rounds.length > 0 && (
+                canDrawMoreRotatingRounds ? (
+                  <button
+                    type="button"
+                    className="rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3 py-1.5 flex items-center gap-1.5 shadow-xs cursor-pointer transition"
+                    style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                    onClick={handleNextRotatingRound}
+                    title="Bốc thăm ngẫu nhiên thêm một vòng tiếp theo dựa trên điểm trình và tránh trùng partner"
+                  >
+                    🎲 Bốc thăm tiếp Vòng {rounds.length + 1}
+                  </button>
+                ) : (
+                  <div
+                    className="rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-800 dark:text-emerald-300 text-xs font-bold px-3 py-1.5 flex items-center gap-1.5 shadow-2xs"
+                    style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                  >
+                    ✓ Đã bốc đủ {rounds.length}/{maxAllowedRotatingRounds} vòng
+                  </div>
+                )
+              )}
               <button
                 className="btn-accent text-xs"
                 style={{ fontFamily: "'Space Grotesk', sans-serif" }}
@@ -4285,10 +4882,11 @@ function ManagePage() {
                         <th className="w-6 sm:w-12 py-1.5 sm:py-2 text-center px-0.5">B</th>
                         <th className="w-8 sm:w-16 py-1.5 sm:py-2 text-center px-0.5">HS</th>
                         <th className="w-10 sm:w-20 py-1.5 sm:py-2 text-center font-bold text-accent px-0.5">Tổng điểm</th>
+                        <th className="w-16 sm:w-24 py-1.5 sm:py-2 text-center px-0.5">Tác vụ</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {computeIndividualStandings(entries, groupMatches, ev).map((r, i) => {
+                      {computeIndividualStandings(entries, groupMatches, ev, rankingCriteria, withdrawnEntryIds).map((r, i) => {
                         const rowEntry = state.entries.find((e) => e.id === r.entryId);
                         return (
                           <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
@@ -4308,6 +4906,24 @@ function ManagePage() {
                             <td className="w-6 sm:w-12 py-1.5 sm:py-2 text-center font-semibold text-destructive tabular-nums px-0.5">{r.loss}</td>
                             <td className="w-8 sm:w-16 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.diff > 0 ? `+${r.diff}` : r.diff}</td>
                             <td className="w-10 sm:w-20 py-1.5 sm:py-2 text-center font-head text-sm font-bold text-accent tabular-nums px-0.5">{r.points}</td>
+                            <td className="w-16 sm:w-24 py-1.5 sm:py-2 text-center px-0.5">
+                              <button
+                                type="button"
+                                onClick={() => toggleWithdrawn(r.entryId)}
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
+                                  rowEntry?.withdrawn
+                                    ? "bg-emerald-500/15 text-emerald-600 hover:bg-emerald-500/25 ring-1 ring-emerald-500/30"
+                                    : "bg-destructive/10 text-destructive hover:bg-destructive/20 ring-1 ring-destructive/20"
+                                }`}
+                                title={
+                                  rowEntry?.withdrawn
+                                    ? "Khôi phục thi đấu lại cho VĐV này"
+                                    : "Đánh dấu VĐV bỏ cuộc (Hủy toàn bộ kết quả trận đấu trước đó trên BXH)"
+                                }
+                              >
+                                {rowEntry?.withdrawn ? "Khôi phục" : "Bỏ cuộc"}
+                              </button>
+                            </td>
                           </tr>
                         );
                       })}
@@ -4321,7 +4937,7 @@ function ManagePage() {
                       Bảng xếp hạng toàn thể — {entries.length} đội đấu vòng tròn
                     </span>
                     <span className="text-xs text-line/60">
-                      Ưu tiên: Tổng điểm → Hiệu số → Đối đầu
+                      Ưu tiên: {rankingCriteria.map((c) => RANKING_CRITERIA_LABELS[c]).join(" → ")}
                     </span>
                   </div>
                   <table className="w-full text-xs">
@@ -4334,6 +4950,7 @@ function ManagePage() {
                         <th className="w-6 sm:w-12 py-1.5 sm:py-2 text-center px-0.5">B</th>
                         <th className="w-8 sm:w-16 py-1.5 sm:py-2 text-center px-0.5">HS</th>
                         <th className="w-10 sm:w-20 py-1.5 sm:py-2 text-center font-bold text-accent px-0.5">Điểm</th>
+                        <th className="w-16 sm:w-24 py-1.5 sm:py-2 text-center px-0.5">Tác vụ</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -4341,6 +4958,8 @@ function ManagePage() {
                         entries.map((e) => e.id),
                         groupMatches,
                         ev,
+                        rankingCriteria,
+                        withdrawnEntryIds,
                       ).map((r, i) => {
                         const rowEntry = state.entries.find((e) => e.id === r.entryId);
                         return (
@@ -4361,6 +4980,24 @@ function ManagePage() {
                             <td className="w-6 sm:w-12 py-1.5 sm:py-2 text-center font-semibold text-destructive tabular-nums px-0.5">{r.loss}</td>
                             <td className="w-8 sm:w-16 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.diff > 0 ? `+${r.diff}` : r.diff}</td>
                             <td className="w-10 sm:w-20 py-1.5 sm:py-2 text-center font-head text-sm font-bold text-accent tabular-nums px-0.5">{r.points}</td>
+                            <td className="w-16 sm:w-24 py-1.5 sm:py-2 text-center px-0.5">
+                              <button
+                                type="button"
+                                onClick={() => toggleWithdrawn(r.entryId)}
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
+                                  rowEntry?.withdrawn
+                                    ? "bg-emerald-500/15 text-emerald-600 hover:bg-emerald-500/25 ring-1 ring-emerald-500/30"
+                                    : "bg-destructive/10 text-destructive hover:bg-destructive/20 ring-1 ring-destructive/20"
+                                }`}
+                                title={
+                                  rowEntry?.withdrawn
+                                    ? "Khôi phục thi đấu lại cho đội này"
+                                    : "Đánh dấu đội bỏ cuộc (Hủy toàn bộ kết quả trận đấu trước đó trên BXH)"
+                                }
+                              >
+                                {rowEntry?.withdrawn ? "Khôi phục" : "Bỏ cuộc"}
+                              </button>
+                            </td>
                           </tr>
                         );
                       })}
@@ -4377,6 +5014,8 @@ function ManagePage() {
                       g.entryIds,
                       groupMatches.filter((m) => m.groupName === g.name),
                       ev,
+                      rankingCriteria,
+                      withdrawnEntryIds,
                     );
                     const c = groupColor(g.name);
                     return (
@@ -4396,6 +5035,7 @@ function ManagePage() {
                               <th className="w-6 sm:w-8 py-1.5 sm:py-2 text-center px-0.5">B</th>
                               <th className="w-8 sm:w-11 py-1.5 sm:py-2 text-center px-0.5">HS</th>
                               <th className="w-8 sm:w-11 py-1.5 sm:py-2 text-center px-0.5">Đ</th>
+                              <th className="w-8 py-1.5 sm:py-2 text-center px-0.5">T/vụ</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -4417,6 +5057,20 @@ function ManagePage() {
                                   <td className="w-6 sm:w-8 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.loss}</td>
                                   <td className="w-8 sm:w-11 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.diff}</td>
                                   <td className="w-8 sm:w-11 py-1.5 sm:py-2 text-center font-bold text-accent tabular-nums px-0.5">{r.points}</td>
+                                  <td className="w-8 py-1.5 sm:py-2 text-center px-0.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleWithdrawn(r.entryId)}
+                                      className={`text-[10px] font-bold p-1 rounded transition cursor-pointer ${
+                                        rowEntry?.withdrawn
+                                          ? "text-emerald-600 hover:bg-emerald-500/20"
+                                          : "text-line/40 hover:text-destructive hover:bg-destructive/10"
+                                      }`}
+                                      title={rowEntry?.withdrawn ? "Khôi phục đội thi đấu" : "Đánh dấu đội bỏ cuộc"}
+                                    >
+                                      {rowEntry?.withdrawn ? "♻️" : "🚫"}
+                                    </button>
+                                  </td>
                                 </tr>
                               );
                             })}
@@ -4479,6 +5133,46 @@ function ManagePage() {
                       </div>
                     );
                   })}
+
+                  {isRotatingDoubles(ev) && (
+                    canDrawMoreRotatingRounds ? (
+                      <div className="w-[260px] shrink-0 pt-[2px] px-[3px] flex flex-col">
+                        <button
+                          type="button"
+                          onClick={handleNextRotatingRound}
+                          className="w-full flex-1 min-h-[160px] rounded-xl border-2 border-dashed border-emerald-500/40 bg-emerald-500/5 hover:bg-emerald-500/10 flex flex-col items-center justify-center gap-2.5 p-4 text-center transition cursor-pointer group"
+                        >
+                          <div className="w-11 h-11 rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center text-xl group-hover:scale-110 transition shadow-2xs">
+                            🎲
+                          </div>
+                          <div>
+                            <span className="font-head text-sm font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-300 block">
+                              Bốc thăm tiếp Vòng {rounds.length + 1}
+                            </span>
+                            <span className="text-[11px] text-line/60 block mt-1">
+                              Ghép 1 cao + 1 thấp cân trình & đổi partner cho vòng đấu kế tiếp
+                            </span>
+                          </div>
+                        </button>
+                      </div>
+                    ) : isRotatingRoundsCompleted && rounds.length > 0 ? (
+                      <div className="w-[260px] shrink-0 pt-[2px] px-[3px] flex flex-col">
+                        <div className="w-full flex-1 min-h-[160px] rounded-xl border border-emerald-500/30 bg-emerald-500/5 flex flex-col items-center justify-center gap-2 p-4 text-center shadow-2xs">
+                          <div className="w-10 h-10 rounded-full bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 flex items-center justify-center text-lg font-bold">
+                            ✓
+                          </div>
+                          <div>
+                            <span className="font-head text-xs font-bold uppercase tracking-wide text-emerald-800 dark:text-emerald-200 block">
+                              Đã hoàn thành {rounds.length}/{maxAllowedRotatingRounds} vòng
+                            </span>
+                            <span className="text-[11px] text-emerald-700/80 block mt-1">
+                              Đã bốc thăm đủ số lượng vòng theo đúng cài đặt ban đầu
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    ) : null
+                  )}
                   </div>
                   </div>
                 )}
@@ -4521,7 +5215,7 @@ function ManagePage() {
                           </tr>
                         </thead>
                         <tbody>
-                          {computeIndividualStandings(entries, groupMatches, ev).map((r, i) => {
+                          {computeIndividualStandings(entries, groupMatches, ev, rankingCriteria, withdrawnEntryIds).map((r, i) => {
                             const rowEntry = state.entries.find((e) => e.id === r.entryId);
                             return (
                               <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
@@ -4573,6 +5267,8 @@ function ManagePage() {
                             entries.map((e) => e.id),
                             groupMatches,
                             ev,
+                            rankingCriteria,
+                            withdrawnEntryIds,
                           ).map((r, i) => {
                             const rowEntry = state.entries.find((e) => e.id === r.entryId);
                             return (
@@ -4607,6 +5303,8 @@ function ManagePage() {
                         g.entryIds,
                         groupMatches.filter((m) => m.groupName === g.name),
                         ev,
+                        rankingCriteria,
+                        withdrawnEntryIds,
                       );
                       const c = groupColor(g.name);
                       return (
@@ -5713,6 +6411,21 @@ function ManagePage() {
             setTeamMatchToManage(null);
             toast.success("Đã cập nhật kết quả trận đấu đồng đội!");
           }}
+        />
+      )}
+
+      {/* MODAL CHỌN ĐỘI CHO Ô VÒNG LOẠI TRỰC TIẾP (TIỆN LỢI TRÊN ĐIỆN THOẠI) */}
+      {koSlotPicker && (
+        <KoSlotPickerModal
+          pickerSlot={koSlotPicker}
+          matches={state.matches}
+          entries={state.entries}
+          ev={ev}
+          groupMatches={groupMatches}
+          onClose={() => setKoSlotPicker(null)}
+          onAssignTeam={handleAssignTeamFromPicker}
+          onAssignPlaceholder={handleAssignPlaceholderFromPicker}
+          onClearSlot={handleClearSlotFromPicker}
         />
       )}
     </div>

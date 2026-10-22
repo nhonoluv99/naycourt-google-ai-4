@@ -2,7 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { useTournament } from "@/lib/tournament-store";
+import { RANKING_CRITERIA_LABELS, useTournament } from "@/lib/tournament-store";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -213,6 +213,101 @@ function CreateTournamentPage() {
           >
             + Thêm sân
           </button>
+        </div>
+
+        {/* Thứ tự ưu tiên tính bảng xếp hạng */}
+        <div className="rounded-2xl border border-line/20 bg-white/95 p-4 sm:p-5 shadow-xs">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <label className="block text-xs font-extrabold font-['Verdana',sans-serif] uppercase tracking-wider text-line/80">
+                Thứ tự ưu tiên tính bảng xếp hạng
+              </label>
+              <p className="mt-1 text-xs text-line/60">
+                Bấm nút mũi tên ▲ / ▼ để sắp xếp thứ tự ưu tiên (tiêu chí nào được xét trước khi xếp hạng):
+              </p>
+            </div>
+            <button
+              type="button"
+              className="text-xs text-[#FF5C00] font-bold hover:underline shrink-0 cursor-pointer pt-0.5"
+              onClick={() => update({ rankingCriteria: ["points", "diff", "h2h", "draw"] })}
+            >
+              ↺ Đặt lại mặc định
+            </button>
+          </div>
+
+          <div className="mt-3.5 space-y-2">
+            {(state.rankingCriteria || ["points", "diff", "h2h", "draw"]).map((critKey, idx, arr) => {
+              const info = RANKING_CRITERIA_LABELS[critKey] || {
+                label: critKey,
+                desc: "",
+                icon: "📊",
+              };
+              return (
+                <div
+                  key={critKey}
+                  className="flex items-center justify-between gap-3 rounded-xl border border-line/20 bg-paper/60 px-3.5 py-2.5 transition-all hover:border-[#FF5C00]/40"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <span className="flex size-6 items-center justify-center rounded-full bg-[#FF5C00]/15 text-xs font-black text-[#FF5C00] shrink-0">
+                      {idx + 1}
+                    </span>
+                    <span className="text-base shrink-0">{info.icon}</span>
+                    <div className="min-w-0">
+                      <div className="text-xs sm:text-sm font-bold text-ink truncate">
+                        {info.label}
+                      </div>
+                      <div className="text-[11px] text-line/60 truncate">
+                        {info.desc}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      disabled={idx === 0}
+                      onClick={() => {
+                        const target = idx - 1;
+                        if (target < 0) return;
+                        const next = [...arr];
+                        const [removed] = next.splice(idx, 1);
+                        next.splice(target, 0, removed);
+                        update({ rankingCriteria: next });
+                      }}
+                      className={`grid size-7 place-items-center rounded-lg border border-line/20 text-xs font-bold transition ${
+                        idx === 0
+                          ? "opacity-30 cursor-not-allowed bg-black/5"
+                          : "hover:bg-[#FF5C00]/10 hover:border-[#FF5C00] text-ink cursor-pointer"
+                      }`}
+                      title="Chuyển lên vị trí ưu tiên cao hơn"
+                    >
+                      ▲
+                    </button>
+                    <button
+                      type="button"
+                      disabled={idx === arr.length - 1}
+                      onClick={() => {
+                        const target = idx + 1;
+                        if (target >= arr.length) return;
+                        const next = [...arr];
+                        const [removed] = next.splice(idx, 1);
+                        next.splice(target, 0, removed);
+                        update({ rankingCriteria: next });
+                      }}
+                      className={`grid size-7 place-items-center rounded-lg border border-line/20 text-xs font-bold transition ${
+                        idx === arr.length - 1
+                          ? "opacity-30 cursor-not-allowed bg-black/5"
+                          : "hover:bg-[#FF5C00]/10 hover:border-[#FF5C00] text-ink cursor-pointer"
+                      }`}
+                      title="Chuyển xuống vị trí ưu tiên thấp hơn"
+                    >
+                      ▼
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         <div className="flex gap-4 pt-4">
