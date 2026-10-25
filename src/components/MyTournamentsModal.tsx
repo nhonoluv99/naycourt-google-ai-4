@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import {
   listUserTournaments,
+  listSharedTournaments,
   deleteUserTournament,
   type UserTournamentArchiveItem,
 } from "@/lib/firebase";
@@ -38,8 +39,22 @@ export function MyTournamentsModal({ isOpen, onClose }: MyTournamentsModalProps)
     if (!user) return;
     setLoading(true);
     try {
-      const data = await listUserTournaments(user.uid);
-      setTournaments(data);
+      const [ownedList, sharedList] = await Promise.all([
+        listUserTournaments(user.uid),
+        user.email ? listSharedTournaments(user.email) : Promise.resolve([]),
+      ]);
+
+      const map = new Map<string, UserTournamentArchiveItem>();
+      ownedList.forEach((t) => map.set(t.id, t));
+      sharedList.forEach((t) => {
+        if (!map.has(t.id)) {
+          map.set(t.id, t);
+        }
+      });
+
+      const combined = Array.from(map.values());
+      combined.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+      setTournaments(combined);
     } catch (e) {
       console.error(e);
       toast.error("Không thể tải danh sách giải đấu.");
@@ -160,13 +175,21 @@ export function MyTournamentsModal({ isOpen, onClose }: MyTournamentsModalProps)
             ) : (
               tournaments.map((tour) => {
                 const isCurrent = activeTournamentId === tour.id;
+                const cleanMyEmail = user.email?.toLowerCase().trim() || "";
+                const isOwner = tour.userId === user.uid || (tour.userEmail && tour.userEmail.toLowerCase().trim() === cleanMyEmail);
+                const isEditor =
+                  isOwner ||
+                  Boolean(tour.editorEmails?.includes(cleanMyEmail)) ||
+                  Boolean(tour.collaborators?.some((c) => c.email.toLowerCase().trim() === cleanMyEmail && c.role === "editor"));
+                const isViewer = !isOwner && !isEditor;
+
                 return (
                   <div
                     key={tour.id}
                     className="flex items-center justify-between gap-3 p-3 rounded-xl hover:bg-secondary/50 transition"
                   >
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <p
                           className="font-bold text-sm text-ink truncate"
                           style={{ fontFamily: "'Space Grotesk', sans-serif" }}
@@ -178,11 +201,27 @@ export function MyTournamentsModal({ isOpen, onClose }: MyTournamentsModalProps)
                             Đang mở
                           </span>
                         )}
+                        {isOwner ? (
+                          <span className="rounded-md bg-[#0a3320]/15 text-[#0a3320] px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wider">
+                            👑 Chủ giải
+                          </span>
+                        ) : isEditor ? (
+                          <span className="rounded-md bg-amber-500/15 text-amber-800 dark:text-amber-300 px-1.5 py-0.5 text-[10px] font-bold">
+                            ✏️ Người điều hành
+                          </span>
+                        ) : (
+                          <span className="rounded-md bg-sky-500/15 text-sky-800 dark:text-sky-300 px-1.5 py-0.5 text-[10px] font-bold">
+                            👁️ Người xem
+                          </span>
+                        )}
                       </div>
                       <p className="text-[11px] text-line/60 mt-0.5 flex items-center gap-2 flex-wrap">
                         {tour.date && <span>📅 {tour.date}</span>}
                         <span>{tour.courtsCount} sân</span>
                         <span>{tour.eventsCount} nội dung</span>
+                        {!isOwner && tour.userEmail && (
+                          <span className="text-line/50">Tạo bởi: {tour.userEmail}</span>
+                        )}
                         <span className="text-line/40">
                           ({new Date(tour.updatedAt).toLocaleDateString("vi-VN")})
                         </span>
@@ -193,22 +232,28 @@ export function MyTournamentsModal({ isOpen, onClose }: MyTournamentsModalProps)
                       <button
                         type="button"
                         onClick={() => handleEditClick(tour)}
-                        className="rounded-lg bg-[#0a3320] text-white px-3 py-1.5 text-xs font-bold hover:bg-[#0a3320]/90 transition cursor-pointer shadow-2xs"
+                        className={`rounded-lg px-3 py-1.5 text-xs font-bold transition cursor-pointer shadow-2xs ${
+                          isViewer
+                            ? "bg-sky-700 hover:bg-sky-800 text-white"
+                            : "bg-[#0a3320] hover:bg-[#0a3320]/90 text-white"
+                        }`}
                         style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                        title="Chỉnh sửa giải đấu này"
+                        title={isViewer ? "Xem thông tin & diễn biến giải đấu" : "Chỉnh sửa giải đấu này"}
                       >
-                        Chỉnh sửa
+                        {isViewer ? "👁️ Xem giải" : "Chỉnh sửa"}
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => setConfirmDeleteTour(tour)}
-                        disabled={deletingId === tour.id}
-                        className="rounded-lg border border-red-500/25 bg-red-500/10 px-2.5 py-1.5 text-xs font-bold text-red-600 hover:bg-red-500/20 transition cursor-pointer"
-                        style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                        title="Xóa giải này"
-                      >
-                        {deletingId === tour.id ? "..." : "Xóa"}
-                      </button>
+                      {isOwner && (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteTour(tour)}
+                          disabled={deletingId === tour.id}
+                          className="rounded-lg border border-red-500/25 bg-red-500/10 px-2.5 py-1.5 text-xs font-bold text-red-600 hover:bg-red-500/20 transition cursor-pointer"
+                          style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                          title="Xóa giải này"
+                        >
+                          {deletingId === tour.id ? "..." : "Xóa"}
+                        </button>
+                      )}
                     </div>
                   </div>
                 );

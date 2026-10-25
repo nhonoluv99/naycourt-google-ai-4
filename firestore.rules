@@ -28,18 +28,25 @@ service cloud.firestore {
       allow delete: if isOwner(userId) || isServerAdmin();
     }
 
-    // Multiple saved tournaments per user ("Giải đấu của tôi")
+    // Multiple saved tournaments per user ("Giải đấu của tôi") + Collaborators & Public Live
     match /user_tournaments/{tournamentId} {
-      allow get: if isServerAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+      // Cho phép mọi người (kể cả khán giả / VĐV không đăng nhập) xem trực tiếp giải đấu qua mã QR hoặc link
+      allow get: if true;
       allow list: if isAuthenticated();
       allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
-      allow update: if isServerAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+      allow update: if isServerAdmin() || 
+                      (isAuthenticated() && (
+                        resource.data.userId == request.auth.uid ||
+                        (request.auth.token.email != null && 
+                         ('editorEmails' in resource.data) && 
+                         resource.data.editorEmails.hasAny([request.auth.token.email]))
+                      ));
       allow delete: if isServerAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
     }
 
     // User tracking for host / admin
     match /users/{userId} {
-      allow get: if isOwner(userId) || isServerAdmin();
+      allow get: if isAuthenticated();
       allow list: if isServerAdmin();
       allow create, update: if isOwner(userId) || isServerAdmin();
       allow delete: if isServerAdmin();
@@ -47,7 +54,7 @@ service cloud.firestore {
 
     // Activity and access audit logs for host / admin
     match /activity_logs/{logId} {
-      allow create: if isAuthenticated();
+      allow create: if true;
       allow read, list: if isServerAdmin();
       allow update, delete: if isServerAdmin();
     }

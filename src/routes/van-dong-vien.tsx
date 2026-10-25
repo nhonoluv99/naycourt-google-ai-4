@@ -9,6 +9,7 @@ import {
   entryName,
   getGroupName,
   getRotatingMatchesPerPlayer,
+  isRotatingDoubles,
   splitGroups,
   uid,
   useTournament,
@@ -1083,80 +1084,113 @@ function PlayersPage() {
               })
             )}
           </div>
+
+          <div className="mt-4 flex gap-3">
+            <Link to="/quan-ly-giai" className="btn-accent">
+              Tiếp tục — Quản lý giải đấu
+            </Link>
+          </div>
         </div>
 
         <div className="lg:col-span-5">
           {ev.bracket === "rr" ? (
-            <div className="panel p-4 bg-white/95 border border-line/20 shadow-sm space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="font-head text-base font-bold uppercase tracking-tight text-[#0a3320]">
-                  {ev.mode === "doi" && ev.pairMode === "random"
-                    ? "Vòng tròn đổi partner ngẫu nhiên"
-                    : "Đấu vòng tròn toàn thể (Không chia bảng)"}
-                </p>
-                <span className="rounded-full bg-accent/15 px-2.5 py-0.5 text-xs font-bold text-accent">
-                  {entries.length} {ev.mode === "doi" && ev.pairMode === "fixed" ? "cặp đấu" : "VĐV"}
-                </span>
-              </div>
-              <p className="text-xs text-line/70 leading-relaxed">
-                {ev.mode === "doi" && ev.pairMode === "random"
-                  ? entries.length >= 4
-                    ? `Cơ chế bắt cặp ngẫu nhiên: Mỗi VĐV sẽ thi đấu đúng ${getRotatingMatchesPerPlayer(entries.length)} trận (tổng cộng ${(entries.length * getRotatingMatchesPerPlayer(entries.length)) / 4} trận). Đảm bảo số trận bằng nhau tuyệt đối và không trùng lặp partner. Điểm số tính cá nhân tích lũy qua từng trận đấu trong Quản lý giải.`
-                    : "Cơ chế bắt cặp ngẫu nhiên: Cần ít nhất 4 VĐV để tạo lịch thi đấu xoay tua partner (mỗi VĐV đều đánh số trận bằng nhau và không trùng partner)."
-                  : `Cơ chế bắt cặp cố định: Toàn bộ ${entries.length} đội sẽ lần lượt đấu vòng tròn với nhau (mỗi đội đấu ${Math.max(0, entries.length - 1)} trận, không chia bảng). Điểm số tính theo: Tổng điểm → Hiệu số → Đối đầu.`}
-              </p>
+            <div className="space-y-4">
+              <div className="rounded-2xl border border-line/20 bg-card p-4 shadow-sm space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-head text-base font-bold uppercase tracking-tight text-[#0a3320]">
+                    {isRotatingDoubles(ev)
+                      ? "VÒNG TRÒN ĐỔI PARTNER NGẪU NHIÊN"
+                      : "THI ĐẤU VÒNG TRÒN TÍNH ĐIỂM"}
+                  </h3>
+                  <span className="text-xs font-semibold text-accent">
+                    {entries.length} {ev.mode === "don" || isRotatingDoubles(ev) ? "VĐV" : "đội"}
+                  </span>
+                </div>
 
-              <div className="rounded-xl border border-line/15 bg-card p-3 divide-y divide-line/10 max-h-[420px] overflow-y-auto">
-                {entries.length === 0 ? (
-                  <p className="text-center py-6 text-xs text-line/40">
-                    Chưa có {ev.mode === "doi" && ev.pairMode === "fixed" ? "đội" : "VĐV"} nào được thêm.
-                  </p>
-                ) : (
-                  entries.map((en, idx) => {
-                    const pts = en.players.reduce((sum, p) => sum + (p.rating ?? 0), 0);
-                    return (
-                      <div key={en.id} className="flex items-center justify-between py-2 text-xs">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="w-5 font-head font-bold text-line/40 text-center">{idx + 1}</span>
-                          <div className="flex items-center gap-1.5 truncate">
-                            {en.players.map((p, pIdx) => (
-                              <input
-                                key={pIdx}
-                                type="checkbox"
-                                checked={Boolean(p.paid)}
-                                title={`${p.name || `VĐV ${pIdx + 1}`}: ${Boolean(p.paid) ? "Đã đóng phí" : "Chưa đóng phí"}`}
-                                className="size-3.5 rounded accent-[oklch(0.615_0.145_154.2)] cursor-pointer shrink-0"
-                                onChange={(e) => {
-                                  const checked = e.target.checked;
-                                  patchPlayer(en.id, pIdx, { paid: checked });
-                                }}
-                              />
-                            ))}
-                            <span className="font-semibold text-ink truncate">{entryName(en)}</span>
-                          </div>
+                <p className="text-xs text-line/70 leading-relaxed">
+                  {isRotatingDoubles(ev) ? (
+                    (() => {
+                      const roundsCount =
+                        ev.randomRoundsCount && ev.randomRoundsCount > 0
+                          ? ev.randomRoundsCount
+                          : getRotatingMatchesPerPlayer(entries.length);
+                      const totalMatches = Math.floor((entries.length * roundsCount) / 4);
+                      return (
+                        <>
+                          Cơ chế bắt cặp ngẫu nhiên: Mỗi VĐV sẽ thi đấu đúng{" "}
+                          <strong>{roundsCount}</strong> trận (tổng cộng{" "}
+                          <strong>{totalMatches}</strong> trận). Đảm bảo số trận bằng nhau tuyệt đối và không trùng lặp partner. Điểm số tính cá nhân tích lũy qua từng trận đấu trong Quản lý giải.
+                        </>
+                      );
+                    })()
+                  ) : (
+                    <>
+                      Thể thức vòng tròn: Tất cả <strong>{entries.length}</strong>{" "}
+                      {ev.mode === "don" ? "VĐV" : "đội"} sẽ thi đấu lần lượt với nhau. Điểm số, hiệu số và bảng xếp hạng được tự động cập nhật trong Quản lý giải.
+                    </>
+                  )}
+                </p>
+
+                <div className="rounded-xl border border-line/15 divide-y divide-line/10 bg-white/70 dark:bg-card/70 overflow-hidden">
+                  {entries.length === 0 ? (
+                    <div className="p-4 text-center text-xs text-line/50">
+                      Chưa có VĐV nào trong danh sách.
+                    </div>
+                  ) : (
+                    entries.map((entry, idx) => (
+                      <div
+                        key={entry.id}
+                        className="flex items-center justify-between px-3 py-2 text-xs hover:bg-secondary/30 transition"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <span className="font-head font-bold text-line/40 w-4 shrink-0">
+                            {idx + 1}
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(entry.players[0]?.paid)}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              patchPlayer(entry.id, 0, { paid: checked });
+                            }}
+                            className="size-3.5 rounded accent-[oklch(0.615_0.145_154.2)] cursor-pointer shrink-0"
+                            title="Tình trạng đóng phí"
+                          />
+                          <span className="font-medium text-ink truncate">
+                            {entryName(entry)}
+                          </span>
                         </div>
-                        <span className="shrink-0 rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-bold text-accent">
-                          {pts > 0 ? formatRating(pts) : "—"}
-                        </span>
+                        <button
+                          type="button"
+                          onClick={() => removeEntry(entry.id)}
+                          className="size-5 rounded flex items-center justify-center text-red-500 hover:bg-red-50 font-bold text-xs cursor-pointer transition shrink-0"
+                          title="Xóa khỏi danh sách"
+                        >
+                          —
+                        </button>
                       </div>
-                    );
-                  })
-                )}
+                    ))
+                  )}
+                </div>
               </div>
+
+              <Link to="/quan-ly-giai" className="btn-accent w-full justify-center">
+                Tiếp tục — Quản lý giải đấu
+              </Link>
             </div>
           ) : (
-            <>
+            <div>
               <div className="flex items-center justify-between">
                 <p className="eyebrow">Chia bảng</p>
-            {ev.groups.length > 0 && (
-              <button
-                className="text-xs font-semibold text-accent hover:underline"
-                onClick={() => setShowPrintModal(true)}
-              >
-                📄 Xuất bảng đấu (In / PDF)
-              </button>
-            )}
-          </div>
+                {ev.groups.length > 0 && (
+                  <button
+                    className="text-xs font-semibold text-accent hover:underline"
+                    onClick={() => setShowPrintModal(true)}
+                  >
+                    📄 Xuất bảng đấu (In / PDF)
+                  </button>
+                )}
+              </div>
 
           <div className="mt-2 flex flex-wrap items-end gap-2">
             <div>
@@ -1384,14 +1418,14 @@ function PlayersPage() {
               </div>
             </div>
           ) : null}
-            </>
-          )}
 
           <Link to="/quan-ly-giai" className="btn-accent mt-4">
             Tiếp tục — Quản lý giải đấu
           </Link>
         </div>
-      </div>
+      )}
+    </div>
+  </div>
 
       {/* Modal Xuất Bảng Đấu (PDF / In) */}
       {showPrintModal && (

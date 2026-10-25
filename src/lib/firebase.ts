@@ -179,6 +179,15 @@ export function subscribeToTournamentCloud(
   );
 }
 
+export type CollaboratorRole = "editor" | "viewer";
+
+export interface Collaborator {
+  email: string;
+  role: CollaboratorRole;
+  addedAt: string;
+  addedBy?: string;
+}
+
 export interface UserTournamentArchiveItem {
   id: string;
   userId: string;
@@ -190,6 +199,10 @@ export interface UserTournamentArchiveItem {
   stateJson: string;
   createdAt: string;
   updatedAt: string;
+  collaborators?: Collaborator[];
+  collaboratorEmails?: string[];
+  editorEmails?: string[];
+  isPublicLive?: boolean;
 }
 
 /** Lưu giải đấu vào danh sách lưu trữ vĩnh viễn "Giải đấu của tôi" */
@@ -200,23 +213,39 @@ export async function saveTournamentToArchive(
   explicitId?: string
 ): Promise<string> {
   const tourName = state.name?.trim() || "Giải Pickleball chưa đặt tên";
-  // Tạo hoặc dùng lại ID giải đấu
   const tournamentId = explicitId || state.id || `tour_${userId.slice(0, 5)}_${Date.now()}`;
   const path = `user_tournaments/${tournamentId}`;
   try {
     const docRef = doc(db, "user_tournaments", tournamentId);
     const nowIso = new Date().toISOString();
+
+    const existingSnap = await getDoc(docRef).catch(() => null);
+    const existingData = existingSnap?.exists() ? existingSnap.data() : null;
+
+    const collaborators: Collaborator[] = state.collaborators || existingData?.collaborators || [];
+    const isPublicLive: boolean =
+      state.isPublicLive !== undefined ? state.isPublicLive : (existingData?.isPublicLive ?? true);
+    const collaboratorEmails = collaborators.map((c: Collaborator) => c.email.toLowerCase().trim()).filter(Boolean);
+    const editorEmails = collaborators
+      .filter((c: Collaborator) => c.role === "editor")
+      .map((c: Collaborator) => c.email.toLowerCase().trim())
+      .filter(Boolean);
+
     const payload: UserTournamentArchiveItem = {
       id: tournamentId,
-      userId,
-      userEmail: userEmail || "",
+      userId: existingData?.userId || userId,
+      userEmail: existingData?.userEmail || userEmail || "",
       name: tourName,
       date: state.date || "",
       courtsCount: state.courts?.length || 1,
       eventsCount: state.events?.length || 1,
-      stateJson: JSON.stringify({ ...state, id: tournamentId }),
-      createdAt: state.createdAt || nowIso,
+      stateJson: JSON.stringify({ ...state, id: tournamentId, collaborators, isPublicLive }),
+      createdAt: state.createdAt || existingData?.createdAt || nowIso,
       updatedAt: nowIso,
+      collaborators,
+      collaboratorEmails,
+      editorEmails,
+      isPublicLive,
     };
     await setDoc(docRef, payload, { merge: true });
     
@@ -236,6 +265,37 @@ export async function saveTournamentToArchive(
   }
 }
 
+/** Cập nhật quyền cộng tác viên & trạng thái chia sẻ QR cho giải đấu */
+export async function updateTournamentCollaborators(
+  tournamentId: string,
+  collaborators: Collaborator[],
+  isPublicLive: boolean = true
+): Promise<void> {
+  const path = `user_tournaments/${tournamentId}`;
+  try {
+    const docRef = doc(db, "user_tournaments", tournamentId);
+    const collaboratorEmails = collaborators.map((c) => c.email.toLowerCase().trim()).filter(Boolean);
+    const editorEmails = collaborators
+      .filter((c) => c.role === "editor")
+      .map((c) => c.email.toLowerCase().trim())
+      .filter(Boolean);
+
+    await setDoc(
+      docRef,
+      {
+        collaborators,
+        collaboratorEmails,
+        editorEmails,
+        isPublicLive,
+        updatedAt: new Date().toISOString(),
+      },
+      { merge: true }
+    );
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
 /** Tải danh sách tất cả các giải từng tạo của user ("Giải đấu của tôi") */
 export async function listUserTournaments(userId: string): Promise<UserTournamentArchiveItem[]> {
   const path = "user_tournaments";
@@ -246,13 +306,68 @@ export async function listUserTournaments(userId: string): Promise<UserTournamen
     snap.forEach((d) => {
       list.push(d.data() as UserTournamentArchiveItem);
     });
-    // Sắp xếp giải mới nhất lên đầu
     list.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
     return list;
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, path);
     return [];
   }
+}
+
+/** Tải danh sách các giải đấu mà user được mời làm cộng tác viên (chia sẻ) */
+export async function listSharedTournaments(userEmail: string): Promise<UserTournamentArchiveItem[]> {
+  if (!userEmail) return [];
+  const path = "user_tournaments";
+  try {
+    const cleanEmail = userEmail.toLowerCase().trim();
+    const q = query(
+      collection(db, "user_tournaments"),
+      where("collaboratorEmails", "array-contains", cleanEmail)
+    );
+    const snap = await getDocs(q);
+    const list: UserTournamentArchiveItem[] = [];
+    snap.forEach((d) => {
+      list.push(d.data() as UserTournamentArchiveItem);
+    });
+    list.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    return list;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, path);
+    return [];
+  }
+}
+
+/** Tải giải đấu công khai qua link/QR xem trực tiếp (không bắt buộc đăng nhập) */
+export async function fetchPublicTournament(tournamentId: string): Promise<UserTournamentArchiveItem | null> {
+  const path = `user_tournaments/${tournamentId}`;
+  try {
+    const docRef = doc(db, "user_tournaments", tournamentId);
+    const snap = await getDoc(docRef);
+    if (!snap.exists()) return null;
+    return snap.data() as UserTournamentArchiveItem;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, path);
+    return null;
+  }
+}
+
+/** Lắng nghe giải đấu thời gian thực qua mã QR / Public Live */
+export function subscribeToPublicTournament(
+  tournamentId: string,
+  onData: (item: UserTournamentArchiveItem) => void
+): () => void {
+  const docRef = doc(db, "user_tournaments", tournamentId);
+  return onSnapshot(
+    docRef,
+    (snap) => {
+      if (snap.exists()) {
+        onData(snap.data() as UserTournamentArchiveItem);
+      }
+    },
+    (error) => {
+      console.warn("Lỗi live stream giải đấu:", error);
+    }
+  );
 }
 
 /** Xóa một giải đấu khỏi "Giải đấu của tôi" */
@@ -274,16 +389,18 @@ export async function deleteUserTournament(tournamentId: string, userId: string,
 
 /** Ghi nhận phiên đăng nhập của người dùng */
 export async function recordUserLogin(user: User): Promise<void> {
+  if (!user || !user.uid) return;
   try {
     const userRef = doc(db, "users", user.uid);
+    const nowIso = new Date().toISOString();
     await setDoc(
       userRef,
       {
         userId: user.uid,
         email: user.email || "",
-        displayName: user.displayName || "",
+        displayName: user.displayName || user.email?.split("@")[0] || "Người dùng",
         photoURL: user.photoURL || "",
-        lastLoginAt: new Date().toISOString(),
+        lastLoginAt: nowIso,
       },
       { merge: true }
     );
@@ -291,9 +408,9 @@ export async function recordUserLogin(user: User): Promise<void> {
     void recordActivityLog(
       user.uid,
       user.email,
-      user.displayName,
+      user.displayName || user.email,
       "Đăng nhập",
-      `Tài khoản ${user.email} đăng nhập vào web`
+      `Tài khoản ${user.email || user.uid} đăng nhập vào hệ thống`
     );
   } catch (e) {
     console.warn("Không thể ghi log đăng nhập:", e);
@@ -339,9 +456,6 @@ export async function fetchAdminMonitoringData(): Promise<{
       getDocs(collection(db, "activity_logs")),
     ]);
 
-    const users: any[] = [];
-    usersSnap.forEach((d) => users.push(d.data()));
-
     const tournaments: UserTournamentArchiveItem[] = [];
     toursSnap.forEach((d) => tournaments.push(d.data() as UserTournamentArchiveItem));
     tournaments.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
@@ -349,6 +463,43 @@ export async function fetchAdminMonitoringData(): Promise<{
     const logs: any[] = [];
     logsSnap.forEach((d) => logs.push(d.data()));
     logs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+    const userMap = new Map<string, any>();
+    usersSnap.forEach((d) => {
+      const u = d.data();
+      const key = u.userId || u.email;
+      if (key) userMap.set(key, u);
+    });
+
+    // Bổ sung tài khoản từ các giải đấu đã lưu hoặc activity logs nếu chưa có trong collection users
+    tournaments.forEach((t) => {
+      const key = t.userId || t.userEmail;
+      if (key && !userMap.has(key)) {
+        userMap.set(key, {
+          userId: t.userId,
+          email: t.userEmail || "",
+          displayName: t.userEmail ? t.userEmail.split("@")[0] : "Người dùng",
+          photoURL: "",
+          lastLoginAt: t.updatedAt || t.createdAt,
+        });
+      }
+    });
+
+    logs.forEach((l) => {
+      const key = l.userId || l.userEmail;
+      if (key && !userMap.has(key)) {
+        userMap.set(key, {
+          userId: l.userId,
+          email: l.userEmail || "",
+          displayName: l.userName || (l.userEmail ? l.userEmail.split("@")[0] : "Người dùng"),
+          photoURL: "",
+          lastLoginAt: l.timestamp,
+        });
+      }
+    });
+
+    const users = Array.from(userMap.values());
+    users.sort((a, b) => new Date(b.lastLoginAt || 0).getTime() - new Date(a.lastLoginAt || 0).getTime());
 
     return { users, tournaments, logs };
   } catch (e) {

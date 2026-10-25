@@ -15,8 +15,12 @@ import {
   syncTournamentToCloud,
   fetchTournamentFromCloud,
   saveTournamentToArchive,
+  recordUserLogin,
+  updateTournamentCollaborators,
   onAuthStateChanged,
   type User,
+  type Collaborator,
+  type CollaboratorRole,
 } from "./firebase";
 
 /* ---------------- Kiểu dữ liệu ---------------- */
@@ -180,6 +184,12 @@ export type TournamentState = {
   koLocked?: Record<string, boolean>;
   /** Thứ tự ưu tiên tính bảng xếp hạng của giải: Mặc định: Điểm -> Hiệu số -> Đối đầu -> Bốc thăm */
   rankingCriteria?: RankingCriterion[];
+  /** ID giải đấu trên đám mây (nếu có) */
+  id?: string;
+  /** Danh sách cộng tác viên được mời điều hành / xem giải */
+  collaborators?: Collaborator[];
+  /** Bật/tắt chế độ xem trực tiếp công khai qua mã QR không cần đăng nhập */
+  isPublicLive?: boolean;
 };
 
 const STORAGE_KEY = "nay-court-tournament-v3";
@@ -218,6 +228,8 @@ const initialState: TournamentState = {
   entries: [],
   matches: [],
   rankingCriteria: ["points", "diff", "h2h", "draw"],
+  collaborators: [],
+  isPublicLive: true,
 };
 
 type Ctx = {
@@ -244,6 +256,9 @@ type Ctx = {
   markSaved: () => void;
   discardChanges: () => void;
   clearActiveTournament: () => void;
+  updateCollaborators: (collabs: Collaborator[], isPublic?: boolean) => Promise<void>;
+  currentRole: "owner" | "editor" | "viewer";
+  isReadOnly: boolean;
 };
 
 const TournamentContext = createContext<Ctx | null>(null);
@@ -322,6 +337,8 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       setUser(currentUser);
       setAuthLoading(false);
       if (currentUser) {
+        // Ghi nhận phiên đăng nhập để máy chủ Host Admin nhận diện
+        void recordUserLogin(currentUser);
         setIsSyncing(true);
         try {
           const cloudData = await fetchTournamentFromCloud(currentUser.uid);
@@ -513,6 +530,8 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     try {
       const loggedUser = await signInWithGoogle();
       setUser(loggedUser);
+      // Ghi nhận tài khoản đăng nhập vào Firestore cho Admin theo dõi
+      void recordUserLogin(loggedUser);
       // Khi đăng nhập trên máy mới: ưu tiên lấy giải đấu đã lưu trên đám mây về máy này
       const cloudData = await fetchTournamentFromCloud(loggedUser.uid);
       if (
@@ -639,6 +658,48 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const currentRole: "owner" | "editor" | "viewer" = useMemo(() => {
+    // 1. Admin máy chủ: toàn quyền
+    if (user?.email === "nhonoluv99@gmail.com") return "owner";
+
+    // 2. Kiểm tra nếu email user hiện tại có trong danh sách cộng tác viên
+    const collabs = state.collaborators || [];
+    if (user?.email) {
+      const matchCollab = collabs.find(
+        (c) => c.email.toLowerCase().trim() === user.email?.toLowerCase().trim(),
+      );
+      if (matchCollab) {
+        return matchCollab.role; // "editor" | "viewer"
+      }
+    }
+
+    // 3. Nếu mở qua link xem trực tiếp QR (?live=...)
+    const isLiveUrl = typeof window !== "undefined" && window.location.search.includes("live=");
+    if (isLiveUrl) {
+      if (!user) return "viewer";
+      const isOwner = (state as unknown as { userId?: string; userEmail?: string }).userId === user.uid ||
+        (state as unknown as { userId?: string; userEmail?: string }).userEmail === user.email;
+      if (!isOwner) return "viewer";
+    }
+
+    return "owner";
+  }, [user, state]);
+
+  const isReadOnly = currentRole === "viewer";
+
+  const updateCollaborators = useCallback(
+    async (collabs: Collaborator[], isPublic = true) => {
+      update({ collaborators: collabs, isPublicLive: isPublic });
+      if (activeTournamentId) {
+        await updateTournamentCollaborators(activeTournamentId, collabs, isPublic);
+      }
+      if (auth.currentUser) {
+        await saveCurrentToArchive();
+      }
+    },
+    [update, activeTournamentId, saveCurrentToArchive],
+  );
+
   const value = useMemo(
     () => ({
       state,
@@ -664,6 +725,9 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       markSaved,
       discardChanges,
       clearActiveTournament,
+      updateCollaborators,
+      currentRole,
+      isReadOnly,
     }),
     [
       state,
@@ -689,6 +753,9 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       markSaved,
       discardChanges,
       clearActiveTournament,
+      updateCollaborators,
+      currentRole,
+      isReadOnly,
     ],
   );
 
@@ -1238,7 +1305,8 @@ export function generateNextRotatingDoublesRound(
     // 1. Tuyệt đối không trùng partner cũ (penalty cực lớn nếu trùng)
     // 2. Tổng điểm trình mỗi cặp đều nhau nhất có thể
     for (let iter = 0; iter < 1200; iter++) {
-      const shuffledLow = [...lowPool].sort(() => Math.random() - 0.5);
+      // Ở lượt đầu tiên, thử ghép chính xác người cao nhất với người thấp nhất: 1+8, 2+7, 3+6, 4+5...
+      const shuffledLow = iter === 0 ? [...lowPool].reverse() : [...lowPool].sort(() => Math.random() - 0.5);
       const currentPairs: Array<[Entry, Entry]> = [];
       let penalty = 0;
 

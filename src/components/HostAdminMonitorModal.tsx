@@ -52,15 +52,9 @@ export function HostAdminMonitorModal({ isOpen, onClose }: HostAdminMonitorModal
           <div className="flex items-center gap-2.5">
             <span className="text-lg">🛡️</span>
             <div>
-              <h3 className="font-head text-base font-bold tracking-tight text-white flex items-center gap-2">
+              <h3 className="font-head text-base font-bold tracking-tight text-white">
                 Trung tâm Quản trị Máy chủ (Host Admin)
-                <span className="text-[10px] bg-amber-500 text-black px-1.5 py-0.5 rounded font-black uppercase">
-                  Chủ web
-                </span>
               </h3>
-              <p className="text-[11px] text-white/75">
-                Theo dõi toàn bộ lượt truy cập, tài khoản đã đăng nhập, giải đấu đã tạo & nhật ký hoạt động
-              </p>
             </div>
           </div>
           <button

@@ -37,6 +37,7 @@ import {
   type TeamSubMatch,
   type TEvent,
 } from "@/lib/tournament-store";
+import { ShareCollaboratorsModal } from "@/components/ShareCollaboratorsModal";
 
 export const Route = createFileRoute("/quan-ly-giai")({
   head: () => ({
@@ -2072,7 +2073,60 @@ function SingleBridgeConnector({
 /* ---------------- Trang chính Quản lý giải ---------------- */
 
 function ManagePage() {
-  const { state, update, updateEvent, updateMatch, setSelectedEventId, toggleKoLock } = useTournament();
+  const {
+    state,
+    update,
+    updateEvent,
+    updateMatch,
+    setSelectedEventId,
+    toggleKoLock,
+    user,
+    loadTournament,
+    isReadOnly,
+    currentRole,
+    updateCollaborators,
+  } = useTournament();
+  const [shareModalOpen, setShareModalOpen] = useState(false);
+
+  // Lắng nghe xem trực tiếp nếu URL có tham số ?live=
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const liveId = params.get("live");
+    if (!liveId) return;
+
+    let unsub: (() => void) | undefined;
+    import("@/lib/firebase").then(({ subscribeToPublicTournament, fetchPublicTournament }) => {
+      // Nạp ngay tức thì bản mới nhất từ Firestore
+      void fetchPublicTournament(liveId).then((data) => {
+        if (data?.stateJson) {
+          try {
+            const parsed = JSON.parse(data.stateJson);
+            loadTournament(parsed, liveId);
+          } catch (e) {
+            console.error("Lỗi nạp giải đấu trực tiếp:", e);
+          }
+        }
+      });
+
+      // Lắng nghe cập nhật thời gian thực
+      unsub = subscribeToPublicTournament(liveId, (data) => {
+        if (data?.stateJson) {
+          try {
+            const parsed = JSON.parse(data.stateJson);
+            loadTournament(parsed, liveId);
+          } catch (e) {
+            console.error("Lỗi cập nhật giải đấu trực tiếp:", e);
+          }
+        }
+      });
+    });
+
+    return () => {
+      if (unsub) unsub();
+    };
+  }, [loadTournament]);
+
   const activeId =
     state.selectedEventId && state.events.some((e) => e.id === state.selectedEventId)
       ? state.selectedEventId
@@ -2454,12 +2508,31 @@ function ManagePage() {
       }
     };
 
-    if (hasKoProgress || hasKoStarted) {
+    const hasAnyGroupEdits =
+      groupMatches.length > 0 &&
+      (groupMatches.some(
+        (m) =>
+          m.scoreA !== null ||
+          m.scoreB !== null ||
+          m.status === "done" ||
+          m.status === "live" ||
+          m.court ||
+          m.timeSlot !== undefined,
+      ) ||
+        groupMatches.length > 0);
+
+    if (hasKoProgress || hasKoStarted || hasAnyGroupEdits) {
       setConfirmModal({
-        title: "⚠️ Cảnh báo: Vòng loại trực tiếp đã bắt đầu",
+        title: "⚠️ Cảnh báo tạo lại lịch thi đấu",
         message:
-          "Vòng loại trực tiếp đã có nhánh xếp cặp hoặc kết quả thi đấu!\n\nViệc tạo lại lịch vòng bảng sẽ làm mới danh sách trận đấu và thứ hạng vòng bảng. Bạn có chắc chắn muốn tiếp tục?",
-        confirmText: "Tạo lại vòng bảng",
+          hasKoProgress || hasKoStarted
+            ? "Vòng loại trực tiếp đã có nhánh xếp cặp hoặc kết quả thi đấu!\n\nViệc tạo lại lịch thi đấu sẽ làm mới danh sách trận đấu và thứ hạng. Bạn có chắc chắn muốn tiếp tục?"
+            : `Lịch thi đấu hiện tại đã có ${groupMatches.length} trận${
+                groupMatches.some((m) => m.scoreA !== null || m.status === "done")
+                  ? " và đã có kết quả điểm số"
+                  : ""
+              }.\n\nViệc tạo lại lịch sẽ xóa toàn bộ các trận đấu và điểm số hiện tại của nội dung này để tạo lịch mới từ đầu. Bạn có chắc chắn muốn tiếp tục?`,
+        confirmText: "Tạo lại lịch",
         cancelText: "Hủy bỏ",
         isDestructive: true,
         onConfirm: () => {
@@ -4248,6 +4321,21 @@ function ManagePage() {
             Điều hành trực tiếp các trận đấu, sân thi đấu, trọng tài và sơ đồ bảng/nhánh KO.
           </p>
         </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {isReadOnly && (
+            <span className="rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-800 dark:text-amber-300 px-3 py-1.5 text-xs font-bold flex items-center gap-1.5 shadow-2xs">
+              👁️ Đang xem trực tiếp (Chỉ xem)
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => setShareModalOpen(true)}
+            className="rounded-xl bg-[#093220] hover:bg-[#093220]/90 text-white px-3.5 py-2 text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer transition"
+            title="Thêm email người cùng điều hành hoặc xem, chia sẻ mã QR theo dõi trực tiếp"
+          >
+            🤝 Chia sẻ & QR
+          </button>
+        </div>
       </div>
 
       {/* Thanh thông báo các trận ĐANG DIỄN RA (Active Matches Bar - Ảnh 4) */}
@@ -4648,26 +4736,6 @@ function ManagePage() {
               >
                 📸 Xuất ảnh / PDF sơ đồ
               </button>
-              {isRotatingDoubles(ev) && rounds.length > 0 && (
-                canDrawMoreRotatingRounds ? (
-                  <button
-                    type="button"
-                    className="rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3 py-1.5 flex items-center gap-1.5 shadow-xs cursor-pointer transition"
-                    style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                    onClick={handleNextRotatingRound}
-                    title="Bốc thăm ngẫu nhiên thêm một vòng tiếp theo dựa trên điểm trình và tránh trùng partner"
-                  >
-                    🎲 Bốc thăm tiếp Vòng {rounds.length + 1}
-                  </button>
-                ) : (
-                  <div
-                    className="rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-800 dark:text-emerald-300 text-xs font-bold px-3 py-1.5 flex items-center gap-1.5 shadow-2xs"
-                    style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                  >
-                    ✓ Đã bốc đủ {rounds.length}/{maxAllowedRotatingRounds} vòng
-                  </div>
-                )
-              )}
               <button
                 className="btn-accent text-xs"
                 style={{ fontFamily: "'Space Grotesk', sans-serif" }}
@@ -5140,33 +5208,27 @@ function ManagePage() {
                         <button
                           type="button"
                           onClick={handleNextRotatingRound}
-                          className="w-full flex-1 min-h-[160px] rounded-xl border-2 border-dashed border-emerald-500/40 bg-emerald-500/5 hover:bg-emerald-500/10 flex flex-col items-center justify-center gap-2.5 p-4 text-center transition cursor-pointer group"
+                          className="w-full flex-1 min-h-[160px] rounded-xl border-2 border-dashed border-[#093220]/40 bg-[#093220]/5 hover:bg-[#093220]/10 hover:border-[#093220] flex flex-col items-center justify-center gap-2.5 p-4 text-center transition cursor-pointer group"
                         >
-                          <div className="w-11 h-11 rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center text-xl group-hover:scale-110 transition shadow-2xs">
+                          <div className="w-11 h-11 rounded-full bg-[#093220]/15 text-[#093220] flex items-center justify-center text-xl group-hover:scale-110 transition shadow-2xs">
                             🎲
                           </div>
                           <div>
-                            <span className="font-head text-sm font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-300 block">
+                            <span className="font-head text-sm font-bold uppercase tracking-wide text-[#093220] block">
                               Bốc thăm tiếp Vòng {rounds.length + 1}
-                            </span>
-                            <span className="text-[11px] text-line/60 block mt-1">
-                              Ghép 1 cao + 1 thấp cân trình & đổi partner cho vòng đấu kế tiếp
                             </span>
                           </div>
                         </button>
                       </div>
                     ) : isRotatingRoundsCompleted && rounds.length > 0 ? (
                       <div className="w-[260px] shrink-0 pt-[2px] px-[3px] flex flex-col">
-                        <div className="w-full flex-1 min-h-[160px] rounded-xl border border-emerald-500/30 bg-emerald-500/5 flex flex-col items-center justify-center gap-2 p-4 text-center shadow-2xs">
-                          <div className="w-10 h-10 rounded-full bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 flex items-center justify-center text-lg font-bold">
+                        <div className="w-full flex-1 min-h-[160px] rounded-xl border border-[#093220]/30 bg-[#093220]/5 flex flex-col items-center justify-center gap-2 p-4 text-center shadow-2xs">
+                          <div className="w-10 h-10 rounded-full bg-[#093220]/15 text-[#093220] flex items-center justify-center text-lg font-bold">
                             ✓
                           </div>
                           <div>
-                            <span className="font-head text-xs font-bold uppercase tracking-wide text-emerald-800 dark:text-emerald-200 block">
+                            <span className="font-head text-xs font-bold uppercase tracking-wide text-[#093220] block">
                               Đã hoàn thành {rounds.length}/{maxAllowedRotatingRounds} vòng
-                            </span>
-                            <span className="text-[11px] text-emerald-700/80 block mt-1">
-                              Đã bốc thăm đủ số lượng vòng theo đúng cài đặt ban đầu
                             </span>
                           </div>
                         </div>
@@ -6426,6 +6488,14 @@ function ManagePage() {
           onAssignTeam={handleAssignTeamFromPicker}
           onAssignPlaceholder={handleAssignPlaceholderFromPicker}
           onClearSlot={handleClearSlotFromPicker}
+        />
+      )}
+
+      {/* MODAL CHIA SẺ & QR THEO DÕI GIẢI ĐẤU */}
+      {shareModalOpen && (
+        <ShareCollaboratorsModal
+          isOpen={shareModalOpen}
+          onClose={() => setShareModalOpen(false)}
         />
       )}
     </div>
