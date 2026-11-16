@@ -137,7 +137,7 @@ export function MyTournamentsModal({ isOpen, onClose }: MyTournamentsModalProps)
           onClick={(e) => e.stopPropagation()}
         >
           {/* Header Modal */}
-          <div className="flex items-center justify-between border-b border-white/10 bg-[#0a3320] px-5 py-3.5 text-white">
+          <div className="flex items-center justify-between border-b border-white/10 bg-[#082718] px-5 py-3.5 text-white">
             <h3
               className="text-base font-bold tracking-tight text-white"
               style={{ fontFamily: "'Space Grotesk', sans-serif" }}

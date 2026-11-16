@@ -21,7 +21,9 @@ import {
   generateKnockout,
   generateNextRotatingDoublesRound,
   generateTotalKoKnockout,
+  getActiveEntryIds,
   getActivePlayerNames,
+  getLiveTournamentIdFromUrl,
   getMatchEntryA,
   getMatchEntryB,
   getRotatingMatchesPerPlayer,
@@ -30,10 +32,12 @@ import {
   isRotatingDoubles,
   propagateKnockout,
   RANKING_CRITERIA_LABELS,
+  MLP_RANKING_CRITERIA_LABELS,
   useTournament,
   type Entry,
   type IndividualStandingRow,
   type Match,
+  type PlayerSlot,
   type TeamSubMatch,
   type TEvent,
 } from "@/lib/tournament-store";
@@ -337,6 +341,7 @@ function PlayerNameDisplay({
   activePlayerNames,
   isWinning,
   isMatchLive,
+  isMatchDone = false,
   truncate = true,
 }: {
   entry?: Entry;
@@ -344,23 +349,42 @@ function PlayerNameDisplay({
   activePlayerNames: Set<string>;
   isWinning?: boolean;
   isMatchLive?: boolean;
+  isMatchDone?: boolean;
   truncate?: boolean;
 }) {
   const isWithdrawn = Boolean(entry?.withdrawn);
 
+  const isNameActive = (rawName: string) => {
+    if (isMatchDone) return false;
+    const clean = rawName.trim().toLowerCase();
+    if (!clean) return false;
+    if (activePlayerNames.has(clean)) return true;
+    const base = clean.split(/\s*-\s*|\s*\/\s*/)[0]?.trim();
+    if (base && activePlayerNames.has(base)) return true;
+    return false;
+  };
+
   if (entry && entry.teamName && entry.teamName.trim()) {
+    const teamClean = entry.teamName.trim();
+    const isTeamLive =
+      !isMatchDone &&
+      (Boolean(isMatchLive) ||
+        isNameActive(teamClean) ||
+        entry.players.some((p) => p.name.trim() && isNameActive(p.name)));
     return (
       <span
         className={`${truncate ? "truncate" : "break-words leading-tight"} ${
           isWithdrawn
-            ? "line-through text-line/40 font-semibold"
-            : isWinning
-              ? "font-bold text-[#c2410c]"
-              : "font-bold text-[#111827]"
+            ? "line-through text-line/40 font-normal"
+            : isTeamLive
+              ? "font-medium text-red-600 dark:text-red-400"
+              : isWinning
+                ? "font-bold text-[#e44c11]"
+                : "font-normal text-[#0a3320]"
         } inline-flex items-center gap-1`}
         style={{ fontFamily: "'Space Grotesk', sans-serif" }}
       >
-        <span>🛡️ {entry.teamName.trim()}</span>
+        <span>{teamClean}</span>
         {isWithdrawn && (
           <span className="no-underline rounded bg-red-100 text-red-700 dark:bg-red-950/80 dark:text-red-300 text-[9px] font-bold px-1 py-0.2 border border-red-300 shrink-0">
             Bỏ cuộc
@@ -371,12 +395,51 @@ function PlayerNameDisplay({
   }
 
   if (!entry || entry.players.length === 0) {
-    const isLive = Boolean(isMatchLive) || activePlayerNames.has((fallback || "").toLowerCase());
+    const parts = (fallback || "").split("/").map((s) => s.trim()).filter(Boolean);
+    if (parts.length > 1) {
+      return (
+        <span
+          className={
+            truncate
+              ? "truncate inline-flex items-center gap-1"
+              : "inline-flex flex-wrap items-center gap-0.5 break-words leading-tight"
+          }
+        >
+          {parts.map((pName, idx) => {
+            const isLive = !isMatchDone && (Boolean(isMatchLive) || isNameActive(pName));
+            return (
+              <span key={idx} className={truncate ? "inline-flex items-center shrink-0" : "inline-flex items-center"}>
+                {idx > 0 && (
+                  <span className={truncate ? "text-line/40 mx-1" : "text-[#6b7280] font-bold mx-1"}>/</span>
+                )}
+                <span
+                  className={`${
+                    isLive
+                      ? "text-red-600 dark:text-red-400 font-bold"
+                      : isWinning
+                        ? "font-bold text-[#e44c11]"
+                        : truncate
+                          ? "text-ink/85 font-medium"
+                          : "text-[#111827] font-bold"
+                  }`}
+                  style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                  title={isLive ? `${pName} đang thi đấu!` : undefined}
+                >
+                  {pName}
+                </span>
+              </span>
+            );
+          })}
+        </span>
+      );
+    }
+
+    const isLive = !isMatchDone && (Boolean(isMatchLive) || isNameActive(fallback || ""));
     return (
       <span
         className={`${truncate ? "truncate" : "break-words leading-tight"} ${
           isLive
-            ? "text-red-600 dark:text-red-400 font-semibold"
+            ? "text-red-600 dark:text-red-400 font-bold"
             : isWinning
               ? "font-bold text-[#e44c11]"
               : truncate
@@ -401,7 +464,7 @@ function PlayerNameDisplay({
       {entry.players.map((p, idx) => {
         const pName = p.name.trim();
         if (!pName) return null;
-        const isLive = Boolean(isMatchLive) || activePlayerNames.has(pName.toLowerCase());
+        const isLive = !isMatchDone && (Boolean(isMatchLive) || isNameActive(pName));
         return (
           <span key={idx} className={truncate ? "inline-flex items-center shrink-0" : "inline-flex items-center"}>
             {idx > 0 && (
@@ -412,7 +475,7 @@ function PlayerNameDisplay({
                 isWithdrawn
                   ? "line-through text-line/40 font-medium"
                   : isLive
-                    ? "text-red-600 dark:text-red-400 font-semibold"
+                    ? "text-red-600 dark:text-red-400 font-bold"
                     : isWinning
                       ? "font-bold text-[#e44c11]"
                       : truncate
@@ -436,14 +499,113 @@ function PlayerNameDisplay({
   );
 }
 
+function PlayerSelectBox({
+  value,
+  onChange,
+  placeholder,
+  players,
+  align = "left",
+  dropdownAlign,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  players: PlayerSlot[];
+  align?: "left" | "right";
+  dropdownAlign?: "left" | "right";
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const validPlayers = players.filter((p) => p.name && p.name.trim());
+  const actualDropdownAlign = dropdownAlign || (align === "right" ? "right" : "left");
+
+  return (
+    <div ref={ref} className="relative flex-1 min-w-0">
+      <div className="flex items-center rounded-lg border border-line/20 bg-paper focus-within:ring-1 focus-within:ring-accent overflow-hidden shadow-2xs">
+        <input
+          type="text"
+          className={`w-full bg-transparent text-xs !py-1.5 !px-2 font-semibold text-ink outline-none ${
+            align === "right" ? "text-right" : "text-left"
+          }`}
+          value={value}
+          placeholder={placeholder}
+          onChange={(e) => onChange(e.target.value)}
+        />
+        {validPlayers.length > 0 && (
+          <button
+            type="button"
+            tabIndex={-1}
+            onClick={() => setOpen((v) => !v)}
+            className="px-1.5 py-1.5 text-line/45 hover:text-ink hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer text-[10px] shrink-0 border-l border-line/10 transition"
+            title="Chọn từ danh sách thành viên đội"
+          >
+            ▼
+          </button>
+        )}
+      </div>
+
+      {open && validPlayers.length > 0 && (
+        <div
+          className={`absolute z-30 mt-1 max-h-48 w-44 max-w-[calc(100vw-3rem)] overflow-y-auto rounded-lg border border-line/20 bg-card p-1 shadow-lg backdrop-blur-md ${
+            actualDropdownAlign === "right" ? "right-0" : "left-0"
+          }`}
+        >
+          <div className="text-[10px] font-bold text-line/50 px-2 py-0.5 uppercase">
+            Chọn thành viên:
+          </div>
+          {validPlayers.map((p, idx) => {
+            const role =
+              idx === 0
+                ? "Nam 1"
+                : idx === 1
+                  ? "Nam 2"
+                  : idx === 2
+                    ? "Nữ 1"
+                    : "Nữ 2";
+            return (
+              <button
+                key={idx}
+                type="button"
+                className="w-full rounded-md px-2 py-1 text-left text-xs font-semibold hover:bg-accent/15 hover:text-accent cursor-pointer flex items-center justify-between"
+                onClick={() => {
+                  onChange(p.name);
+                  setOpen(false);
+                }}
+              >
+                <span className="truncate">{p.name}</span>
+                <span className="text-[10px] text-line/50 shrink-0 ml-1 font-normal">
+                  ({role})
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TeamMatchModal({
   match,
   entries,
+  ev,
   onClose,
   onSave,
 }: {
   match: Match;
   entries: Entry[];
+  ev?: TEvent | null;
   onClose: () => void;
   onSave: (
     updatedSubMatches: TeamSubMatch[],
@@ -461,19 +623,70 @@ function TeamMatchModal({
     if (match.teamSubMatches && match.teamSubMatches.length > 0) {
       return match.teamSubMatches;
     }
-    return createDefaultMlpSubMatches(entryA, entryB);
-  }, [match, entryA, entryB]);
+    return createDefaultMlpSubMatches(entryA, entryB, ev?.hasDreambreaker !== false);
+  }, [match, entryA, entryB, ev?.hasDreambreaker]);
 
   const [subMatches, setSubMatches] = useState<TeamSubMatch[]>(initialSubMatches);
+  const [draggedMatchIdx, setDraggedMatchIdx] = useState<number | null>(null);
+  const [dragOverMatchIdx, setDragOverMatchIdx] = useState<number | null>(null);
+
+  const getSubPlayerSlots = (raw?: string): [string, string] => {
+    if (!raw) return ["", ""];
+    const parts = raw.split(/\s*&\s*|\s*\/\s*/);
+    return [parts[0]?.trim() || "", parts[1]?.trim() || ""];
+  };
+
+  const handleDragReorder = (fromIdx: number, toIdx: number) => {
+    if (
+      fromIdx === toIdx ||
+      fromIdx < 0 ||
+      toIdx < 0 ||
+      fromIdx >= subMatches.length ||
+      toIdx >= subMatches.length
+    )
+      return;
+    const next = [...subMatches];
+    const [moved] = next.splice(fromIdx, 1);
+    next.splice(toIdx, 0, moved);
+    setSubMatches(next);
+    syncMatch(next);
+  };
+
+  const syncMatch = (nextSubMatches: TeamSubMatch[]) => {
+    let a = 0;
+    let b = 0;
+    const first4 = nextSubMatches.slice(0, 4);
+    first4.forEach((sm) => {
+      if (sm.scoreA !== null && sm.scoreB !== null) {
+        if (sm.scoreA > sm.scoreB) a++;
+        else if (sm.scoreB > sm.scoreA) b++;
+      }
+    });
+
+    const is22 = a === 2 && b === 2;
+    const db = nextSubMatches[4];
+    if (is22 && db && db.scoreA !== null && db.scoreB !== null) {
+      if (db.scoreA > db.scoreB) a++;
+      else if (db.scoreB > db.scoreA) b++;
+    }
+
+    const completed =
+      (a >= 3 || b >= 3) ||
+      (a === 2 && b === 2 && db && db.scoreA !== null && db.scoreB !== null && db.scoreA !== db.scoreB);
+
+    onSave(nextSubMatches, a, b, completed);
+  };
 
   const updateSubScore = (
     id: string,
     key: "scoreA" | "scoreB",
     val: number | null,
   ) => {
-    setSubMatches((prev) =>
-      prev.map((sm) => (sm.id === id ? { ...sm, [key]: val } : sm)),
-    );
+    setSubMatches((prev) => {
+      const next = prev.map((sm) => (sm.id === id ? { ...sm, [key]: val } : sm));
+      syncMatch(next);
+      return next;
+    });
   };
 
   const updateSubPlayers = (
@@ -481,13 +694,49 @@ function TeamMatchModal({
     key: "teamAPlayers" | "teamBPlayers",
     val: string,
   ) => {
-    setSubMatches((prev) =>
-      prev.map((sm) => (sm.id === id ? { ...sm, [key]: val } : sm)),
-    );
+    setSubMatches((prev) => {
+      const next = prev.map((sm) => (sm.id === id ? { ...sm, [key]: val } : sm));
+      syncMatch(next);
+      return next;
+    });
+  };
+
+  const updateSubPlayerSlot = (
+    matchId: string,
+    team: "A" | "B",
+    slotIdx: 0 | 1,
+    newVal: string,
+  ) => {
+    setSubMatches((prev) => {
+      const next = prev.map((sm) => {
+        if (sm.id !== matchId) return sm;
+        const key = team === "A" ? "teamAPlayers" : "teamBPlayers";
+        const [p1, p2] = getSubPlayerSlots(sm[key]);
+        const updated1 = slotIdx === 0 ? newVal : p1;
+        const updated2 = slotIdx === 1 ? newVal : p2;
+        const combined =
+          updated1 && updated2
+            ? `${updated1} & ${updated2}`
+            : updated1 || updated2 || "";
+        return { ...sm, [key]: combined };
+      });
+      syncMatch(next);
+      return next;
+    });
+  };
+
+  const moveSubMatch = (idx: number, dir: -1 | 1) => {
+    const targetIdx = idx + dir;
+    if (targetIdx < 0 || targetIdx >= subMatches.length) return;
+    const next = [...subMatches];
+    const [moved] = next.splice(idx, 1);
+    next.splice(targetIdx, 0, moved);
+    setSubMatches(next);
+    syncMatch(next);
   };
 
   // Tính tổng số trận thắng
-  const { winsA, winsB, isTied22, allCompleted } = useMemo(() => {
+  const { winsA, winsB, isTied22 } = useMemo(() => {
     let a = 0;
     let b = 0;
     // Kiểm tra 4 trận đôi đầu tiên
@@ -508,207 +757,365 @@ function TeamMatchModal({
       else if (db.scoreB > db.scoreA) b++;
     }
 
-    const completed =
-      (a >= 3 || b >= 3) ||
-      (a === 2 && b === 2 && db && db.scoreA !== null && db.scoreB !== null && db.scoreA !== db.scoreB);
-
-    return { winsA: a, winsB: b, isTied22: is22, allCompleted: completed };
+    return { winsA: a, winsB: b, isTied22: is22 };
   }, [subMatches]);
 
   const handleReset = () => {
-    setSubMatches(createDefaultMlpSubMatches(entryA, entryB));
-  };
-
-  const handleSave = () => {
-    onSave(subMatches, winsA, winsB, allCompleted);
+    const defaultSubs = createDefaultMlpSubMatches(entryA, entryB, ev?.hasDreambreaker !== false);
+    setSubMatches(defaultSubs);
+    syncMatch(defaultSubs);
   };
 
   return (
     <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5 overflow-y-auto animate-in fade-in duration-200">
       <div className="bg-card w-full max-w-3xl rounded-2xl border border-line/20 shadow-2xl overflow-hidden flex flex-col my-auto max-h-[92vh]">
-        {/* Header */}
-        <div className="bg-gradient-to-r from-[#0a3320] to-[#124b30] p-4 text-white flex items-center justify-between shrink-0">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-lg">🏆</span>
-              <h2 className="font-head text-base sm:text-lg font-bold tracking-tight">
-                Quản lý trận Đấu Đồng Đội (MLP / PPA Format)
-              </h2>
-            </div>
-            <p className="text-xs text-white/80 mt-0.5">
-              Vòng {match.round} • {match.groupName ? `Bảng ${match.groupName}` : "Vòng bảng"} • Sân: {match.court || "Chưa chọn sân"}
-            </p>
-          </div>
+        {/* Header trên nền beige với thông tin vòng/bảng/sân ở giữa */}
+        <div className="bg-paper p-4 border-b border-line/15 shrink-0 relative">
+          {/* Nút đóng ở góc trên bên phải */}
           <button
             type="button"
             onClick={onClose}
-            className="size-8 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center font-bold text-sm cursor-pointer"
+            className="absolute right-3.5 top-3.5 size-7 rounded-full bg-line/10 hover:bg-line/20 text-line/70 hover:text-ink flex items-center justify-center font-bold text-sm cursor-pointer transition"
+            title="Đóng"
           >
             ✕
           </button>
+
+          {/* Dòng chữ Vòng, Bảng, Sân ở giữa, cùng màu chữ với tên đội */}
+          <div
+            className="text-center font-head text-xs sm:text-sm font-bold text-[#0a3320] tracking-wide mb-3"
+            style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+          >
+            Vòng {match.round} • {match.groupName ? (match.groupName.startsWith("Bảng") ? match.groupName : `Bảng ${match.groupName}`) : "Vòng bảng"} • Sân: {match.court || "Chưa chọn sân"}
+          </div>
+
+          {/* Bảng tổng tỉ số */}
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1 text-right min-w-0">
+              <div
+                className="font-head text-sm sm:text-base font-extrabold text-[#0a3320] truncate"
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+              >
+                {nameA}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 px-4 py-2 rounded-xl bg-card border border-line/20 shadow-xs shrink-0">
+              <span
+                className={`font-mono text-2xl sm:text-3xl font-black ${
+                  winsA > winsB ? "text-[#ea580c]" : "text-ink"
+                }`}
+              >
+                {winsA}
+              </span>
+              <span className="text-line/40 font-bold text-lg">—</span>
+              <span
+                className={`font-mono text-2xl sm:text-3xl font-black ${
+                  winsB > winsA ? "text-[#ea580c]" : "text-ink"
+                }`}
+              >
+                {winsB}
+              </span>
+            </div>
+
+            <div className="flex-1 text-left min-w-0">
+              <div
+                className="font-head text-sm sm:text-base font-extrabold text-[#0a3320] truncate"
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+              >
+                {nameB}
+              </div>
+            </div>
+          </div>
         </div>
 
-        {/* Bảng tổng tỉ số */}
-        <div className="bg-paper p-4 border-b border-line/15 shrink-0 flex items-center justify-between gap-4">
-          <div className="flex-1 text-right min-w-0">
-            <div className="font-head text-sm sm:text-base font-extrabold text-[#0a3320] truncate">
-              {nameA}
-            </div>
-            <div className="text-[11px] text-line/60">Đội A</div>
-          </div>
-
-          <div className="flex items-center gap-3 px-4 py-2 rounded-xl bg-card border border-line/20 shadow-xs shrink-0">
-            <span
-              className={`font-mono text-2xl sm:text-3xl font-black ${
-                winsA > winsB ? "text-[#c2410c]" : "text-ink"
-              }`}
-            >
-              {winsA}
-            </span>
-            <span className="text-line/40 font-bold text-lg">—</span>
-            <span
-              className={`font-mono text-2xl sm:text-3xl font-black ${
-                winsB > winsA ? "text-[#c2410c]" : "text-ink"
-              }`}
-            >
-              {winsB}
-            </span>
-          </div>
-
-          <div className="flex-1 text-left min-w-0">
-            <div className="font-head text-sm sm:text-base font-extrabold text-[#0a3320] truncate">
-              {nameB}
-            </div>
-            <div className="text-[11px] text-line/60">Đội B</div>
-          </div>
-        </div>
-
-        {/* Trạng thái thông báo */}
-        {allCompleted && (
-          <div className="bg-emerald-50 border-b border-emerald-200 px-4 py-2 text-center text-xs font-bold text-emerald-800 shrink-0">
-            🎉 {winsA > winsB ? nameA : nameB} giành chiến thắng chung cuộc ({winsA} — {winsB})!
-          </div>
-        )}
-        {isTied22 && !allCompleted && (
+        {/* Trạng thái nhắc nhở khi hòa 2-2 */}
+        {isTied22 && (
           <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 text-center text-xs font-bold text-amber-800 animate-pulse shrink-0">
             ⚡ Hai đội đang hòa 2 — 2! Kích hoạt trận Dreambreaker™ để phân định thắng bại!
           </div>
         )}
 
-        {/* Danh sách 5 trận con */}
-        <div className="p-3 sm:p-5 space-y-3.5 overflow-y-auto flex-1">
-          {subMatches.map((sm) => {
+        {/* Danh sách các trận con */}
+        <div className="p-3 sm:p-5 space-y-3.5 overflow-y-auto overflow-x-hidden flex-1">
+          {subMatches.map((sm, idx) => {
             const isDreambreaker = sm.type === "dreambreaker";
             const aWon = sm.scoreA !== null && sm.scoreB !== null && sm.scoreA > sm.scoreB;
             const bWon = sm.scoreA !== null && sm.scoreB !== null && sm.scoreB > sm.scoreA;
 
+            const [pA1, pA2] = getSubPlayerSlots(sm.teamAPlayers);
+            const [pB1, pB2] = getSubPlayerSlots(sm.teamBPlayers);
+            const rawTitle = sm.title
+              .replace(/^Trận\s*\d+\s*:\s*/i, "")
+              .replace(/\s*\(ĐƠN LUÂN PHIÊN HÒA 2-2\)/gi, "")
+              .replace(/\s*\(Đơn luân phiên hòa 2-2\)/gi, "")
+              .trim();
+
+            const isDragging = draggedMatchIdx === idx;
+            const isDragOver = dragOverMatchIdx === idx && draggedMatchIdx !== idx;
+
             return (
               <div
                 key={sm.id}
+                data-submatch-idx={idx}
+                draggable
+                onDragStart={(e) => {
+                  const target = e.target as HTMLElement;
+                  if (target.closest("input, select, button")) {
+                    e.preventDefault();
+                    return;
+                  }
+                  setDraggedMatchIdx(idx);
+                  e.dataTransfer.setData("text/plain", String(idx));
+                  e.dataTransfer.effectAllowed = "move";
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                  if (dragOverMatchIdx !== idx) setDragOverMatchIdx(idx);
+                }}
+                onDragLeave={() => {
+                  if (dragOverMatchIdx === idx) setDragOverMatchIdx(null);
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (draggedMatchIdx !== null && draggedMatchIdx !== idx) {
+                    handleDragReorder(draggedMatchIdx, idx);
+                  }
+                  setDraggedMatchIdx(null);
+                  setDragOverMatchIdx(null);
+                }}
+                onDragEnd={() => {
+                  setDraggedMatchIdx(null);
+                  setDragOverMatchIdx(null);
+                }}
                 className={`p-3.5 rounded-xl border transition-all ${
-                  isDreambreaker
-                    ? isTied22
-                      ? "bg-amber-50/70 border-amber-300 ring-2 ring-amber-400/30"
-                      : "bg-paper/60 border-line/15 opacity-75"
-                    : "bg-card border-line/20 shadow-2xs"
+                  isDragging
+                    ? "opacity-50 border-dashed border-[#ea580c] ring-2 ring-orange-300/40 scale-[0.98]"
+                    : isDragOver
+                      ? "border-[#ea580c] ring-2 ring-[#ea580c]/50 bg-orange-50/20 scale-[1.01]"
+                      : isDreambreaker
+                        ? isTied22
+                          ? "bg-amber-50/70 border-amber-300 ring-2 ring-amber-400/30"
+                          : "bg-paper/60 border-line/15 opacity-75"
+                        : "bg-card border-line/20 shadow-2xs hover:border-[#ea580c]/30 cursor-grab active:cursor-grabbing"
                 }`}
               >
-                <div className="flex items-center justify-between gap-2 mb-2">
-                  <div className="flex items-center gap-2">
+                <div className="flex items-center justify-between gap-2 mb-2.5">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {/* 6 chấm tròn kéo thả hỗ trợ cả máy tính và màn hình cảm ứng */}
+                    <div
+                      style={{ touchAction: "none" }}
+                      onTouchStart={(e) => {
+                        setDraggedMatchIdx(idx);
+                        setDragOverMatchIdx(idx);
+                        try { navigator.vibrate?.(15); } catch {}
+                      }}
+                      onTouchMove={(e) => {
+                        const touch = e.touches[0];
+                        if (!touch) return;
+                        const target = document.elementFromPoint(touch.clientX, touch.clientY);
+                        const itemEl = target?.closest("[data-submatch-idx]");
+                        if (itemEl) {
+                          const targetIdx = Number(itemEl.getAttribute("data-submatch-idx"));
+                          if (!isNaN(targetIdx) && targetIdx !== dragOverMatchIdx) {
+                            setDragOverMatchIdx(targetIdx);
+                          }
+                        }
+                      }}
+                      onTouchEnd={() => {
+                        if (draggedMatchIdx !== null && dragOverMatchIdx !== null && draggedMatchIdx !== dragOverMatchIdx) {
+                          handleDragReorder(draggedMatchIdx, dragOverMatchIdx);
+                          try { navigator.vibrate?.(25); } catch {}
+                        }
+                        setDraggedMatchIdx(null);
+                        setDragOverMatchIdx(null);
+                      }}
+                      className="flex items-center justify-center p-1.5 text-line/40 hover:text-[#ea580c] active:text-[#ea580c] cursor-grab active:cursor-grabbing transition select-none"
+                      title="Kéo thả lên/xuống để đổi thứ tự trận đấu"
+                    >
+                      <svg className="size-4 fill-current pointer-events-none" viewBox="0 0 24 24">
+                        <circle cx="8.5" cy="6" r="1.5" />
+                        <circle cx="15.5" cy="6" r="1.5" />
+                        <circle cx="8.5" cy="12" r="1.5" />
+                        <circle cx="15.5" cy="12" r="1.5" />
+                        <circle cx="8.5" cy="18" r="1.5" />
+                        <circle cx="15.5" cy="18" r="1.5" />
+                      </svg>
+                    </div>
+
                     <span className="font-head text-xs font-bold uppercase tracking-wider text-ink">
-                      {sm.title}
+                      Trận {idx + 1}: {rawTitle}
                     </span>
                     {isDreambreaker && (
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-200 text-amber-900">
+                      <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-orange-100 text-[#ea580c] border border-orange-200">
                         Tiebreaker 21 điểm
                       </span>
                     )}
                   </div>
-                  {aWon && (
-                    <span className="text-[11px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-md">
-                      ✓ {nameA} thắng
-                    </span>
-                  )}
-                  {bWon && (
-                    <span className="text-[11px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-md">
-                      ✓ {nameB} thắng
-                    </span>
-                  )}
                 </div>
 
-                <div className="grid grid-cols-12 gap-2 items-center">
-                  {/* Cặp Đội A */}
-                  <div className="col-span-5 text-right">
-                    <input
-                      type="text"
-                      className="field text-xs text-right !py-1 !px-2 font-semibold text-ink bg-paper border border-line/20 w-full"
-                      value={sm.teamAPlayers ?? ""}
-                      placeholder="VĐV Đội A"
-                      onChange={(e) => updateSubPlayers(sm.id, "teamAPlayers", e.target.value)}
-                    />
-                  </div>
+                {isDreambreaker ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
+                    <div className="sm:col-span-5">
+                      <PlayerSelectBox
+                        value={sm.teamAPlayers || nameA}
+                        onChange={(val) => updateSubPlayers(sm.id, "teamAPlayers", val)}
+                        placeholder="VĐV hoặc Tên đội"
+                        players={entryA?.players || []}
+                        align="right"
+                        dropdownAlign="left"
+                      />
+                    </div>
 
-                  {/* Ô nhập điểm */}
-                  <div className="col-span-2 flex items-center justify-center gap-1.5">
-                    <input
-                      type="number"
-                      min="0"
-                      max="99"
-                      value={sm.scoreA ?? ""}
-                      placeholder="0"
-                      onChange={(e) =>
-                        updateSubScore(
-                          sm.id,
-                          "scoreA",
-                          e.target.value === "" ? null : Number(e.target.value),
-                        )
-                      }
-                      className={`w-11 text-center font-mono font-bold text-sm !py-1 rounded-lg border outline-none ${
-                        aWon
-                          ? "bg-emerald-50 border-emerald-400 text-emerald-800"
-                          : "bg-paper border-line/30 text-ink"
-                      }`}
-                    />
-                    <span className="text-line/40 font-bold text-xs">:</span>
-                    <input
-                      type="number"
-                      min="0"
-                      max="99"
-                      value={sm.scoreB ?? ""}
-                      placeholder="0"
-                      onChange={(e) =>
-                        updateSubScore(
-                          sm.id,
-                          "scoreB",
-                          e.target.value === "" ? null : Number(e.target.value),
-                        )
-                      }
-                      className={`w-11 text-center font-mono font-bold text-sm !py-1 rounded-lg border outline-none ${
-                        bWon
-                          ? "bg-emerald-50 border-emerald-400 text-emerald-800"
-                          : "bg-paper border-line/30 text-ink"
-                      }`}
-                    />
-                  </div>
+                    <div className="sm:col-span-2 flex items-center justify-center gap-1.5">
+                      <input
+                        type="number"
+                        min="0"
+                        max="99"
+                        value={sm.scoreA ?? ""}
+                        placeholder="0"
+                        onChange={(e) =>
+                          updateSubScore(
+                            sm.id,
+                            "scoreA",
+                            e.target.value === "" ? null : Number(e.target.value),
+                          )
+                        }
+                        className={`w-11 text-center font-mono font-bold text-sm !py-1 rounded-lg border outline-none ${
+                          aWon
+                            ? "bg-orange-50 border-orange-400 text-[#ea580c] font-black ring-1 ring-orange-300/40"
+                            : "bg-paper border-line/30 text-ink"
+                        }`}
+                      />
+                      <span className="text-line/40 font-bold text-xs">:</span>
+                      <input
+                        type="number"
+                        min="0"
+                        max="99"
+                        value={sm.scoreB ?? ""}
+                        placeholder="0"
+                        onChange={(e) =>
+                          updateSubScore(
+                            sm.id,
+                            "scoreB",
+                            e.target.value === "" ? null : Number(e.target.value),
+                          )
+                        }
+                        className={`w-11 text-center font-mono font-bold text-sm !py-1 rounded-lg border outline-none ${
+                          bWon
+                            ? "bg-orange-50 border-orange-400 text-[#ea580c] font-black ring-1 ring-orange-300/40"
+                            : "bg-paper border-line/30 text-ink"
+                        }`}
+                      />
+                    </div>
 
-                  {/* Cặp Đội B */}
-                  <div className="col-span-5 text-left">
-                    <input
-                      type="text"
-                      className="field text-xs text-left !py-1 !px-2 font-semibold text-ink bg-paper border border-line/20 w-full"
-                      value={sm.teamBPlayers ?? ""}
-                      placeholder="VĐV Đội B"
-                      onChange={(e) => updateSubPlayers(sm.id, "teamBPlayers", e.target.value)}
-                    />
+                    <div className="sm:col-span-5">
+                      <PlayerSelectBox
+                        value={sm.teamBPlayers || nameB}
+                        onChange={(val) => updateSubPlayers(sm.id, "teamBPlayers", val)}
+                        placeholder="VĐV hoặc Tên đội"
+                        players={entryB?.players || []}
+                        align="left"
+                        dropdownAlign="right"
+                      />
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
+                    {/* Cặp Đội A: 2 ô VĐV */}
+                    <div className="sm:col-span-5 flex items-center gap-1.5">
+                      <PlayerSelectBox
+                        value={pA1}
+                        onChange={(val) => updateSubPlayerSlot(sm.id, "A", 0, val)}
+                        placeholder="VĐV 1"
+                        players={entryA?.players || []}
+                        align="right"
+                        dropdownAlign="left"
+                      />
+                      <span className="text-line/40 text-xs font-bold shrink-0">&</span>
+                      <PlayerSelectBox
+                        value={pA2}
+                        onChange={(val) => updateSubPlayerSlot(sm.id, "A", 1, val)}
+                        placeholder="VĐV 2"
+                        players={entryA?.players || []}
+                        align="right"
+                        dropdownAlign="left"
+                      />
+                    </div>
+
+                    {/* Ô nhập điểm */}
+                    <div className="sm:col-span-2 flex items-center justify-center gap-1.5">
+                      <input
+                        type="number"
+                        min="0"
+                        max="99"
+                        value={sm.scoreA ?? ""}
+                        placeholder="0"
+                        onChange={(e) =>
+                          updateSubScore(
+                            sm.id,
+                            "scoreA",
+                            e.target.value === "" ? null : Number(e.target.value),
+                          )
+                        }
+                        className={`w-11 text-center font-mono font-bold text-sm !py-1 rounded-lg border outline-none ${
+                          aWon
+                            ? "bg-orange-50 border-orange-400 text-[#ea580c] font-black ring-1 ring-orange-300/40"
+                            : "bg-paper border-line/30 text-ink"
+                        }`}
+                      />
+                      <span className="text-line/40 font-bold text-xs">:</span>
+                      <input
+                        type="number"
+                        min="0"
+                        max="99"
+                        value={sm.scoreB ?? ""}
+                        placeholder="0"
+                        onChange={(e) =>
+                          updateSubScore(
+                            sm.id,
+                            "scoreB",
+                            e.target.value === "" ? null : Number(e.target.value),
+                          )
+                        }
+                        className={`w-11 text-center font-mono font-bold text-sm !py-1 rounded-lg border outline-none ${
+                          bWon
+                            ? "bg-orange-50 border-orange-400 text-[#ea580c] font-black ring-1 ring-orange-300/40"
+                            : "bg-paper border-line/30 text-ink"
+                        }`}
+                      />
+                    </div>
+
+                    {/* Cặp Đội B: 2 ô VĐV */}
+                    <div className="sm:col-span-5 flex items-center gap-1.5">
+                      <PlayerSelectBox
+                        value={pB1}
+                        onChange={(val) => updateSubPlayerSlot(sm.id, "B", 0, val)}
+                        placeholder="VĐV 1"
+                        players={entryB?.players || []}
+                        align="left"
+                        dropdownAlign="right"
+                      />
+                      <span className="text-line/40 text-xs font-bold shrink-0">&</span>
+                      <PlayerSelectBox
+                        value={pB2}
+                        onChange={(val) => updateSubPlayerSlot(sm.id, "B", 1, val)}
+                        placeholder="VĐV 2"
+                        players={entryB?.players || []}
+                        align="left"
+                        dropdownAlign="right"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
 
-        {/* Footer controls */}
-        <div className="bg-paper p-3.5 border-t border-line/15 shrink-0 flex flex-wrap items-center justify-between gap-2">
+        {/* Footer controls: tự động lưu liên tục khi thay đổi */}
+        <div className="bg-paper p-3.5 border-t border-line/15 shrink-0 flex items-center justify-between gap-2">
           <button
             type="button"
             onClick={handleReset}
@@ -717,22 +1124,13 @@ function TeamMatchModal({
             ↺ Đặt lại tất cả trận con
           </button>
 
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="btn-ghost text-xs font-bold !py-1.5 px-3 cursor-pointer"
-            >
-              Hủy
-            </button>
-            <button
-              type="button"
-              onClick={handleSave}
-              className="btn-accent text-xs font-bold !py-1.5 px-4 cursor-pointer shadow-xs"
-            >
-              💾 Lưu & Cập nhật kết quả vào giải
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="btn-ghost text-xs font-bold !py-1.5 px-4 cursor-pointer border border-line/20 rounded-lg hover:bg-black/5"
+          >
+            Đóng
+          </button>
         </div>
       </div>
     </div>
@@ -1101,6 +1499,8 @@ function MatchCard({
   const bWin = m.scoreA !== null && m.scoreB !== null && m.scoreB > m.scoreA;
   const hasNote = Boolean(m.note || m.live?.note);
 
+  const isDone = m.status === "done" || (m.scoreA !== null && m.scoreB !== null);
+
   const isRoundRobin =
     !m.groupName ||
     m.groupName.toLowerCase().includes("vòng tròn") ||
@@ -1151,14 +1551,6 @@ function MatchCard({
           >
             {displayTag}
           </span>
-          {isTeamMode && (
-            <span
-              className="rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide shrink-0 bg-[#0a3320] text-white"
-              style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-            >
-              MLP
-            </span>
-          )}
           {(entryA?.withdrawn || entryB?.withdrawn) && (
             <span
               className="rounded bg-red-600 px-1 py-0.2 text-[9px] font-bold text-white shrink-0 shadow-2xs"
@@ -1187,7 +1579,7 @@ function MatchCard({
             </span>
           )}
           {m.status === "done" && (
-            <span className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+            <span className="text-[10px] font-bold text-[#0a3320]">
               Đã xong
             </span>
           )}
@@ -1219,7 +1611,8 @@ function MatchCard({
               fallback={nameA}
               activePlayerNames={activePlayerNames}
               isWinning={aWin}
-              isMatchLive={m.status === "live"}
+              isMatchLive={!isDone && m.status === "live"}
+              isMatchDone={isDone}
             />
           </div>
           <ScoreBox value={m.scoreA} onCommit={(v) => onScore("scoreA", v)} isWinning={aWin} compact={compact} />
@@ -1232,7 +1625,8 @@ function MatchCard({
               fallback={nameB}
               activePlayerNames={activePlayerNames}
               isWinning={bWin}
-              isMatchLive={m.status === "live"}
+              isMatchLive={!isDone && m.status === "live"}
+              isMatchDone={isDone}
             />
           </div>
           <ScoreBox value={m.scoreB} onCommit={(v) => onScore("scoreB", v)} isWinning={bWin} compact={compact} />
@@ -1270,10 +1664,10 @@ function MatchCard({
                 type="button"
                 onClick={() => onManageTeamMatch?.(m)}
                 style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                className="btn-accent !px-1.5 !py-0.5 text-[10px] flex items-center gap-0.5 whitespace-nowrap font-bold cursor-pointer shrink-0 shadow-2xs"
-                title="Quản lý và chấm điểm 5 trận đấu con (Đôi Nữ, Đôi Nam, Mixed 1, Mixed 2, Dreambreaker)"
+                className="btn-accent !px-2 !py-0.5 text-[10px] flex items-center justify-center whitespace-nowrap font-bold cursor-pointer shrink-0 shadow-2xs"
+                title="Quản lý và chấm điểm các trận con"
               >
-                👥 MLP
+                Các Trận Con
               </button>
             ) : (
               <Link
@@ -1328,7 +1722,7 @@ function MatchCard({
           <div className="flex flex-wrap items-center gap-1.5">
             {m.status === "done" ? (
               <button
-                className="btn-ghost !px-2 !py-1 text-[11px]"
+                className="btn-ghost !px-2 !py-1 text-[11px] min-w-[96px] justify-center text-center shrink-0 cursor-pointer"
                 style={{ fontFamily: "'Space Grotesk', sans-serif" }}
                 onClick={onReset}
               >
@@ -1336,7 +1730,7 @@ function MatchCard({
               </button>
             ) : (
               <button
-                className={`btn-ghost !px-2 !py-1 text-[11px] ${
+                className={`btn-ghost !px-2 !py-1 text-[11px] min-w-[96px] justify-center text-center shrink-0 cursor-pointer ${
                   m.status === "live" ? "text-red-600 font-bold" : ""
                 }`}
                 style={{ fontFamily: "'Space Grotesk', sans-serif" }}
@@ -1350,10 +1744,10 @@ function MatchCard({
                 type="button"
                 onClick={() => onManageTeamMatch?.(m)}
                 style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                className="btn-accent !px-2.5 !py-1 text-[11px] flex items-center gap-1 font-bold shadow-2xs cursor-pointer"
-                title="Quản lý và chấm điểm 5 trận đấu con (Đôi Nữ, Đôi Nam, Mixed 1, Mixed 2, Dreambreaker)"
+                className="btn-accent !px-3 !py-1 text-[11px] flex items-center justify-center font-bold shadow-2xs cursor-pointer shrink-0"
+                title="Quản lý và chấm điểm các trận đấu con"
               >
-                👥 Trận Đồng đội (MLP)
+                Các Trận Con
               </button>
             ) : (
               <Link
@@ -1484,6 +1878,7 @@ function KoCard({
 }) {
   const aWin = m.scoreA !== null && m.scoreB !== null && m.scoreA > m.scoreB;
   const bWin = m.scoreA !== null && m.scoreB !== null && m.scoreB > m.scoreA;
+  const isDone = m.status === "done" || (m.scoreA !== null && m.scoreB !== null);
   const hasNote = Boolean(m.note || m.live?.note);
 
   const formatSeed = (str?: string | null) => {
@@ -1563,7 +1958,7 @@ function KoCard({
   const row = (win: boolean, live: boolean | undefined, isConflict?: boolean) =>
     `flex items-center justify-between gap-2 px-2.5 py-2 transition-all ${
       win ? "font-bold text-[#e44c11]" : "text-line/70"
-    } ${live ? "bg-red-50/50 text-red-600 font-bold" : ""} ${
+    } ${!isDone && live ? "bg-red-50/50 text-red-600 font-bold" : ""} ${
       isConflict ? "bg-red-100/90 dark:bg-red-950/50 text-red-900 dark:text-red-100 ring-1 ring-red-500 rounded-md my-0.5" : ""
     }`;
 
@@ -1671,7 +2066,8 @@ function KoCard({
                 fallback={nameA}
                 activePlayerNames={activePlayerNames}
                 isWinning={aWin}
-                isMatchLive={m.status === "live"}
+                isMatchLive={!isDone && m.status === "live"}
+                isMatchDone={isDone}
                 truncate={false}
               />
             )}
@@ -1756,7 +2152,8 @@ function KoCard({
                 fallback={nameB}
                 activePlayerNames={activePlayerNames}
                 isWinning={bWin}
-                isMatchLive={m.status === "live"}
+                isMatchLive={!isDone && m.status === "live"}
+                isMatchDone={isDone}
                 truncate={false}
               />
             )}
@@ -2091,8 +2488,7 @@ function ManagePage() {
   // Lắng nghe xem trực tiếp nếu URL có tham số ?live=
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const params = new URLSearchParams(window.location.search);
-    const liveId = params.get("live");
+    const liveId = getLiveTournamentIdFromUrl();
     if (!liveId) return;
 
     let unsub: (() => void) | undefined;
@@ -2300,6 +2696,10 @@ function ManagePage() {
   );
 
   // Danh sách VĐV đang thi đấu trên toàn giải
+  const activeEntryIds = useMemo(
+    () => getActiveEntryIds(state.matches),
+    [state.matches],
+  );
   const activePlayerNames = useMemo(
     () => getActivePlayerNames(state.matches, state.entries),
     [state.matches, state.entries],
@@ -2329,6 +2729,27 @@ function ManagePage() {
       </div>
     );
   }
+
+  const isTeamMode = ev.mode === "dong_doi";
+
+  // Thống kê phụ ưu tiên hàng đầu hiển thị ở bảng thu nhỏ (giữa diff, points_won_pct, game_diff)
+  const primaryTeamStat = useMemo<"diff" | "points_won_pct" | "game_diff">(() => {
+    const list = ev.mlpRankingCriteria || ["points", "h2h", "game_diff", "diff", "points_won_pct", "draw"];
+    for (const c of list) {
+      if (c === "points_won_pct") return "points_won_pct";
+      if (c === "diff") return "diff";
+      if (c === "game_diff") return "game_diff";
+    }
+    return "diff";
+  }, [ev.mlpRankingCriteria]);
+
+  // Thứ tự các cột thống kê khi phóng to bảng xếp hạng theo thiết lập của nội dung
+  const mlpStatOrder = useMemo<Array<"game_diff" | "diff" | "points_won_pct">>(() => {
+    const list = ev.mlpRankingCriteria || ["points", "h2h", "game_diff", "diff", "points_won_pct", "draw"];
+    return list.filter((c): c is "game_diff" | "diff" | "points_won_pct" =>
+      c === "game_diff" || c === "diff" || c === "points_won_pct"
+    );
+  }, [ev.mlpRankingCriteria]);
 
   const nameOf = (id: string | null) =>
     id ? entryName(entries.find((e) => e.id === id)) : "Chờ xác định";
@@ -2383,8 +2804,14 @@ function ManagePage() {
 
   const isEntryActive = (id: string | null) => {
     if (!id) return false;
+    if (activeEntryIds.has(id)) return true;
     const entry = state.entries.find((e) => e.id === id);
-    return entry?.players.some((p) => p.name && activePlayerNames.has(p.name)) ?? false;
+    return (
+      entry?.players.some((p) => {
+        const clean = p.name.trim().toLowerCase();
+        return Boolean(clean && activePlayerNames.has(clean));
+      }) ?? false
+    );
   };
 
   const groupMatches = matches.filter((m) => m.stage === "group");
@@ -2436,10 +2863,12 @@ function ManagePage() {
   };
 
   const handleNextRotatingRound = () => {
+    const activeCount = entries.filter((e) => !e.withdrawn).length;
+    const fullRounds = activeCount < 2 ? 1 : activeCount % 2 === 0 ? activeCount - 1 : activeCount;
     const maxAllowedRounds =
       ev.randomRoundsCount && ev.randomRoundsCount > 0
         ? ev.randomRoundsCount
-        : Math.max(1, entries.filter((e) => !e.withdrawn).length - 1);
+        : fullRounds;
     const currentRoundsCount = new Set(groupMatches.map((m) => m.round)).size;
     if (currentRoundsCount >= maxAllowedRounds) {
       toast.warning(`Đã bốc thăm đủ ${maxAllowedRounds} vòng theo đúng cài đặt giải.`);
@@ -2496,13 +2925,17 @@ function ManagePage() {
         ],
       });
       if (isRotatingDoubles(ev)) {
-        const targetRounds =
-          ev.randomRoundsCount && ev.randomRoundsCount > 0
-            ? ev.randomRoundsCount
-            : Math.max(1, entries.length > 1 ? entries.length - 1 : 1);
-        setNote(
-          `Đã tạo Vòng 1 cho nội dung đôi bốc thăm ngẫu nhiên (cài đặt ${targetRounds} vòng). Bấm "Bốc thăm tiếp Vòng 2" sau khi thi đấu xong.`,
-        );
+        const isAllRounds = !ev.randomRoundsCount || ev.randomRoundsCount === 0;
+        const totalRoundsInMatches = new Set(fresh.map((m) => m.round)).size;
+        if (isAllRounds) {
+          setNote(
+            `Đã tạo đầy đủ toàn bộ ${totalRoundsInMatches} vòng đấu cho nội dung đôi bắt cặp ngẫu nhiên (mỗi VĐV lần lượt cặp đủ với toàn bộ từng người).`,
+          );
+        } else {
+          setNote(
+            `Đã tạo ${totalRoundsInMatches} vòng đấu cho nội dung đôi bắt cặp ngẫu nhiên.`,
+          );
+        }
       } else {
         setNote(`Đã tạo ${fresh.length} trận ${ev.bracket === "rr" ? "vòng tròn" : "vòng bảng"}.`);
       }
@@ -2544,6 +2977,32 @@ function ManagePage() {
       return;
     }
     doBuildGroups();
+  };
+
+  const handleRestoreSchedule = () => {
+    const hasMatches = state.matches.some((m) => m.eventId === ev.id);
+    if (!hasMatches) {
+      toast.info("Chưa có lịch thi đấu nào để khôi phục.");
+      return;
+    }
+
+    setConfirmModal({
+      title: "⚠️ Khôi phục về trạng thái ban đầu",
+      message:
+        "Bạn có chắc chắn muốn khôi phục về trạng thái ban đầu trước khi tạo lịch thi đấu?\n\nToàn bộ lịch thi đấu và kết quả điểm số của nội dung này sẽ được xóa để bạn có thể tạo lịch lại từ đầu.",
+      confirmText: "Khôi phục ban đầu",
+      cancelText: "Hủy bỏ",
+      isDestructive: true,
+      onConfirm: () => {
+        update({
+          matches: state.matches.filter((m) => m.eventId !== ev.id),
+        });
+        setConfirmedGroupEdit(false);
+        setNote("Đã khôi phục về trạng thái ban đầu (chưa tạo lịch thi đấu).");
+        toast.success("Đã khôi phục về trạng thái ban đầu!");
+        setConfirmModal(null);
+      },
+    });
   };
 
   const buildKo = () => {
@@ -2784,8 +3243,12 @@ function ManagePage() {
     entryA: getMatchEntryA(m, state.entries),
     entryB: getMatchEntryB(m, state.entries),
     activePlayerNames,
-    isLiveA: m.aEntryIds ? m.aEntryIds.some((id) => isEntryActive(id)) : isEntryActive(m.aId),
-    isLiveB: m.bEntryIds ? m.bEntryIds.some((id) => isEntryActive(id)) : isEntryActive(m.bId),
+    isLiveA:
+      !(m.status === "done" || (m.scoreA !== null && m.scoreB !== null)) &&
+      (m.aEntryIds ? m.aEntryIds.some((id) => isEntryActive(id)) : isEntryActive(m.aId)),
+    isLiveB:
+      !(m.status === "done" || (m.scoreA !== null && m.scoreB !== null)) &&
+      (m.bEntryIds ? m.bEntryIds.some((id) => isEntryActive(id)) : isEntryActive(m.bId)),
     onScore: (k, v) => setScore(m, k, v),
     onStatus: (s) => {
       const doStatus = () => {
@@ -2840,7 +3303,9 @@ function ManagePage() {
       return ev.randomRoundsCount;
     }
     const activeCount = entries.filter((e) => !e.withdrawn).length;
-    return Math.max(1, activeCount > 1 ? activeCount - 1 : 1);
+    if (activeCount < 2) return 1;
+    // N chẵn: N - 1 vòng; N lẻ: N vòng (do mỗi vòng có 1 người nghỉ bye)
+    return activeCount % 2 === 0 ? activeCount - 1 : activeCount;
   }, [ev, entries]);
 
   const isRotatingRoundsCompleted = useMemo(() => {
@@ -2852,6 +3317,19 @@ function ManagePage() {
     if (!isRotatingDoubles(ev)) return false;
     return rounds.length > 0 && !isRotatingRoundsCompleted;
   }, [ev, rounds.length, isRotatingRoundsCompleted]);
+
+  // Đếm số lượng vòng đã hoàn thành (tất cả các trận trong vòng đã nhập điểm xong)
+  const completedRotatingRoundsCount = useMemo(() => {
+    return rounds.filter((r) => {
+      const rMatches = groupMatches.filter((m) => m.round === r);
+      return (
+        rMatches.length > 0 &&
+        rMatches.every(
+          (m) => m.status === "done" || (m.scoreA !== null && m.scoreB !== null),
+        )
+      );
+    }).length;
+  }, [rounds, groupMatches]);
 
   // Tự động phân chia các vòng thành nhiều hàng cân đối đẹp mắt (10 vòng -> 2 hàng x 5, 12 vòng -> 2 hàng x 6, 15 vòng -> 3 hàng x 5)
   const exportRoundRows = useMemo(() => {
@@ -3779,6 +4257,7 @@ function ManagePage() {
       m.bId && (roundEntryCounts.get(`${m.round}_${m.bId}`) ?? 0) > 1,
     );
     const hasRoundConflict = isConflictA || isConflictB;
+    const isDone = m.status === "done" || (m.scoreA !== null && m.scoreB !== null);
 
     return (
       <KoCard
@@ -3792,8 +4271,8 @@ function ManagePage() {
         seedBadgeA={getEntrySeedBadge(m.aId, m.customPlaceholderA)}
         seedBadgeB={getEntrySeedBadge(m.bId, m.customPlaceholderB)}
         activePlayerNames={activePlayerNames}
-        isLiveA={isEntryActive(m.aId)}
-        isLiveB={isEntryActive(m.bId)}
+        isLiveA={!isDone && isEntryActive(m.aId)}
+        isLiveB={!isDone && isEntryActive(m.bId)}
         isConflictA={isConflictA}
         isConflictB={isConflictB}
         hasRoundConflict={hasRoundConflict}
@@ -4317,9 +4796,6 @@ function ManagePage() {
           >
             Quản lý giải đấu
           </h1>
-          <p className="mt-1 text-xs text-line/60" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
-            Điều hành trực tiếp các trận đấu, sân thi đấu, trọng tài và sơ đồ bảng/nhánh KO.
-          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {isReadOnly && (
@@ -4708,19 +5184,6 @@ function ManagePage() {
               >
                 📊 Bảng xếp hạng {showStandings ? "▼ (Hiện)" : "▶ (Ẩn)"}
               </button>
-              {showStandings && (
-                <button
-                  type="button"
-                  className={`btn-ghost text-xs font-bold flex items-center gap-1 ${
-                    maximizeStandings ? "bg-court/20 text-courtdeep ring-1 ring-court/30" : ""
-                  }`}
-                  style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                  onClick={() => setMaximizeStandings((m) => !m)}
-                  title="Phóng to bảng xếp hạng toàn màn hình"
-                >
-                  {maximizeStandings ? "🗗 Thu nhỏ BXH" : "🗖 Phóng to BXH"}
-                </button>
-              )}
               <button
                 type="button"
                 className="btn-ghost text-xs font-bold flex items-center gap-1.5 px-3 py-1.5 rounded-lg ring-1 ring-line/20 hover:bg-card shadow-2xs cursor-pointer text-[#0a3320] dark:text-emerald-300 font-semibold"
@@ -4736,13 +5199,25 @@ function ManagePage() {
               >
                 📸 Xuất ảnh / PDF sơ đồ
               </button>
-              <button
-                className="btn-accent text-xs"
-                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                onClick={buildGroups}
-              >
-                {ev.bracket === "rr" ? "Tạo lịch vòng tròn" : "Tạo lịch vòng bảng"}
-              </button>
+              <div className="inline-flex items-center gap-1">
+                <button
+                  className="btn-accent text-xs"
+                  style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                  onClick={buildGroups}
+                >
+                  {ev.bracket === "rr" ? "Tạo lịch vòng tròn" : "Tạo lịch vòng bảng"}
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost text-xs !px-2.5 !py-2 font-bold text-line/70 hover:text-ink hover:bg-line/10 transition cursor-pointer"
+                  style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                  onClick={handleRestoreSchedule}
+                  title="Khôi phục trạng thái ban đầu (xóa toàn bộ lịch thi đấu và điểm số để tạo lại từ đầu)"
+                  aria-label="Khôi phục trạng thái ban đầu"
+                >
+                  ↺
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -5005,72 +5480,132 @@ function ManagePage() {
                       Bảng xếp hạng toàn thể — {entries.length} đội đấu vòng tròn
                     </span>
                     <span className="text-xs text-line/60">
-                      Ưu tiên: {rankingCriteria.map((c) => RANKING_CRITERIA_LABELS[c]).join(" → ")}
+                      Ưu tiên: {isTeamMode
+                        ? (ev.mlpRankingCriteria || ["points", "h2h", "game_diff", "diff", "points_won_pct", "draw"]).map((c) => MLP_RANKING_CRITERIA_LABELS[c]?.label || c).join(" → ")
+                        : rankingCriteria.map((c) => RANKING_CRITERIA_LABELS[c]).join(" → ")}
                     </span>
                   </div>
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="border-b border-line/10 text-[10px] uppercase tracking-wide text-line/50">
-                        <th className="w-8 sm:w-12 px-1.5 py-1.5 sm:px-3 sm:py-2 text-center">Hạng</th>
-                        <th className="px-2 py-1.5 sm:px-3 sm:py-2 text-left">Đội / VĐV</th>
-                        <th className="w-6 sm:w-12 py-1.5 sm:py-2 text-center px-0.5">Tr</th>
-                        <th className="w-6 sm:w-12 py-1.5 sm:py-2 text-center px-0.5">T</th>
-                        <th className="w-6 sm:w-12 py-1.5 sm:py-2 text-center px-0.5">B</th>
-                        <th className="w-8 sm:w-16 py-1.5 sm:py-2 text-center px-0.5">HS</th>
-                        <th className="w-10 sm:w-20 py-1.5 sm:py-2 text-center font-bold text-accent px-0.5">Điểm</th>
-                        <th className="w-16 sm:w-24 py-1.5 sm:py-2 text-center px-0.5">Tác vụ</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {computeStandings(
-                        entries.map((e) => e.id),
-                        groupMatches,
-                        ev,
-                        rankingCriteria,
-                        withdrawnEntryIds,
-                      ).map((r, i) => {
-                        const rowEntry = state.entries.find((e) => e.id === r.entryId);
-                        return (
-                          <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
-                            <td className="w-8 sm:w-12 px-1.5 py-1.5 sm:px-3 sm:py-2 text-center font-head font-bold text-line/50 tabular-nums">
-                              {i + 1}
-                            </td>
-                            <td className="px-2 py-1.5 sm:px-3 sm:py-2 min-w-0">
-                              <PlayerNameDisplay
-                                entry={rowEntry}
-                                fallback={nameOf(r.entryId)}
-                                activePlayerNames={activePlayerNames}
-                                truncate={false}
-                              />
-                            </td>
-                            <td className="w-6 sm:w-12 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.played}</td>
-                            <td className="w-6 sm:w-12 py-1.5 sm:py-2 text-center font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums px-0.5">{r.win}</td>
-                            <td className="w-6 sm:w-12 py-1.5 sm:py-2 text-center font-semibold text-destructive tabular-nums px-0.5">{r.loss}</td>
-                            <td className="w-8 sm:w-16 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.diff > 0 ? `+${r.diff}` : r.diff}</td>
-                            <td className="w-10 sm:w-20 py-1.5 sm:py-2 text-center font-head text-sm font-bold text-accent tabular-nums px-0.5">{r.points}</td>
-                            <td className="w-16 sm:w-24 py-1.5 sm:py-2 text-center px-0.5">
-                              <button
-                                type="button"
-                                onClick={() => toggleWithdrawn(r.entryId)}
-                                className={`px-2 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
-                                  rowEntry?.withdrawn
-                                    ? "bg-emerald-500/15 text-emerald-600 hover:bg-emerald-500/25 ring-1 ring-emerald-500/30"
-                                    : "bg-destructive/10 text-destructive hover:bg-destructive/20 ring-1 ring-destructive/20"
-                                }`}
-                                title={
-                                  rowEntry?.withdrawn
-                                    ? "Khôi phục thi đấu lại cho đội này"
-                                    : "Đánh dấu đội bỏ cuộc (Hủy toàn bộ kết quả trận đấu trước đó trên BXH)"
-                                }
-                              >
-                                {rowEntry?.withdrawn ? "Khôi phục" : "Bỏ cuộc"}
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-line/10 text-[10px] uppercase tracking-wide text-line/50">
+                          <th className="w-8 sm:w-12 px-1.5 py-1.5 sm:px-3 sm:py-2 text-center">Hạng</th>
+                          <th className="px-2 py-1.5 sm:px-3 sm:py-2 text-left">Đội / VĐV</th>
+                          <th className="w-6 sm:w-12 py-1.5 sm:py-2 text-center px-0.5">Tr</th>
+                          <th className="w-6 sm:w-12 py-1.5 sm:py-2 text-center px-0.5">T</th>
+                          <th className="w-6 sm:w-12 py-1.5 sm:py-2 text-center px-0.5">B</th>
+                          {isTeamMode ? (
+                            mlpStatOrder.map((crit) => {
+                              if (crit === "game_diff") {
+                                return (
+                                  <th key={crit} className="w-8 sm:w-14 py-1.5 sm:py-2 text-center px-0.5" title="Hiệu số game thắng - thua">
+                                    HS Game
+                                  </th>
+                                );
+                              }
+                              if (crit === "diff") {
+                                return (
+                                  <th key={crit} className="w-10 sm:w-16 py-1.5 sm:py-2 text-center px-0.5" title="Hiệu số điểm của tổng các trận con">
+                                    HS Điểm
+                                  </th>
+                                );
+                              }
+                              if (crit === "points_won_pct") {
+                                return (
+                                  <th key={crit} className="w-10 sm:w-16 py-1.5 sm:py-2 text-center px-0.5 text-accent font-bold" title="Tỷ lệ điểm thắng (%)">
+                                    %
+                                  </th>
+                                );
+                              }
+                              return null;
+                            })
+                          ) : (
+                            <th className="w-8 sm:w-16 py-1.5 sm:py-2 text-center px-0.5">HS</th>
+                          )}
+                          <th className="w-10 sm:w-20 py-1.5 sm:py-2 text-center font-bold text-accent px-0.5">Điểm</th>
+                          <th className="w-16 sm:w-24 py-1.5 sm:py-2 text-center px-0.5">Tác vụ</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {computeStandings(
+                          entries.map((e) => e.id),
+                          groupMatches,
+                          ev,
+                          rankingCriteria,
+                          withdrawnEntryIds,
+                        ).map((r, i) => {
+                          const rowEntry = state.entries.find((e) => e.id === r.entryId);
+                          const subDiff = (r.subPointsFor || 0) - (r.subPointsAgainst || 0);
+                          const gameDiff = (r.gamesWon || 0) - (r.gamesLost || 0);
+                          return (
+                            <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
+                              <td className="w-8 sm:w-12 px-1.5 py-1.5 sm:px-3 sm:py-2 text-center font-head font-bold text-line/50 tabular-nums">
+                                {i + 1}
+                              </td>
+                              <td className="px-2 py-1.5 sm:px-3 sm:py-2 min-w-0">
+                                <PlayerNameDisplay
+                                  entry={rowEntry}
+                                  fallback={nameOf(r.entryId)}
+                                  activePlayerNames={activePlayerNames}
+                                  truncate={false}
+                                />
+                              </td>
+                              <td className="w-6 sm:w-12 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.played}</td>
+                              <td className="w-6 sm:w-12 py-1.5 sm:py-2 text-center font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums px-0.5">{r.win}</td>
+                              <td className="w-6 sm:w-12 py-1.5 sm:py-2 text-center font-semibold text-destructive tabular-nums px-0.5">{r.loss}</td>
+                              {isTeamMode ? (
+                                mlpStatOrder.map((crit) => {
+                                  if (crit === "game_diff") {
+                                    return (
+                                      <td key={crit} className="w-8 sm:w-14 py-1.5 sm:py-2 text-center tabular-nums px-0.5 font-medium">
+                                        {gameDiff > 0 ? `+${gameDiff}` : gameDiff}
+                                      </td>
+                                    );
+                                  }
+                                  if (crit === "diff") {
+                                    return (
+                                      <td key={crit} className="w-10 sm:w-16 py-1.5 sm:py-2 text-center tabular-nums px-0.5 font-semibold text-line/90">
+                                        {subDiff > 0 ? `+${subDiff}` : subDiff}
+                                      </td>
+                                    );
+                                  }
+                                  if (crit === "points_won_pct") {
+                                    return (
+                                      <td key={crit} className="w-10 sm:w-16 py-1.5 sm:py-2 text-center tabular-nums px-0.5 font-bold text-accent">
+                                        {r.pointsWonPct ? `${r.pointsWonPct.toFixed(1)}%` : "0.0%"}
+                                      </td>
+                                    );
+                                  }
+                                  return null;
+                                })
+                              ) : (
+                                <td className="w-8 sm:w-16 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.diff > 0 ? `+${r.diff}` : r.diff}</td>
+                              )}
+                              <td className="w-10 sm:w-20 py-1.5 sm:py-2 text-center font-head text-sm font-bold text-accent tabular-nums px-0.5">{r.points}</td>
+                              <td className="w-16 sm:w-24 py-1.5 sm:py-2 text-center px-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() => toggleWithdrawn(r.entryId)}
+                                  className={`px-2 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
+                                    rowEntry?.withdrawn
+                                      ? "bg-emerald-500/15 text-emerald-600 hover:bg-emerald-500/25 ring-1 ring-emerald-500/30"
+                                      : "bg-destructive/10 text-destructive hover:bg-destructive/20 ring-1 ring-destructive/20"
+                                  }`}
+                                  title={
+                                    rowEntry?.withdrawn
+                                      ? "Khôi phục thi đấu lại cho đội này"
+                                      : "Đánh dấu đội bỏ cuộc (Hủy toàn bộ kết quả trận đấu trước đó trên BXH)"
+                                  }
+                                >
+                                  {rowEntry?.withdrawn ? "Khôi phục" : "Bỏ cuộc"}
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -5094,56 +5629,114 @@ function ManagePage() {
                         >
                           {g.name}
                         </p>
-                        <table className="w-full text-xs">
-                          <thead>
-                            <tr className="border-b border-line/10 text-[10px] uppercase tracking-wide text-line/50">
-                              <th className="px-2 py-1.5 sm:px-3 sm:py-2 text-left">Đội</th>
-                              <th className="w-6 sm:w-8 py-1.5 sm:py-2 text-center px-0.5">Tr</th>
-                              <th className="w-6 sm:w-8 py-1.5 sm:py-2 text-center px-0.5">T</th>
-                              <th className="w-6 sm:w-8 py-1.5 sm:py-2 text-center px-0.5">B</th>
-                              <th className="w-8 sm:w-11 py-1.5 sm:py-2 text-center px-0.5">HS</th>
-                              <th className="w-8 sm:w-11 py-1.5 sm:py-2 text-center px-0.5">Đ</th>
-                              <th className="w-8 py-1.5 sm:py-2 text-center px-0.5">T/vụ</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {rows.map((r, i) => {
-                              const rowEntry = state.entries.find((e) => e.id === r.entryId);
-                              return (
-                                <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
-                                  <td className="px-2 py-1.5 sm:px-3 sm:py-2 min-w-0">
-                                    <span className="inline-block w-4 font-head font-bold text-line/40 tabular-nums mr-0.5">{i + 1}</span>
-                                    <PlayerNameDisplay
-                                      entry={rowEntry}
-                                      fallback={nameOf(r.entryId)}
-                                      activePlayerNames={activePlayerNames}
-                                      truncate={false}
-                                    />
-                                  </td>
-                                  <td className="w-6 sm:w-8 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.played}</td>
-                                  <td className="w-6 sm:w-8 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.win}</td>
-                                  <td className="w-6 sm:w-8 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.loss}</td>
-                                  <td className="w-8 sm:w-11 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.diff}</td>
-                                  <td className="w-8 sm:w-11 py-1.5 sm:py-2 text-center font-bold text-accent tabular-nums px-0.5">{r.points}</td>
-                                  <td className="w-8 py-1.5 sm:py-2 text-center px-0.5">
-                                    <button
-                                      type="button"
-                                      onClick={() => toggleWithdrawn(r.entryId)}
-                                      className={`text-[10px] font-bold p-1 rounded transition cursor-pointer ${
-                                        rowEntry?.withdrawn
-                                          ? "text-emerald-600 hover:bg-emerald-500/20"
-                                          : "text-line/40 hover:text-destructive hover:bg-destructive/10"
-                                      }`}
-                                      title={rowEntry?.withdrawn ? "Khôi phục đội thi đấu" : "Đánh dấu đội bỏ cuộc"}
-                                    >
-                                      {rowEntry?.withdrawn ? "♻️" : "🚫"}
-                                    </button>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="border-b border-line/10 text-[10px] uppercase tracking-wide text-line/50">
+                                <th className="px-2 py-1.5 sm:px-3 sm:py-2 text-left">Đội</th>
+                                <th className="w-6 sm:w-8 py-1.5 sm:py-2 text-center px-0.5">Tr</th>
+                                <th className="w-6 sm:w-8 py-1.5 sm:py-2 text-center px-0.5">T</th>
+                                <th className="w-6 sm:w-8 py-1.5 sm:py-2 text-center px-0.5">B</th>
+                                {isTeamMode ? (
+                                  mlpStatOrder.map((crit) => {
+                                    if (crit === "game_diff") {
+                                      return (
+                                        <th key={crit} className="w-8 sm:w-10 py-1.5 sm:py-2 text-center px-0.5" title="Hiệu số game thắng - thua">
+                                          HS G
+                                        </th>
+                                      );
+                                    }
+                                    if (crit === "diff") {
+                                      return (
+                                        <th key={crit} className="w-8 sm:w-12 py-1.5 sm:py-2 text-center px-0.5" title="Hiệu số điểm của tổng các trận con">
+                                          HS Đ
+                                        </th>
+                                      );
+                                    }
+                                    if (crit === "points_won_pct") {
+                                      return (
+                                        <th key={crit} className="w-10 sm:w-14 py-1.5 sm:py-2 text-center px-0.5 text-accent font-bold" title="Tỷ lệ điểm thắng (%)">
+                                          %
+                                        </th>
+                                      );
+                                    }
+                                    return null;
+                                  })
+                                ) : (
+                                  <th className="w-8 sm:w-11 py-1.5 sm:py-2 text-center px-0.5">HS</th>
+                                )}
+                                <th className="w-8 sm:w-11 py-1.5 sm:py-2 text-center px-0.5 font-bold text-accent">Đ</th>
+                                <th className="w-8 py-1.5 sm:py-2 text-center px-0.5">T/vụ</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {rows.map((r, i) => {
+                                const rowEntry = state.entries.find((e) => e.id === r.entryId);
+                                const subDiff = (r.subPointsFor || 0) - (r.subPointsAgainst || 0);
+                                const gameDiff = (r.gamesWon || 0) - (r.gamesLost || 0);
+                                return (
+                                  <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
+                                    <td className="px-2 py-1.5 sm:px-3 sm:py-2 min-w-0">
+                                      <span className="inline-block w-4 font-head font-bold text-line/40 tabular-nums mr-0.5">{i + 1}</span>
+                                      <PlayerNameDisplay
+                                        entry={rowEntry}
+                                        fallback={nameOf(r.entryId)}
+                                        activePlayerNames={activePlayerNames}
+                                        truncate={false}
+                                      />
+                                    </td>
+                                    <td className="w-6 sm:w-8 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.played}</td>
+                                    <td className="w-6 sm:w-8 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.win}</td>
+                                    <td className="w-6 sm:w-8 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.loss}</td>
+                                    {isTeamMode ? (
+                                      mlpStatOrder.map((crit) => {
+                                        if (crit === "game_diff") {
+                                          return (
+                                            <td key={crit} className="w-8 sm:w-10 py-1.5 sm:py-2 text-center tabular-nums px-0.5 font-medium">
+                                              {gameDiff > 0 ? `+${gameDiff}` : gameDiff}
+                                            </td>
+                                          );
+                                        }
+                                        if (crit === "diff") {
+                                          return (
+                                            <td key={crit} className="w-8 sm:w-12 py-1.5 sm:py-2 text-center tabular-nums px-0.5 font-semibold text-line/90">
+                                              {subDiff > 0 ? `+${subDiff}` : subDiff}
+                                            </td>
+                                          );
+                                        }
+                                        if (crit === "points_won_pct") {
+                                          return (
+                                            <td key={crit} className="w-10 sm:w-14 py-1.5 sm:py-2 text-center tabular-nums px-0.5 font-bold text-accent">
+                                              {r.pointsWonPct ? `${r.pointsWonPct.toFixed(1)}%` : "0.0%"}
+                                            </td>
+                                          );
+                                        }
+                                        return null;
+                                      })
+                                    ) : (
+                                      <td className="w-8 sm:w-11 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.diff}</td>
+                                    )}
+                                    <td className="w-8 sm:w-11 py-1.5 sm:py-2 text-center font-bold text-accent tabular-nums px-0.5">{r.points}</td>
+                                    <td className="w-8 py-1.5 sm:py-2 text-center px-0.5">
+                                      <button
+                                        type="button"
+                                        onClick={() => toggleWithdrawn(r.entryId)}
+                                        className={`text-[10px] font-bold p-1 rounded transition cursor-pointer ${
+                                          rowEntry?.withdrawn
+                                            ? "text-emerald-600 hover:bg-emerald-500/20"
+                                            : "text-line/40 hover:text-destructive hover:bg-destructive/10"
+                                        }`}
+                                        title={rowEntry?.withdrawn ? "Khôi phục đội thi đấu" : "Đánh dấu đội bỏ cuộc"}
+                                      >
+                                        {rowEntry?.withdrawn ? "♻️" : "🚫"}
+                                      </button>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
                     );
                   })}
@@ -5175,24 +5768,36 @@ function ManagePage() {
                     </div>
                     <div className="flex gap-4 overflow-x-auto pb-4 pt-[2px]">
                     {rounds.map((r, idx) => {
-                      const roundMatchesCount = groupMatches.filter((m) => m.round === r).length;
+                      const thisRoundMatches = groupMatches.filter((m) => m.round === r);
+                      const roundMatchesCount = thisRoundMatches.length;
+                      const isRoundDone =
+                        roundMatchesCount > 0 &&
+                        thisRoundMatches.every(
+                          (m) => m.status === "done" || (m.scoreA !== null && m.scoreB !== null),
+                        );
                       return (
                         <div
                           key={r}
-                          className={`w-[280px] shrink-0 pt-[2px] ${idx === 0 ? "pl-[2px] pr-[3px]" : "px-[3px]"}`}
+                          className={`w-[280px] shrink-0 pt-[2px] ${idx === 0 ? "pl-[3px] pr-[3px]" : "px-[3px]"}`}
                         >
                           <div
-                            className="rounded-xl bg-accent/15 h-[40px] flex items-center justify-center gap-1.5 text-center font-head text-sm font-bold uppercase tracking-wide text-accent ring-1 ring-accent/30 px-2"
-                            style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                            className={`rounded-xl h-[40px] flex items-center justify-center gap-1.5 text-center font-head text-sm font-bold uppercase tracking-wide ring-1 px-2 transition-all ${
+                              isRoundDone
+                                ? "text-ink ring-line/15"
+                                : "bg-accent/15 text-accent ring-accent/30"
+                            }`}
+                            style={{
+                              fontFamily: "'Space Grotesk', sans-serif",
+                              ...(isRoundDone ? { backgroundColor: "var(--muted)" } : {}),
+                            }}
                           >
                             <span>Vòng {r}</span>
-                            <span className="text-xs font-normal text-line/60 lowercase tracking-normal">
+                            <span className="text-xs font-normal opacity-70 lowercase tracking-normal">
                               ({roundMatchesCount} trận)
                             </span>
                           </div>
                         <div className="mt-3 space-y-3">
-                          {groupMatches
-                            .filter((m) => m.round === r)
+                          {thisRoundMatches
                             .sort((a, b) => a.groupName.localeCompare(b.groupName))
                             .map((m) => (
                               <MatchCard key={m.id} {...cardProps(m)} />
@@ -5217,18 +5822,35 @@ function ManagePage() {
                             <span className="font-head text-sm font-bold uppercase tracking-wide text-[#093220] block">
                               Bốc thăm tiếp Vòng {rounds.length + 1}
                             </span>
+                            {completedRotatingRoundsCount > 0 && (
+                              <span className="text-[10px] text-emerald-700 dark:text-emerald-400 font-semibold block mt-1">
+                                ✓ Đã hoàn thành {completedRotatingRoundsCount}/${maxAllowedRotatingRounds} vòng
+                              </span>
+                            )}
                           </div>
                         </button>
                       </div>
-                    ) : isRotatingRoundsCompleted && rounds.length > 0 ? (
+                    ) : isRotatingRoundsCompleted &&
+                      rounds.length > 0 &&
+                      Boolean(ev.randomRoundsCount && ev.randomRoundsCount > 0) ? (
                       <div className="w-[260px] shrink-0 pt-[2px] px-[3px] flex flex-col">
                         <div className="w-full flex-1 min-h-[160px] rounded-xl border border-[#093220]/30 bg-[#093220]/5 flex flex-col items-center justify-center gap-2 p-4 text-center shadow-2xs">
-                          <div className="w-10 h-10 rounded-full bg-[#093220]/15 text-[#093220] flex items-center justify-center text-lg font-bold">
+                          <div
+                            className={`w-10 h-10 rounded-full flex items-center justify-center text-lg font-bold transition-all ${
+                              completedRotatingRoundsCount === maxAllowedRotatingRounds
+                                ? "bg-emerald-600 text-white shadow-xs"
+                                : completedRotatingRoundsCount > 0
+                                  ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-400"
+                                  : "bg-[#093220]/15 text-[#093220]"
+                            }`}
+                          >
                             ✓
                           </div>
                           <div>
                             <span className="font-head text-xs font-bold uppercase tracking-wide text-[#093220] block">
-                              Đã hoàn thành {rounds.length}/{maxAllowedRotatingRounds} vòng
+                              {completedRotatingRoundsCount > 0
+                                ? `Đã hoàn thành ${completedRotatingRoundsCount}/${maxAllowedRotatingRounds} vòng`
+                                : `Đã tạo đủ ${rounds.length}/${maxAllowedRotatingRounds} vòng`}
                             </span>
                           </div>
                         </div>
@@ -5312,49 +5934,73 @@ function ManagePage() {
                           {entries.length} đội
                         </span>
                       </div>
-                      <table className="w-full table-fixed text-xs">
-                        <thead>
-                          <tr className="border-b border-line/10 text-[10px] uppercase tracking-wide text-line/50">
-                            <th className="w-7 py-2 text-center">#</th>
-                            <th className="px-2 py-2 text-left">Đội</th>
-                            <th className="w-7 py-2 text-center">Tr</th>
-                            <th className="w-7 py-2 text-center">T</th>
-                            <th className="w-7 py-2 text-center">B</th>
-                            <th className="w-9 py-2 text-center">HS</th>
-                            <th className="w-9 py-2 text-center font-bold text-accent">Đ</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {computeStandings(
-                            entries.map((e) => e.id),
-                            groupMatches,
-                            ev,
-                            rankingCriteria,
-                            withdrawnEntryIds,
-                          ).map((r, i) => {
-                            const rowEntry = state.entries.find((e) => e.id === r.entryId);
-                            return (
-                              <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
-                                <td className="w-7 py-2 text-center font-head font-bold text-line/40 tabular-nums">
-                                  {i + 1}
-                                </td>
-                                <td className="truncate px-2 py-2">
-                                  <PlayerNameDisplay
-                                    entry={rowEntry}
-                                    fallback={nameOf(r.entryId)}
-                                    activePlayerNames={activePlayerNames}
-                                  />
-                                </td>
-                                <td className="w-7 py-2 text-center tabular-nums">{r.played}</td>
-                                <td className="w-7 py-2 text-center font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums">{r.win}</td>
-                                <td className="w-7 py-2 text-center font-semibold text-destructive tabular-nums">{r.loss}</td>
-                                <td className="w-9 py-2 text-center tabular-nums">{r.diff > 0 ? `+${r.diff}` : r.diff}</td>
-                                <td className="w-9 py-2 text-center font-head font-bold text-accent tabular-nums">{r.points}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="border-b border-line/10 text-[10px] uppercase tracking-wide text-line/50">
+                              <th className="w-7 py-2 text-center">#</th>
+                              <th className="px-2 py-2 text-left">Đội</th>
+                              <th className="w-7 py-2 text-center">Tr</th>
+                              <th className="w-7 py-2 text-center">T</th>
+                              <th className="w-7 py-2 text-center">B</th>
+                              {isTeamMode ? (
+                                primaryTeamStat === "points_won_pct" ? (
+                                  <th className="w-12 py-2 text-center text-accent font-bold" title="Tỷ lệ điểm thắng (%)">%</th>
+                                ) : primaryTeamStat === "game_diff" ? (
+                                  <th className="w-9 py-2 text-center" title="Hiệu số game thắng - thua">HS G</th>
+                                ) : (
+                                  <th className="w-9 py-2 text-center" title="Hiệu số điểm các trận con">HS</th>
+                                )
+                              ) : (
+                                <th className="w-9 py-2 text-center">HS</th>
+                              )}
+                              <th className="w-9 py-2 text-center font-bold text-accent">Đ</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {computeStandings(
+                              entries.map((e) => e.id),
+                              groupMatches,
+                              ev,
+                              rankingCriteria,
+                              withdrawnEntryIds,
+                            ).map((r, i) => {
+                              const rowEntry = state.entries.find((e) => e.id === r.entryId);
+                              const subDiff = (r.subPointsFor || 0) - (r.subPointsAgainst || 0);
+                              const gameDiff = (r.gamesWon || 0) - (r.gamesLost || 0);
+                              return (
+                                <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
+                                  <td className="w-7 py-2 text-center font-head font-bold text-line/40 tabular-nums">
+                                    {i + 1}
+                                  </td>
+                                  <td className="truncate px-2 py-2">
+                                    <PlayerNameDisplay
+                                      entry={rowEntry}
+                                      fallback={nameOf(r.entryId)}
+                                      activePlayerNames={activePlayerNames}
+                                    />
+                                  </td>
+                                  <td className="w-7 py-2 text-center tabular-nums">{r.played}</td>
+                                  <td className="w-7 py-2 text-center font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums">{r.win}</td>
+                                  <td className="w-7 py-2 text-center font-semibold text-destructive tabular-nums">{r.loss}</td>
+                                  {isTeamMode ? (
+                                    primaryTeamStat === "points_won_pct" ? (
+                                      <td className="w-12 py-2 text-center tabular-nums font-bold text-accent">{r.pointsWonPct ? `${r.pointsWonPct.toFixed(1)}%` : "0.0%"}</td>
+                                    ) : primaryTeamStat === "game_diff" ? (
+                                      <td className="w-9 py-2 text-center tabular-nums font-medium">{gameDiff > 0 ? `+${gameDiff}` : gameDiff}</td>
+                                    ) : (
+                                      <td className="w-9 py-2 text-center tabular-nums font-semibold text-line/90">{subDiff > 0 ? `+${subDiff}` : subDiff}</td>
+                                    )
+                                  ) : (
+                                    <td className="w-9 py-2 text-center tabular-nums">{r.diff > 0 ? `+${r.diff}` : r.diff}</td>
+                                  )}
+                                  <td className="w-9 py-2 text-center font-head font-bold text-accent tabular-nums">{r.points}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
                   ) : (
                     (ev.groups.length
@@ -5377,40 +6023,64 @@ function ManagePage() {
                           >
                             {g.name}
                           </p>
-                          <table className="w-full table-fixed text-xs">
-                            <thead>
-                              <tr className="border-b border-line/10 text-[10px] uppercase tracking-wide text-line/50">
-                                <th className="px-3 py-2 text-left">Đội</th>
-                                <th className="w-8 py-2 text-center">Tr</th>
-                                <th className="w-8 py-2 text-center">T</th>
-                                <th className="w-8 py-2 text-center">B</th>
-                                <th className="w-10 py-2 text-center">HS</th>
-                                <th className="w-10 py-2 text-center">Đ</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {rows.map((r, i) => {
-                                const rowEntry = state.entries.find((e) => e.id === r.entryId);
-                                return (
-                                  <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
-                                    <td className="truncate px-3 py-2">
-                                      <span className="inline-block w-4 font-head font-bold text-line/40 tabular-nums">{i + 1}</span>
-                                      <PlayerNameDisplay
-                                        entry={rowEntry}
-                                        fallback={nameOf(r.entryId)}
-                                        activePlayerNames={activePlayerNames}
-                                      />
-                                    </td>
-                                    <td className="w-8 py-2 text-center tabular-nums">{r.played}</td>
-                                    <td className="w-8 py-2 text-center tabular-nums">{r.win}</td>
-                                    <td className="w-8 py-2 text-center tabular-nums">{r.loss}</td>
-                                    <td className="w-10 py-2 text-center tabular-nums">{r.diff}</td>
-                                    <td className="w-10 py-2 text-center font-bold text-accent tabular-nums">{r.points}</td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-xs">
+                              <thead>
+                                <tr className="border-b border-line/10 text-[10px] uppercase tracking-wide text-line/50">
+                                  <th className="px-3 py-2 text-left">Đội</th>
+                                  <th className="w-7 py-2 text-center">Tr</th>
+                                  <th className="w-7 py-2 text-center">T</th>
+                                  <th className="w-7 py-2 text-center">B</th>
+                                  {isTeamMode ? (
+                                    primaryTeamStat === "points_won_pct" ? (
+                                      <th className="w-12 py-2 text-center text-accent font-bold" title="Tỷ lệ điểm thắng (%)">%</th>
+                                    ) : primaryTeamStat === "game_diff" ? (
+                                      <th className="w-8 py-2 text-center" title="Hiệu số game thắng - thua">HS G</th>
+                                    ) : (
+                                      <th className="w-8 py-2 text-center" title="Hiệu số điểm các trận con">HS</th>
+                                    )
+                                  ) : (
+                                    <th className="w-10 py-2 text-center">HS</th>
+                                  )}
+                                  <th className="w-9 py-2 text-center font-bold text-accent">Đ</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {rows.map((r, i) => {
+                                  const rowEntry = state.entries.find((e) => e.id === r.entryId);
+                                  const subDiff = (r.subPointsFor || 0) - (r.subPointsAgainst || 0);
+                                  const gameDiff = (r.gamesWon || 0) - (r.gamesLost || 0);
+                                  return (
+                                    <tr key={r.entryId} className="border-t border-line/10 hover:bg-card/50">
+                                      <td className="truncate px-3 py-2">
+                                        <span className="inline-block w-4 font-head font-bold text-line/40 tabular-nums">{i + 1}</span>
+                                        <PlayerNameDisplay
+                                          entry={rowEntry}
+                                          fallback={nameOf(r.entryId)}
+                                          activePlayerNames={activePlayerNames}
+                                        />
+                                      </td>
+                                      <td className="w-7 py-2 text-center tabular-nums">{r.played}</td>
+                                      <td className="w-7 py-2 text-center tabular-nums">{r.win}</td>
+                                      <td className="w-7 py-2 text-center tabular-nums">{r.loss}</td>
+                                      {isTeamMode ? (
+                                        primaryTeamStat === "points_won_pct" ? (
+                                          <td className="w-12 py-2 text-center tabular-nums font-bold text-accent">{r.pointsWonPct ? `${r.pointsWonPct.toFixed(1)}%` : "0.0%"}</td>
+                                        ) : primaryTeamStat === "game_diff" ? (
+                                          <td className="w-8 py-2 text-center tabular-nums font-medium">{gameDiff > 0 ? `+${gameDiff}` : gameDiff}</td>
+                                        ) : (
+                                          <td className="w-8 py-2 text-center tabular-nums font-semibold text-line/90">{subDiff > 0 ? `+${subDiff}` : subDiff}</td>
+                                        )
+                                      ) : (
+                                        <td className="w-10 py-2 text-center tabular-nums">{r.diff}</td>
+                                      )}
+                                      <td className="w-9 py-2 text-center font-bold text-accent tabular-nums">{r.points}</td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
                         </div>
                       );
                     })
@@ -5425,16 +6095,13 @@ function ManagePage() {
       {/* ---------- TIMELINE SÂN VÀ KHUNG GIỜ ---------- */}
       {tab === "timeline" && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between text-xs text-line/60">
-            <p>
-              Kéo thả các thẻ trận giữa các sân hoặc từ <strong>“Hàng chờ xếp lịch”</strong> vào ô giờ.
-            </p>
-            {unassignedMatches.length > 0 && (
+          {unassignedMatches.length > 0 && (
+            <div className="flex items-center justify-end text-xs text-line/60">
               <span className="font-bold text-amber-600 dark:text-amber-400">
                 Còn {unassignedMatches.length} trận chưa xếp giờ
               </span>
-            )}
-          </div>
+            </div>
+          )}
 
           <div className="grid gap-4 lg:grid-cols-12 items-start">
             {/* Bảng timeline với sticky headers */}
@@ -5457,9 +6124,6 @@ function ManagePage() {
                     ✕ Đóng
                   </button>
                 </div>
-                <p className="mt-2 text-[11px] text-line/60">
-                  Kéo thả thẻ trận vào bất kỳ ô giờ nào trên bảng timeline bên trái (vị trí ngang trong ô tương ứng bước 5 phút).
-                </p>
 
                 <div className="mt-3 flex-1 overflow-y-auto space-y-3 pr-1">
                   {unassignedByRound.length === 0 ? (
@@ -6462,16 +7126,26 @@ function ManagePage() {
         <TeamMatchModal
           match={teamMatchToManage}
           entries={state.entries}
+          ev={state.events.find((e) => e.id === teamMatchToManage.eventId) || state.events.find((e) => e.id === activeId)}
           onClose={() => setTeamMatchToManage(null)}
           onSave={(updatedSubMatches, overallScoreA, overallScoreB, done) => {
+            const currentMatch =
+              state.matches.find((m) => m.id === teamMatchToManage.id) || teamMatchToManage;
+            const hasSubScore = updatedSubMatches.some(
+              (sm) => sm.scoreA !== null || sm.scoreB !== null,
+            );
             updateMatch(teamMatchToManage.id, {
               teamSubMatches: updatedSubMatches,
               scoreA: overallScoreA,
               scoreB: overallScoreB,
-              status: done ? "done" : "live",
+              status: done
+                ? "done"
+                : overallScoreA > 0 || overallScoreB > 0 || hasSubScore
+                  ? "live"
+                  : currentMatch.status === "done"
+                    ? "pending"
+                    : currentMatch.status,
             });
-            setTeamMatchToManage(null);
-            toast.success("Đã cập nhật kết quả trận đấu đồng đội!");
           }}
         />
       )}

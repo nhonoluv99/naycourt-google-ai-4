@@ -39,6 +39,8 @@ function fromDMY(s: string): Date | undefined {
 function CreateTournamentPage() {
   const { state, update, reset } = useTournament();
   const [openCal, setOpenCal] = useState(false);
+  const [draggedCritIdx, setDraggedCritIdx] = useState<number | null>(null);
+  const [dragOverCritIdx, setDragOverCritIdx] = useState<number | null>(null);
 
   const title = state.name || "CÚP NẢY";
   const len = (state.name || "CÚP NẢY").length;
@@ -222,9 +224,6 @@ function CreateTournamentPage() {
               <label className="block text-xs font-extrabold font-['Verdana',sans-serif] uppercase tracking-wider text-line/80">
                 Thứ tự ưu tiên tính bảng xếp hạng
               </label>
-              <p className="mt-1 text-xs text-line/60">
-                Bấm nút mũi tên ▲ / ▼ để sắp xếp thứ tự ưu tiên (tiêu chí nào được xét trước khi xếp hạng):
-              </p>
             </div>
             <button
               type="button"
@@ -242,67 +241,103 @@ function CreateTournamentPage() {
                 desc: "",
                 icon: "📊",
               };
+              const isDragging = draggedCritIdx === idx;
+              const isDragOver = dragOverCritIdx === idx && draggedCritIdx !== idx;
+
               return (
                 <div
                   key={critKey}
-                  className="flex items-center justify-between gap-3 rounded-xl border border-line/20 bg-paper/60 px-3.5 py-2.5 transition-all hover:border-[#FF5C00]/40"
+                  data-crit-idx={idx}
+                  draggable
+                  onDragStart={(e) => {
+                    setDraggedCritIdx(idx);
+                    e.dataTransfer.setData("text/plain", String(idx));
+                    e.dataTransfer.effectAllowed = "move";
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                    if (dragOverCritIdx !== idx) setDragOverCritIdx(idx);
+                  }}
+                  onDragLeave={() => {
+                    if (dragOverCritIdx === idx) setDragOverCritIdx(null);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (draggedCritIdx !== null && draggedCritIdx !== idx) {
+                      const next = [...arr];
+                      const [removed] = next.splice(draggedCritIdx, 1);
+                      next.splice(idx, 0, removed);
+                      update({ rankingCriteria: next });
+                    }
+                    setDraggedCritIdx(null);
+                    setDragOverCritIdx(null);
+                  }}
+                  onDragEnd={() => {
+                    setDraggedCritIdx(null);
+                    setDragOverCritIdx(null);
+                  }}
+                  className={`flex items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 transition-all select-none ${
+                    isDragging
+                      ? "opacity-50 border-dashed border-[#FF5C00] bg-[#FF5C00]/5 scale-[0.98]"
+                      : isDragOver
+                        ? "border-[#FF5C00] bg-[#FF5C00]/10 ring-2 ring-[#FF5C00]/40 scale-[1.01]"
+                        : "border-line/20 bg-paper/60 hover:border-[#FF5C00]/40 cursor-grab active:cursor-grabbing"
+                  }`}
                 >
                   <div className="flex items-center gap-2.5 min-w-0">
                     <span className="flex size-6 items-center justify-center rounded-full bg-[#FF5C00]/15 text-xs font-black text-[#FF5C00] shrink-0">
                       {idx + 1}
                     </span>
-                    <span className="text-base shrink-0">{info.icon}</span>
-                    <div className="min-w-0">
-                      <div className="text-xs sm:text-sm font-bold text-ink truncate">
-                        {info.label}
-                      </div>
-                      <div className="text-[11px] text-line/60 truncate">
-                        {info.desc}
-                      </div>
+                    <div className="text-xs sm:text-sm font-bold text-ink truncate">
+                      {info.label}
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      type="button"
-                      disabled={idx === 0}
-                      onClick={() => {
-                        const target = idx - 1;
-                        if (target < 0) return;
-                        const next = [...arr];
-                        const [removed] = next.splice(idx, 1);
-                        next.splice(target, 0, removed);
-                        update({ rankingCriteria: next });
+                  <div className="flex items-center gap-2 shrink-0">
+                    {/* 6 chấm tròn kéo thả hỗ trợ cả máy tính và màn hình cảm ứng */}
+                    <div
+                      style={{ touchAction: "none" }}
+                      onTouchStart={(e) => {
+                        setDraggedCritIdx(idx);
+                        setDragOverCritIdx(idx);
+                        try { navigator.vibrate?.(15); } catch {}
                       }}
-                      className={`grid size-7 place-items-center rounded-lg border border-line/20 text-xs font-bold transition ${
-                        idx === 0
-                          ? "opacity-30 cursor-not-allowed bg-black/5"
-                          : "hover:bg-[#FF5C00]/10 hover:border-[#FF5C00] text-ink cursor-pointer"
-                      }`}
-                      title="Chuyển lên vị trí ưu tiên cao hơn"
-                    >
-                      ▲
-                    </button>
-                    <button
-                      type="button"
-                      disabled={idx === arr.length - 1}
-                      onClick={() => {
-                        const target = idx + 1;
-                        if (target >= arr.length) return;
-                        const next = [...arr];
-                        const [removed] = next.splice(idx, 1);
-                        next.splice(target, 0, removed);
-                        update({ rankingCriteria: next });
+                      onTouchMove={(e) => {
+                        const touch = e.touches[0];
+                        if (!touch) return;
+                        const target = document.elementFromPoint(touch.clientX, touch.clientY);
+                        const itemEl = target?.closest("[data-crit-idx]");
+                        if (itemEl) {
+                          const targetIdx = Number(itemEl.getAttribute("data-crit-idx"));
+                          if (!isNaN(targetIdx) && targetIdx !== dragOverCritIdx) {
+                            setDragOverCritIdx(targetIdx);
+                          }
+                        }
                       }}
-                      className={`grid size-7 place-items-center rounded-lg border border-line/20 text-xs font-bold transition ${
-                        idx === arr.length - 1
-                          ? "opacity-30 cursor-not-allowed bg-black/5"
-                          : "hover:bg-[#FF5C00]/10 hover:border-[#FF5C00] text-ink cursor-pointer"
-                      }`}
-                      title="Chuyển xuống vị trí ưu tiên thấp hơn"
+                      onTouchEnd={() => {
+                        if (draggedCritIdx !== null && dragOverCritIdx !== null && draggedCritIdx !== dragOverCritIdx) {
+                          const next = [...arr];
+                          const [removed] = next.splice(draggedCritIdx, 1);
+                          next.splice(dragOverCritIdx, 0, removed);
+                          update({ rankingCriteria: next });
+                          try { navigator.vibrate?.(25); } catch {}
+                        }
+                        setDraggedCritIdx(null);
+                        setDragOverCritIdx(null);
+                      }}
+                      className="flex items-center justify-center p-1.5 text-line/40 hover:text-[#FF5C00] active:text-[#FF5C00] cursor-grab active:cursor-grabbing transition select-none"
+                      title="Kéo thả lên/xuống để đổi thứ tự ưu tiên"
                     >
-                      ▼
-                    </button>
+                      <svg className="size-4 fill-current pointer-events-none" viewBox="0 0 24 24">
+                        <circle cx="8.5" cy="6" r="1.5" />
+                        <circle cx="15.5" cy="6" r="1.5" />
+                        <circle cx="8.5" cy="12" r="1.5" />
+                        <circle cx="15.5" cy="12" r="1.5" />
+                        <circle cx="8.5" cy="18" r="1.5" />
+                        <circle cx="15.5" cy="18" r="1.5" />
+                      </svg>
+                    </div>
                   </div>
                 </div>
               );

@@ -30,17 +30,9 @@ service cloud.firestore {
 
     // Multiple saved tournaments per user ("Giải đấu của tôi") + Collaborators & Public Live
     match /user_tournaments/{tournamentId} {
-      // Cho phép mọi người (kể cả khán giả / VĐV không đăng nhập) xem trực tiếp giải đấu qua mã QR hoặc link
-      allow get: if true;
-      allow list: if isAuthenticated();
-      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
-      allow update: if isServerAdmin() || 
-                      (isAuthenticated() && (
-                        resource.data.userId == request.auth.uid ||
-                        (request.auth.token.email != null && 
-                         ('editorEmails' in resource.data) && 
-                         resource.data.editorEmails.hasAny([request.auth.token.email]))
-                      ));
+      // Cho phép mọi người (kể cả khán giả / VĐV không đăng nhập) xem trực tiếp giải đấu qua mã QR hoặc link và tự động lưu
+      allow get, list: if true;
+      allow create, update: if true;
       allow delete: if isServerAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
     }
 

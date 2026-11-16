@@ -11,7 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { reportLovableError } from "../lib/lovable-error-reporting";
-import { TournamentProvider, useTournament } from "../lib/tournament-store";
+import { getLiveTournamentIdFromUrl, TournamentProvider, useTournament } from "../lib/tournament-store";
 import { MyTournamentsModal } from "../components/MyTournamentsModal";
 import { HostAdminMonitorModal } from "../components/HostAdminMonitorModal";
 import { UnsavedConfirmDialog } from "../components/UnsavedConfirmDialog";
@@ -315,37 +315,6 @@ function Header({ isWide }: { isWide: boolean }) {
                       </button>
                     )}
 
-                    {/* Nút Save: lưu giải hiện tại, nằm ngay phía trên nút Đăng xuất */}
-                    <button
-                      type="button"
-                      disabled={!isDirty || isSavingTournament}
-                      onClick={handleSaveCurrentTournament}
-                      className={`w-full rounded-xl px-3 py-2 text-xs font-bold transition text-left border-t border-line/10 flex items-center justify-between ${
-                        isDirty
-                          ? "text-[#0a3320] bg-emerald-500/10 hover:bg-emerald-500/20 dark:text-emerald-400 cursor-pointer shadow-2xs"
-                          : "text-line/40 bg-transparent cursor-not-allowed select-none opacity-60"
-                      }`}
-                      style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                      title={
-                        isDirty
-                          ? "Có chỉnh sửa mới. Bấm để lưu lại giải đấu đang mở."
-                          : "Chưa có chỉnh sửa gì khác kể từ lần cuối cùng mở ra."
-                      }
-                    >
-                      <span className="flex items-center gap-1.5">
-                        <span className="text-sm">💾</span>
-                        <span>{isSavingTournament ? "Đang lưu..." : "Lưu giải hiện tại"}</span>
-                      </span>
-                      {isDirty ? (
-                        <span className="flex items-center gap-1 text-[10px] font-semibold text-emerald-700 dark:text-emerald-400">
-                          <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                          Chưa lưu
-                        </span>
-                      ) : (
-                        <span className="text-[10px] font-normal text-line/40">Đã lưu</span>
-                      )}
-                    </button>
-
                     <button
                       type="button"
                       onClick={handleLogout}
@@ -406,6 +375,15 @@ function Header({ isWide }: { isWide: boolean }) {
 
 function RootContent() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const liveId = getLiveTournamentIdFromUrl();
+    if (liveId && pathname === "/") {
+      void navigate({ to: "/quan-ly-giai", replace: true });
+    }
+  }, [pathname, navigate]);
+
   const isWide = pathname.startsWith("/van-dong-vien") || pathname.startsWith("/quan-ly-giai");
   const containerClass = isWide
     ? "mx-auto w-full max-w-[1920px] px-4 py-8 sm:px-6 lg:px-8 lg:py-10"

@@ -14,7 +14,7 @@ interface ShareCollaboratorsModalProps {
 }
 
 export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsModalProps) {
-  const { state, update, user, activeTournamentId, saveCurrentToArchive } = useTournament();
+  const { state, update, user, activeTournamentId, saveCurrentToArchive, loginWithGoogle } = useTournament();
   const [tab, setTab] = useState<"email" | "qr">("email");
   const [inputEmail, setInputEmail] = useState("");
   const [inputRole, setInputRole] = useState<CollaboratorRole>("editor");
@@ -23,18 +23,30 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
   const [qrDataUrl, setQrDataUrl] = useState<string>("");
   const [isSaving, setIsSaving] = useState(false);
 
+  // Chuyển đổi URL nội bộ ais-dev- sang URL công khai ais-pre- để người xem quét mã không bị lỗi Google 403
+  const getPublicBaseUrl = () => {
+    if (typeof window === "undefined") return "";
+    let origin = window.location.origin;
+    if (origin.includes("ais-dev-")) {
+      origin = origin.replace("ais-dev-", "ais-pre-");
+    }
+    return origin;
+  };
+
   const tournamentId = activeTournamentId || state.id || "tour_temp";
-  const publicLiveUrl =
-    typeof window !== "undefined"
-      ? `${window.location.origin}/quan-ly-giai?live=${tournamentId}`
-      : "";
+  const publicBase = getPublicBaseUrl();
+  const publicLiveUrl = publicBase
+    ? `${publicBase}/#/quan-ly-giai?live=${encodeURIComponent(tournamentId)}`
+    : "";
 
   useEffect(() => {
     if (isOpen) {
       setCollaborators(state.collaborators || []);
       setIsPublicLive(state.isPublicLive !== undefined ? state.isPublicLive : true);
+      // Tự động đồng bộ giải đấu lên đám mây khi mở modal để link xem trực tiếp có dữ liệu ngay lập tức
+      void saveCurrentToArchive();
     }
-  }, [isOpen, state.collaborators, state.isPublicLive]);
+  }, [isOpen, state.collaborators, state.isPublicLive, saveCurrentToArchive]);
 
   // Sinh mã QR với tone màu đậm chuẩn thương hiệu #093220
   useEffect(() => {
@@ -191,16 +203,11 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
         className="flex max-h-[92vh] w-full max-w-2xl flex-col rounded-2xl border border-line/20 bg-card shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header Modal - tone chuẩn #093220 */}
-        <div className="flex items-center justify-between border-b border-white/10 bg-[#093220] px-5 py-3.5 text-white">
-          <div className="flex items-center gap-2.5">
-            <span className="text-xl">🤝</span>
-            <div>
-              <h3 className="font-head text-base font-bold tracking-tight text-white">
-                Chia sẻ & Phân quyền giải đấu
-              </h3>
-            </div>
-          </div>
+        {/* Header Modal - tone chuẩn #072819 */}
+        <div className="flex items-center justify-between border-b border-white/10 bg-[#072819] px-5 py-3.5 text-white">
+          <h3 className="font-head text-base font-bold tracking-tight text-white">
+            Chia sẻ & Phân quyền giải đấu
+          </h3>
           <button
             type="button"
             onClick={onClose}
@@ -240,13 +247,7 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
           {tab === "email" ? (
             <div className="space-y-5">
               {/* Form thêm email */}
-              <form onSubmit={handleAddCollaborator} className="rounded-xl border border-line/20 bg-paper/50 p-4 space-y-3 shadow-2xs">
-                <div className="flex items-center justify-between">
-                  <span className="font-head text-xs font-bold uppercase tracking-wider text-[#093220]">
-                    Thêm người cùng điều hành hoặc xem
-                  </span>
-                  <span className="text-[11px] text-line/60">Hỗ trợ tài khoản Gmail</span>
-                </div>
+              <form onSubmit={handleAddCollaborator} className="rounded-xl border border-line/20 bg-paper/50 p-4 shadow-2xs">
                 <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                   <input
                     type="email"
@@ -270,13 +271,6 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
                   >
                     + Thêm quyền
                   </button>
-                </div>
-                <div className="text-[11px] text-line/65 flex items-start gap-1.5">
-                  <span className="text-amber-600 font-bold">💡</span>
-                  <span>
-                    <strong>Quyền chỉnh sửa:</strong> Được phép nhập điểm, xếp sân, bốc thăm vòng tiếp theo.<br />
-                    <strong>Quyền chỉ xem:</strong> Chỉ được theo dõi kết quả, BXH và timeline (khóa các nút sửa).
-                  </span>
                 </div>
               </form>
 
@@ -360,10 +354,6 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
           ) : (
             /* Tab 2: Chia sẻ mã QR & Link xem trực tiếp */
             <div className="space-y-5">
-              <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3.5 text-xs text-[#093220] leading-relaxed">
-                <strong>📲 Dành cho khán giả & VĐV:</strong> Người xem chỉ cần mở camera điện thoại quét mã QR bên dưới để xem trực tiếp tỉ số, lịch thi đấu và bảng xếp hạng thời gian thực mà <strong>không cần đăng nhập hay có email</strong>.
-              </div>
-
               <div className="flex flex-col sm:flex-row items-center gap-6 justify-center bg-paper/60 p-5 rounded-2xl border border-line/15">
                 {/* Khung hiển thị mã QR */}
                 <div className="bg-white p-3 rounded-2xl shadow-md border-2 border-[#093220]/20 flex flex-col items-center">

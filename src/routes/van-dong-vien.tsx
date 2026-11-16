@@ -142,7 +142,20 @@ function PlayersPage() {
   }
 
   const isTeamMode = ev.mode === "dong_doi";
-  const slots = isTeamMode ? 4 : ev.mode === "don" ? 1 : ev.pairMode === "fixed" ? 2 : 1;
+  const isCustomTeam = isTeamMode && ev.teamSubMode === "custom";
+  const customPlayerCount = ev.customTeamPlayerCount || 4;
+  const slots = isTeamMode ? (isCustomTeam ? customPlayerCount : 4) : ev.mode === "don" ? 1 : ev.pairMode === "fixed" ? 2 : 1;
+
+  // Số lượng VĐV cho mỗi đội khi thêm đội mới
+  const [teamPlayerCount, setTeamPlayerCount] = useState<number>(() => ev.customTeamPlayerCount || 4);
+
+  const handleTeamPlayerCountChange = (val: number) => {
+    const clamped = Math.max(1, Math.min(30, val || 1));
+    setTeamPlayerCount(clamped);
+    updateEvent(ev.id, {
+      customTeamPlayerCount: clamped,
+    });
+  };
 
   // State cho Tra cứu DUPR / PVNA
   const [lookupModalOpen, setLookupModalOpen] = useState(false);
@@ -202,17 +215,44 @@ function PlayersPage() {
 
   const addEntry = () => {
     requireEditConfirmation(() => {
+      const count = isTeamMode ? (teamPlayerCount || 4) : slots;
       setEntries([
         ...entries,
         {
           id: uid(),
           eventId: ev.id,
           teamName: isTeamMode ? `Đội ${entries.length + 1}` : undefined,
-          players: Array.from({ length: slots }, () => ({ name: "", rating: null })),
+          players: Array.from({ length: count }, () => ({ name: "", rating: null })),
           paid: false,
         },
       ]);
     }, isTeamMode ? "Thêm Đội mới vào danh sách" : "Thêm VĐV mới vào danh sách");
+  };
+
+  const addPlayerToTeam = (entryId: string) => {
+    requireEditConfirmation(() => {
+      setEntries(
+        entries.map((e) => {
+          if (e.id !== entryId) return e;
+          return {
+            ...e,
+            players: [...e.players, { name: "", rating: null, gender: undefined, paid: false }],
+          };
+        }),
+      );
+    }, "Thêm thành viên mới vào đội này");
+  };
+
+  const removePlayerFromTeam = (entryId: string, playerIdx: number) => {
+    requireEditConfirmation(() => {
+      setEntries(
+        entries.map((e) => {
+          if (e.id !== entryId) return e;
+          const nextPlayers = e.players.filter((_, pi) => pi !== playerIdx);
+          return { ...e, players: nextPlayers };
+        }),
+      );
+    }, "Xóa thành viên khỏi đội này");
   };
 
   const patchEntry = (id: string, patch: Partial<Entry>) =>
@@ -448,12 +488,224 @@ function PlayersPage() {
     }
   };
 
+  const exportAthletesToExcel = () => {
+    try {
+      if (entries.length === 0) {
+        const rows: (string | number)[][] = [];
+        if (isTeamMode) {
+          rows.push([
+            "STT",
+            "Tên đội",
+            "VĐV 1",
+            "Điểm 1",
+            "VĐV 2",
+            "Điểm 2",
+            "VĐV 3",
+            "Điểm 3",
+            "VĐV 4",
+            "Điểm 4",
+            "Tổng điểm",
+            "Lệ phí",
+            "Bảng đấu",
+          ]);
+          for (let i = 1; i <= 10; i++) {
+            rows.push([i, "", "", "", "", "", "", "", "", "", "", "Chưa nộp", ""]);
+          }
+        } else if (slots === 2) {
+          rows.push([
+            "STT",
+            "Vận động viên 1",
+            "Điểm trình 1",
+            "Vận động viên 2",
+            "Điểm trình 2",
+            "Tổng điểm",
+            "Lệ phí",
+            "Bảng đấu",
+          ]);
+          for (let i = 1; i <= 10; i++) {
+            rows.push([i, "", "", "", "", "", "Chưa nộp", ""]);
+          }
+        } else {
+          rows.push(["STT", "Họ và tên", "Điểm trình", "Lệ phí", "Bảng đấu"]);
+          for (let i = 1; i <= 10; i++) {
+            rows.push([i, "", "", "Chưa nộp", ""]);
+          }
+        }
+
+        const ws = XLSX.utils.aoa_to_sheet(rows);
+        ws["!cols"] = [
+          { wch: 6 },
+          { wch: 22 },
+          { wch: 14 },
+          { wch: 22 },
+          { wch: 14 },
+          { wch: 14 },
+          { wch: 14 },
+          { wch: 14 },
+        ];
+        const wb = XLSX.utils.book_new();
+        const sheetName = (ev.name || "DanhSachVDV").replace(/[/\\?*[\]]/g, "_").slice(0, 31);
+        XLSX.utils.book_append_sheet(wb, ws, sheetName);
+        const sanitizedEvName = (ev.name || "VDV").replace(/[^a-zA-Z0-9_\u00C0-\u024F\u1E00-\u1EFF]/g, "_");
+        XLSX.writeFile(wb, `Mau_Danh_Sach_${sanitizedEvName}_10_VDV.xlsx`);
+        toast.success("Đã tải file Excel mẫu 10 dòng thành công!");
+        setNote("Đã tải file Excel mẫu với 10 dòng trống để bạn nhập thông tin.");
+        return;
+      }
+
+      const rows: (string | number)[][] = [];
+
+      const getEntryGroupName = (entryId: string) => {
+        const g = ev.groups?.find((grp) => grp.entryIds?.includes(entryId));
+        return g ? `Bảng ${g.name}` : "";
+      };
+
+      if (isTeamMode) {
+        rows.push([
+          "STT",
+          "Tên đội",
+          "VĐV 1",
+          "Điểm 1",
+          "VĐV 2",
+          "Điểm 2",
+          "VĐV 3",
+          "Điểm 3",
+          "VĐV 4",
+          "Điểm 4",
+          "Tổng điểm",
+          "Lệ phí",
+          "Bảng đấu",
+        ]);
+        entries.forEach((en, idx) => {
+          const p1 = en.players[0]?.name || "";
+          const r1 = en.players[0]?.rating ?? "";
+          const p2 = en.players[1]?.name || "";
+          const r2 = en.players[1]?.rating ?? "";
+          const p3 = en.players[2]?.name || "";
+          const r3 = en.players[2]?.rating ?? "";
+          const p4 = en.players[3]?.name || "";
+          const r4 = en.players[3]?.rating ?? "";
+          const totalRating =
+            (typeof r1 === "number" ? r1 : 0) +
+            (typeof r2 === "number" ? r2 : 0) +
+            (typeof r3 === "number" ? r3 : 0) +
+            (typeof r4 === "number" ? r4 : 0);
+          rows.push([
+            idx + 1,
+            en.teamName || entryName(en) || `Đội ${idx + 1}`,
+            p1,
+            r1,
+            p2,
+            r2,
+            p3,
+            r3,
+            p4,
+            r4,
+            totalRating ? Number(totalRating.toFixed(2)) : "",
+            en.paid ? "Đã nộp" : "Chưa nộp",
+            getEntryGroupName(en.id),
+          ]);
+        });
+      } else if (slots === 2 || entries.some((en) => en.players.length > 1)) {
+        rows.push([
+          "STT",
+          "Vận động viên 1",
+          "Điểm trình 1",
+          "Vận động viên 2",
+          "Điểm trình 2",
+          "Tổng điểm",
+          "Lệ phí",
+          "Bảng đấu",
+        ]);
+        entries.forEach((en, idx) => {
+          const p1 = en.players[0]?.name || "";
+          const r1 = en.players[0]?.rating ?? "";
+          const p2 = en.players[1]?.name || "";
+          const r2 = en.players[1]?.rating ?? "";
+          const totalRating =
+            (typeof r1 === "number" ? r1 : 0) + (typeof r2 === "number" ? r2 : 0);
+          rows.push([
+            idx + 1,
+            p1,
+            r1,
+            p2,
+            r2,
+            totalRating ? Number(totalRating.toFixed(2)) : "",
+            en.paid ? "Đã nộp" : "Chưa nộp",
+            getEntryGroupName(en.id),
+          ]);
+        });
+      } else {
+        rows.push(["STT", "Họ và tên", "Điểm trình", "Lệ phí", "Bảng đấu"]);
+        entries.forEach((en, idx) => {
+          const p1 = en.players[0]?.name || "";
+          const r1 = en.players[0]?.rating ?? "";
+          rows.push([
+            idx + 1,
+            p1,
+            r1,
+            en.paid ? "Đã nộp" : "Chưa nộp",
+            getEntryGroupName(en.id),
+          ]);
+        });
+      }
+
+      const ws = XLSX.utils.aoa_to_sheet(rows);
+      ws["!cols"] = [
+        { wch: 6 },
+        { wch: 22 },
+        { wch: 14 },
+        { wch: 22 },
+        { wch: 14 },
+        { wch: 14 },
+        { wch: 14 },
+        { wch: 14 },
+      ];
+      const wb = XLSX.utils.book_new();
+      const sheetName = (ev.name || "DanhSachVDV").replace(/[/\\?*[\]]/g, "_").slice(0, 31);
+      XLSX.utils.book_append_sheet(wb, ws, sheetName);
+      const sanitizedEvName = (ev.name || "VDV").replace(/[^a-zA-Z0-9_\u00C0-\u024F\u1E00-\u1EFF]/g, "_");
+      XLSX.writeFile(wb, `Danh_Sach_${sanitizedEvName}.xlsx`);
+      toast.success("Đã xuất danh sách VĐV ra file Excel!");
+      setNote("Đã xuất danh sách VĐV ra file Excel.");
+    } catch (err) {
+      console.error(err);
+      toast.error("Không thể xuất file Excel. Vui lòng thử lại.");
+    }
+  };
+
   const doDraw = () => {
     requireEditConfirmation(() => {
       const paired = drawPairs(entries, ev.id);
       setEntries(paired);
       setNote(`Đã bốc thăm ${paired.length} đội.`);
     }, "Bốc thăm ghép đôi mới sẽ thay đổi danh sách các cặp đấu.");
+  };
+
+  const handleRestoreDraw = () => {
+    requireEditConfirmation(() => {
+      const restoredEntries: Entry[] = [];
+      entries.forEach((en) => {
+        if (en.players.length > 1) {
+          en.players.forEach((p) => {
+            restoredEntries.push({
+              id: uid(),
+              eventId: ev.id,
+              players: [p],
+              paid: p.paid ?? en.paid ?? false,
+            });
+          });
+        } else {
+          restoredEntries.push(en);
+        }
+      });
+
+      const resetGroups = (ev.groups || []).map((g) => ({ ...g, entryIds: [] }));
+      setEntries(restoredEntries);
+      updateEvent(ev.id, { groups: resetGroups });
+      setNote(`Đã khôi phục ${restoredEntries.length} VĐV về trạng thái ban đầu (chưa ghép đôi).`);
+      toast.success("Đã khôi phục danh sách VĐV về trạng thái ban đầu!");
+    }, "Khôi phục danh sách VĐV về trạng thái ban đầu trước khi bốc thăm ghép đôi? Tất cả các cặp đấu sẽ được tách lại thành từng VĐV đơn lẻ và phân chia bảng sẽ được xóa.");
   };
 
   const autoGroups = () => {
@@ -525,8 +777,15 @@ function PlayersPage() {
   };
 
   const [dragEntryId, setDragEntryId] = useState<string | null>(null);
+  const [touchOverGroupIdx, setTouchOverGroupIdx] = useState<number | null>(null);
+  const [touchOverEntryId, setTouchOverEntryId] = useState<string | null>(null);
+  const [touchOverUnassigned, setTouchOverUnassigned] = useState<boolean>(false);
   const [showPrintModal, setShowPrintModal] = useState(false);
+  const [showTeamMembersInPrint, setShowTeamMembersInPrint] = useState(false);
   const [showExcelGuide, setShowExcelGuide] = useState(false);
+
+  // Chỉ hiển thị bảng bên phải khi cần chia bảng (rr_ko) hoặc chia cặp
+  const showRightPanel = ev.bracket === "rr_ko";
 
   return (
     <div>
@@ -562,11 +821,38 @@ function PlayersPage() {
       </div>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-12">
-        <div className="lg:col-span-7">
+        <div className={showRightPanel ? "lg:col-span-7" : "lg:col-span-12"}>
           <div className="flex flex-wrap items-center gap-2">
-            <button className="btn-accent" onClick={addEntry}>
-              + Thêm {isTeamMode ? "Đội mới (4 VĐV)" : ev.mode === "don" ? "VĐV" : slots === 2 ? "đội" : "VĐV"}
-            </button>
+            {isTeamMode ? (
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  className="btn-accent"
+                  onClick={addEntry}
+                  title={`Thêm đội mới với ${teamPlayerCount} VĐV`}
+                >
+                  + Thêm đội
+                </button>
+                <div className="flex items-center gap-1.5 rounded-lg border border-line/25 bg-white dark:bg-card px-2.5 py-1.5 shadow-2xs">
+                  <span className="text-xs font-semibold text-line/70 whitespace-nowrap">
+                    Số VĐV:
+                  </span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={30}
+                    className="w-12 text-center text-xs font-bold text-accent bg-transparent outline-none ring-1 ring-line/25 rounded px-1 py-0.5"
+                    value={teamPlayerCount}
+                    onChange={(e) => handleTeamPlayerCountChange(Number(e.target.value))}
+                    title="Nhập số lượng vận động viên cho mỗi đội mới thêm"
+                  />
+                </div>
+              </div>
+            ) : (
+              <button className="btn-accent" onClick={addEntry}>
+                + Thêm {ev.mode === "don" ? "VĐV" : slots === 2 ? "đội" : "VĐV"}
+              </button>
+            )}
             <button
               type="button"
               className="rounded-lg bg-[#0a3320] hover:bg-[#0a3320]/90 text-white px-3.5 py-2 text-sm font-semibold shadow-xs cursor-pointer transition"
@@ -583,15 +869,15 @@ function PlayersPage() {
               onClick={() => fileRef.current?.click()}
               title="Hỗ trợ file .xlsx, .xls, .csv, .tsv (cột STT, Tên, Điểm trình)"
             >
-              📥 Import Excel/CSV
+              📥 Import Excel
             </button>
             <button
               type="button"
               className="btn-ghost"
-              onClick={downloadSampleExcel}
-              title="Tải file Excel mẫu (.xlsx) chuẩn định dạng của hệ thống"
+              onClick={exportAthletesToExcel}
+              title="Xuất danh sách VĐV hiện tại ra file Excel (.xlsx)"
             >
-              📋 Tải file mẫu
+              📤 Export Excel
             </button>
             <button
               type="button"
@@ -601,10 +887,21 @@ function PlayersPage() {
             >
               ℹ️ Định dạng file
             </button>
-            {ev.mode === "doi" && ev.pairMode === "random" && ev.bracket === "rr_ko" ? (
-              <button className="btn-ghost" onClick={doDraw}>
-                🎲 Bốc thăm ghép đôi
-              </button>
+            {ev.mode === "doi" && ev.pairMode === "random" && !isRotatingDoubles(ev) ? (
+              <div className="inline-flex items-center gap-1">
+                <button className="btn-ghost" onClick={doDraw}>
+                  🎲 Bốc thăm ghép đôi
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost !px-2.5 !py-2 text-sm font-bold text-line/70 hover:text-ink hover:bg-line/10 transition cursor-pointer"
+                  onClick={handleRestoreDraw}
+                  title="Khôi phục trạng thái ban đầu (tách cặp thành từng VĐV riêng lẻ)"
+                  aria-label="Khôi phục trạng thái ban đầu"
+                >
+                  ↺
+                </button>
+              </div>
             ) : null}
             {entries.length > 0 && (
               <button
@@ -691,36 +988,38 @@ function PlayersPage() {
             {entries.length === 0 ? (
               <p className="px-3.5 py-4 text-sm text-line/50">
                 {isTeamMode
-                  ? "Chưa có Đội nào. Bấm nút '+ Thêm Đội mới (4 VĐV)' ở trên để tạo đội."
+                  ? "Chưa có Đội nào. Bấm nút '+ Thêm đội' ở trên để tạo đội."
                   : `Chưa có VĐV. Thêm tay hoặc import file CSV (cột: Tên, Điểm trình${slots === 2 ? ", Tên 2, Điểm trình 2" : ""}).`}
               </p>
             ) : (
               entries.map((en, i) => {
                 const totalRating = en.players.reduce((sum, p) => sum + (p.rating ?? 0), 0);
-                return slots === 4 ? (
-                  /* Thể thức Đồng đội (MLP Format) — Mỗi Đội gồm 4 VĐV */
-                  <div key={en.id} className="p-3 sm:p-4 border-b border-line/10 last:border-b-0 bg-card/60">
+                return isTeamMode ? (
+                  /* Thể thức Đồng đội — Chuẩn MLP hoặc Tùy chỉnh thủ công */
+                  <div key={en.id} className="p-3 sm:p-4 border border-line/20 rounded-[15px] bg-[#f8f7f4] mb-3 last:mb-0 shadow-xs">
                     <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 mb-2.5 border-b border-line/10">
                       <div className="flex items-center gap-2 flex-1 min-w-[200px]">
                         <span className="font-head font-bold text-xs text-line/50 w-6">#{i + 1}</span>
                         <div className="flex items-center gap-1.5 flex-1 max-w-sm">
-                          <span className="text-sm">🛡️</span>
                           <input
-                            className="field font-bold text-xs sm:text-sm !py-1 !px-2 flex-1 bg-paper border border-line/20"
+                            className="field font-bold !text-[17px] !py-1 !px-2.5 flex-1 bg-paper border border-line/20"
+                            style={{ fontFamily: "'Space Grotesk', sans-serif" }}
                             placeholder={`Tên Đội (VD: Đội ${i + 1}, Team Hà Nội...)`}
                             value={en.teamName ?? ""}
                             onChange={(e) => patchEntry(en.id, { teamName: e.target.value })}
                           />
                         </div>
-                        <span className="text-[11px] font-semibold text-accent/90 bg-accent/10 px-2 py-0.5 rounded-md hidden sm:inline">
-                          MLP Team (4 VĐV)
-                        </span>
+                        {isCustomTeam && (
+                          <span className="text-[11px] font-semibold text-line/60 bg-black/5 dark:bg-white/5 px-2 py-0.5 rounded-full border border-line/15">
+                            {en.players.length} VĐV
+                          </span>
+                        )}
                       </div>
 
                       <div className="flex items-center gap-2">
                         <div
                           className="flex h-7 px-2.5 items-center justify-center rounded-lg border border-accent/40 bg-accent/10 text-xs font-bold text-accent tabular-nums"
-                          title="Điểm tổng của cả 4 VĐV trong Đội"
+                          title="Điểm tổng của cả đội"
                         >
                           Tổng trình: {totalRating > 0 ? formatRating(Number(totalRating.toFixed(4))) : "—"}
                         </div>
@@ -755,57 +1054,207 @@ function PlayersPage() {
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      {en.players.map((p, pi) => {
-                        const roleLabel = pi === 0 ? "👨 Nam 1" : pi === 1 ? "👨 Nam 2" : pi === 2 ? "👩 Nữ 1" : "👩 Nữ 2";
-                        return (
-                          <div key={pi} className="flex items-center gap-1.5 bg-paper p-1.5 rounded-lg border border-line/15">
-                            <input
-                              type="checkbox"
-                              title={`Đóng phí: ${p.name || roleLabel}`}
-                              className="size-3.5 shrink-0 rounded accent-[oklch(0.615_0.145_154.2)] cursor-pointer"
-                              checked={Boolean(p.paid)}
-                              onChange={(e) => patchPlayer(en.id, pi, { paid: e.target.checked })}
-                            />
-                            <span className="text-[11px] font-semibold text-line/70 shrink-0 min-w-[55px]">
-                              {roleLabel}:
-                            </span>
-                            <div className="group/slot relative flex-1 min-w-0">
+                    {!isCustomTeam && en.players.length === 4 ? (
+                      /* Chuẩn MLP 4 VĐV: Cột trái (Nam 1 & Nam 2) | Cột phải (Nữ 1 & Nữ 2) */
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {/* Cột bên trái: Nam 1 và Nam 2 */}
+                        <div className="space-y-2">
+                          {[0, 1].map((pi) => {
+                            const p = en.players[pi] || { name: "", rating: null };
+                            const roleLabel = pi === 0 ? "Nam 1" : "Nam 2";
+                            return (
+                              <div key={pi} className="flex items-center gap-1.5 bg-[#efede5] p-1.5 rounded-[14px] border border-line/20">
+                                <input
+                                  type="checkbox"
+                                  title={`Đóng phí: ${p.name || roleLabel}`}
+                                  className="size-3.5 shrink-0 rounded accent-[oklch(0.615_0.145_154.2)] cursor-pointer"
+                                  checked={Boolean(p.paid)}
+                                  onChange={(e) => patchPlayer(en.id, pi, { paid: e.target.checked })}
+                                />
+                                <span className="text-[11px] font-semibold text-line/70 shrink-0">
+                                  {roleLabel}:
+                                </span>
+                                <div className="group/slot relative flex-1 min-w-0">
+                                  <input
+                                    className="field w-full pr-6 !text-[16px] !h-[34px] !py-1 !px-2.5"
+                                    placeholder="Nhập tên VĐV"
+                                    value={p.name}
+                                    onChange={(e) => patchPlayer(en.id, pi, { name: e.target.value })}
+                                  />
+                                  <button
+                                    type="button"
+                                    tabIndex={-1}
+                                    onClick={() => {
+                                      setTargetSlot({
+                                        entryId: en.id,
+                                        playerIdx: pi,
+                                        initialQuery: p.name,
+                                        slotLabel: `${p.name || roleLabel} (${en.teamName || `Đội ${i + 1}`})`,
+                                      });
+                                      setLookupModalOpen(true);
+                                    }}
+                                    className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 text-line/40 hover:text-line cursor-pointer"
+                                    title="DURP/PVNA"
+                                  >
+                                    <svg className="size-3 stroke-line/40 hover:stroke-line/70" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                                      <circle cx="11" cy="11" r="7" />
+                                      <path d="m21 21-4.35-4.35" />
+                                    </svg>
+                                  </button>
+                                </div>
+                                <RatingInput
+                                  value={p.rating}
+                                  onChange={(rating) => patchPlayer(en.id, pi, { rating })}
+                                  className="field !w-[50px] !h-[28px] shrink-0 text-center !px-1 text-[12.5px] font-bold text-ink bg-white border border-line/25 rounded-lg shadow-2xs focus:ring-1 focus:ring-accent tabular-nums"
+                                />
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        {/* Cột bên phải: Nữ 1 và Nữ 2 */}
+                        <div className="space-y-2">
+                          {[2, 3].map((pi) => {
+                            const p = en.players[pi] || { name: "", rating: null };
+                            const roleLabel = pi === 2 ? "Nữ 1" : "Nữ 2";
+                            return (
+                              <div key={pi} className="flex items-center gap-1.5 bg-[#efede5] p-1.5 rounded-[14px] border border-line/20">
+                                <input
+                                  type="checkbox"
+                                  title={`Đóng phí: ${p.name || roleLabel}`}
+                                  className="size-3.5 shrink-0 rounded accent-[oklch(0.615_0.145_154.2)] cursor-pointer"
+                                  checked={Boolean(p.paid)}
+                                  onChange={(e) => patchPlayer(en.id, pi, { paid: e.target.checked })}
+                                />
+                                <span className="text-[11px] font-semibold text-line/70 shrink-0">
+                                  {roleLabel}:
+                                </span>
+                                <div className="group/slot relative flex-1 min-w-0">
+                                  <input
+                                    className="field w-full pr-6 !text-[16px] !h-[34px] !py-1 !px-2.5"
+                                    placeholder="Nhập tên VĐV"
+                                    value={p.name}
+                                    onChange={(e) => patchPlayer(en.id, pi, { name: e.target.value })}
+                                  />
+                                  <button
+                                    type="button"
+                                    tabIndex={-1}
+                                    onClick={() => {
+                                      setTargetSlot({
+                                        entryId: en.id,
+                                        playerIdx: pi,
+                                        initialQuery: p.name,
+                                        slotLabel: `${p.name || roleLabel} (${en.teamName || `Đội ${i + 1}`})`,
+                                      });
+                                      setLookupModalOpen(true);
+                                    }}
+                                    className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 text-line/40 hover:text-line cursor-pointer"
+                                    title="DURP/PVNA"
+                                  >
+                                    <svg className="size-3 stroke-line/40 hover:stroke-line/70" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                                      <circle cx="11" cy="11" r="7" />
+                                      <path d="m21 21-4.35-4.35" />
+                                    </svg>
+                                  </button>
+                                </div>
+                                <RatingInput
+                                  value={p.rating}
+                                  onChange={(rating) => patchPlayer(en.id, pi, { rating })}
+                                  className="field !w-[50px] !h-[28px] shrink-0 text-center !px-1 text-[12.5px] font-bold text-ink bg-white border border-line/25 rounded-lg shadow-2xs focus:ring-1 focus:ring-accent tabular-nums"
+                                />
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : (
+                      /* Thể thức Đồng đội Tùy chỉnh (Thủ công) */
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {en.players.map((p, pi) => (
+                            <div key={pi} className="flex items-center gap-1.5 bg-[#efede5] p-1.5 rounded-[14px] border border-line/20">
                               <input
-                                className="field w-full pr-6 !text-xs !py-1 !px-2"
-                                placeholder="Nhập tên VĐV"
-                                value={p.name}
-                                onChange={(e) => patchPlayer(en.id, pi, { name: e.target.value })}
+                                type="checkbox"
+                                title={`Đóng phí: ${p.name || `VĐV ${pi + 1}`}`}
+                                className="size-3.5 shrink-0 rounded accent-[oklch(0.615_0.145_154.2)] cursor-pointer"
+                                checked={Boolean(p.paid)}
+                                onChange={(e) => patchPlayer(en.id, pi, { paid: e.target.checked })}
                               />
-                              <button
-                                type="button"
-                                tabIndex={-1}
-                                onClick={() => {
-                                  setTargetSlot({
-                                    entryId: en.id,
-                                    playerIdx: pi,
-                                    initialQuery: p.name,
-                                    slotLabel: `${p.name || roleLabel} (${en.teamName || `Đội ${i + 1}`})`,
-                                  });
-                                  setLookupModalOpen(true);
-                                }}
-                                className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 text-line/40 hover:text-line cursor-pointer"
-                                title="DURP/PVNA"
+                              <span className="text-[11px] font-bold text-line/60 w-5 shrink-0 text-center">
+                                #{pi + 1}
+                              </span>
+                              {/* Ô chọn giới tính: Nam / Nữ / Không chọn */}
+                              <select
+                                value={p.gender || ""}
+                                onChange={(e) =>
+                                  patchPlayer(en.id, pi, {
+                                    gender: (e.target.value as "nam" | "nu") || undefined,
+                                  })
+                                }
+                                title="Chọn giới tính (hoặc để trống)"
+                                className="text-[11px] font-semibold bg-white border border-line/25 rounded-md px-1 py-1 text-ink cursor-pointer outline-none shrink-0"
                               >
-                                <svg className="size-3 stroke-line/40 hover:stroke-line/70" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                                  <circle cx="11" cy="11" r="7" />
-                                  <path d="m21 21-4.35-4.35" />
-                                </svg>
-                              </button>
+                                <option value="">—</option>
+                                <option value="nam">Nam</option>
+                                <option value="nu">Nữ</option>
+                              </select>
+                              <div className="group/slot relative flex-1 min-w-0">
+                                <input
+                                  className="field w-full pr-6 !text-[16px] !h-[34px] !py-1 !px-2.5"
+                                  placeholder="Nhập tên VĐV"
+                                  value={p.name}
+                                  onChange={(e) => patchPlayer(en.id, pi, { name: e.target.value })}
+                                />
+                                <button
+                                  type="button"
+                                  tabIndex={-1}
+                                  onClick={() => {
+                                    setTargetSlot({
+                                      entryId: en.id,
+                                      playerIdx: pi,
+                                      initialQuery: p.name,
+                                      slotLabel: `${p.name || `VĐV ${pi + 1}`} (${en.teamName || `Đội ${i + 1}`})`,
+                                    });
+                                    setLookupModalOpen(true);
+                                  }}
+                                  className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 text-line/40 hover:text-line cursor-pointer"
+                                  title="DURP/PVNA"
+                                >
+                                  <svg className="size-3 stroke-line/40 hover:stroke-line/70" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                                    <circle cx="11" cy="11" r="7" />
+                                    <path d="m21 21-4.35-4.35" />
+                                  </svg>
+                                </button>
+                              </div>
+                              <RatingInput
+                                value={p.rating}
+                                onChange={(rating) => patchPlayer(en.id, pi, { rating })}
+                                className="field !w-[50px] !h-[28px] shrink-0 text-center !px-1 text-[12.5px] font-bold text-ink bg-white border border-line/25 rounded-lg shadow-2xs focus:ring-1 focus:ring-accent tabular-nums"
+                              />
+                              {en.players.length > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={() => removePlayerFromTeam(en.id, pi)}
+                                  className="p-1 text-line/30 hover:text-destructive hover:bg-black/5 rounded cursor-pointer shrink-0"
+                                  title="Bớt VĐV này khỏi đội"
+                                >
+                                  ✕
+                                </button>
+                              )}
                             </div>
-                            <RatingInput
-                              value={p.rating}
-                              onChange={(rating) => patchPlayer(en.id, pi, { rating })}
-                            />
-                          </div>
-                        );
-                      })}
-                    </div>
+                          ))}
+                        </div>
+                        <div className="pt-1 flex items-center justify-end">
+                          <button
+                            type="button"
+                            onClick={() => addPlayerToTeam(en.id)}
+                            className="text-xs font-semibold text-accent hover:text-accent-hover hover:underline cursor-pointer flex items-center gap-1 px-2.5 py-1 rounded hover:bg-accent/10"
+                          >
+                            <span>+</span> Thêm VĐV vào đội này
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ) : slots === 2 ? (
                   <div key={en.id} className="border-b border-line/10 last:border-b-0">
@@ -1092,99 +1541,14 @@ function PlayersPage() {
           </div>
         </div>
 
-        <div className="lg:col-span-5">
-          {ev.bracket === "rr" ? (
-            <div className="space-y-4">
-              <div className="rounded-2xl border border-line/20 bg-card p-4 shadow-sm space-y-3">
-                <div className="flex items-center justify-between">
-                  <h3 className="font-head text-base font-bold uppercase tracking-tight text-[#0a3320]">
-                    {isRotatingDoubles(ev)
-                      ? "VÒNG TRÒN ĐỔI PARTNER NGẪU NHIÊN"
-                      : "THI ĐẤU VÒNG TRÒN TÍNH ĐIỂM"}
-                  </h3>
-                  <span className="text-xs font-semibold text-accent">
-                    {entries.length} {ev.mode === "don" || isRotatingDoubles(ev) ? "VĐV" : "đội"}
-                  </span>
-                </div>
-
-                <p className="text-xs text-line/70 leading-relaxed">
-                  {isRotatingDoubles(ev) ? (
-                    (() => {
-                      const roundsCount =
-                        ev.randomRoundsCount && ev.randomRoundsCount > 0
-                          ? ev.randomRoundsCount
-                          : getRotatingMatchesPerPlayer(entries.length);
-                      const totalMatches = Math.floor((entries.length * roundsCount) / 4);
-                      return (
-                        <>
-                          Cơ chế bắt cặp ngẫu nhiên: Mỗi VĐV sẽ thi đấu đúng{" "}
-                          <strong>{roundsCount}</strong> trận (tổng cộng{" "}
-                          <strong>{totalMatches}</strong> trận). Đảm bảo số trận bằng nhau tuyệt đối và không trùng lặp partner. Điểm số tính cá nhân tích lũy qua từng trận đấu trong Quản lý giải.
-                        </>
-                      );
-                    })()
-                  ) : (
-                    <>
-                      Thể thức vòng tròn: Tất cả <strong>{entries.length}</strong>{" "}
-                      {ev.mode === "don" ? "VĐV" : "đội"} sẽ thi đấu lần lượt với nhau. Điểm số, hiệu số và bảng xếp hạng được tự động cập nhật trong Quản lý giải.
-                    </>
-                  )}
-                </p>
-
-                <div className="rounded-xl border border-line/15 divide-y divide-line/10 bg-white/70 dark:bg-card/70 overflow-hidden">
-                  {entries.length === 0 ? (
-                    <div className="p-4 text-center text-xs text-line/50">
-                      Chưa có VĐV nào trong danh sách.
-                    </div>
-                  ) : (
-                    entries.map((entry, idx) => (
-                      <div
-                        key={entry.id}
-                        className="flex items-center justify-between px-3 py-2 text-xs hover:bg-secondary/30 transition"
-                      >
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <span className="font-head font-bold text-line/40 w-4 shrink-0">
-                            {idx + 1}
-                          </span>
-                          <input
-                            type="checkbox"
-                            checked={Boolean(entry.players[0]?.paid)}
-                            onChange={(e) => {
-                              const checked = e.target.checked;
-                              patchPlayer(entry.id, 0, { paid: checked });
-                            }}
-                            className="size-3.5 rounded accent-[oklch(0.615_0.145_154.2)] cursor-pointer shrink-0"
-                            title="Tình trạng đóng phí"
-                          />
-                          <span className="font-medium text-ink truncate">
-                            {entryName(entry)}
-                          </span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => removeEntry(entry.id)}
-                          className="size-5 rounded flex items-center justify-center text-red-500 hover:bg-red-50 font-bold text-xs cursor-pointer transition shrink-0"
-                          title="Xóa khỏi danh sách"
-                        >
-                          —
-                        </button>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-
-              <Link to="/quan-ly-giai" className="btn-accent w-full justify-center">
-                Tiếp tục — Quản lý giải đấu
-              </Link>
-            </div>
-          ) : (
+        {showRightPanel && (
+          <div className="lg:col-span-5 space-y-4">
             <div>
               <div className="flex items-center justify-between">
                 <p className="eyebrow">Chia bảng</p>
                 {ev.groups.length > 0 && (
                   <button
-                    className="text-xs font-semibold text-accent hover:underline"
+                    className="text-xs font-semibold text-accent hover:underline cursor-pointer"
                     onClick={() => setShowPrintModal(true)}
                   >
                     📄 Xuất bảng đấu (In / PDF)
@@ -1192,240 +1556,409 @@ function PlayersPage() {
                 )}
               </div>
 
-          <div className="mt-2 flex flex-wrap items-end gap-2">
-            <div>
-              <span className="block text-xs font-semibold uppercase tracking-wide text-line/70">
-                Số bảng
-              </span>
-              <input
-                type="number"
-                min={1}
-                max={64}
-                className="field mt-1.5 w-20 text-center"
-                value={ev.groupCount}
-                onChange={(e) => handleGroupCountChange(Number(e.target.value) || 1)}
-              />
-            </div>
-            <button
-              className="btn-accent"
-              onClick={autoGroups}
-              title="Tự động chia và xáo trộn ngẫu nhiên các đội vào các bảng"
-            >
-              Chia bảng tự động
-            </button>
-            <button
-              className="btn-ghost"
-              onClick={() =>
-                updateEvent(ev.id, {
-                  groups: Array.from({ length: ev.groupCount }, (_, i) => ({
-                    name: getGroupName(i),
-                    entryIds: [],
-                  })),
-                })
-              }
-            >
-              Làm trống
-            </button>
-          </div>
-
-          <p className="mt-3 text-xs text-line/60">
-            💡 Kéo thả thẻ đội vào các ô bảng bên dưới để chia thủ công theo ý bạn.
-          </p>
-
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            {ev.groups.map((g, gi) => (
-              <div
-                key={g.name}
-                className={`panel p-3 transition-colors ${
-                  dragEntryId ? "border-2 border-dashed border-accent/40 bg-accent/5" : ""
-                }`}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = "move";
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  const id = e.dataTransfer.getData("text/plain") || dragEntryId;
-                  if (id) moveEntry(id, gi);
-                  setDragEntryId(null);
-                }}
-              >
-                <div className="flex items-center justify-between">
-                  <p className="font-head text-lg font-bold uppercase tracking-tight text-accent">
-                    {g.name}
-                  </p>
-                  <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-bold text-accent">
-                    {g.entryIds.length} đội
+              <div className="mt-2 flex flex-wrap items-end gap-2">
+                <div>
+                  <span className="block text-xs font-semibold uppercase tracking-wide text-line/70">
+                    Số bảng
                   </span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={64}
+                    className="field mt-1.5 w-20 text-center"
+                    value={ev.groupCount}
+                    onChange={(e) => handleGroupCountChange(Number(e.target.value) || 1)}
+                  />
                 </div>
-                <div className="mt-2 min-h-[60px] space-y-1.5">
-                  {g.entryIds.length === 0 ? (
-                    <div className="flex h-[56px] items-center justify-center rounded-lg border border-dashed border-line/20 text-xs text-line/40">
-                      Thả đội vào đây
-                    </div>
-                  ) : (
-                    g.entryIds.map((id) => {
-                      const entry = entries.find((e) => e.id === id);
-                      const pts = entry ? entry.players.reduce((sum, p) => sum + (p.rating ?? 0), 0) : 0;
-                      return (
-                        <div
-                          key={id}
-                          draggable
-                          onDragStart={(e) => {
-                            e.dataTransfer.setData("text/plain", id);
-                            setDragEntryId(id);
-                          }}
-                          onDragEnd={() => setDragEntryId(null)}
-                          onDragOver={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            e.dataTransfer.dropEffect = "move";
-                          }}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            const sourceId = e.dataTransfer.getData("text/plain") || dragEntryId;
-                            if (sourceId && sourceId !== id) {
-                              swapEntriesInGroups(sourceId, id);
-                              setDragEntryId(null);
-                            }
-                          }}
-                          className="flex cursor-grab items-center justify-between gap-1.5 rounded-lg bg-paper p-2 text-xs font-semibold shadow-xs ring-1 ring-line/15 active:cursor-grabbing hover:ring-accent/60"
-                        >
-                          <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                            {/* Ô tích đóng phí cho từng VĐV trong đội */}
-                            {entry && (
-                              <div
-                                className="flex items-center gap-1 shrink-0"
-                                onClick={(e) => e.stopPropagation()}
-                              >
-                                {entry.players.map((p, pIdx) => (
-                                  <input
-                                    key={pIdx}
-                                    type="checkbox"
-                                    checked={Boolean(p.paid)}
-                                    title={`${p.name || `VĐV ${pIdx + 1}`}: ${Boolean(p.paid) ? "Đã đóng phí" : "Chưa đóng phí"}`}
-                                    className="size-3.5 rounded accent-[oklch(0.615_0.145_154.2)] cursor-pointer"
-                                    onChange={(e) => {
-                                      const checked = e.target.checked;
-                                      patchPlayer(entry.id, pIdx, { paid: checked });
-                                    }}
-                                  />
-                                ))}
-                              </div>
-                            )}
-                            <span className="truncate flex-1">{entryName(entry)}</span>
-                          </div>
-                          {pts > 0 && (
-                            <span className="shrink-0 rounded bg-accent/15 px-1 py-0.5 text-[10px] font-bold text-accent">
-                              {formatRating(Number(pts.toFixed(4)))}
-                            </span>
-                          )}
-                          <button
-                            className="text-line/40 hover:text-destructive shrink-0"
-                            onClick={() => removeFromGroups(id)}
-                            title="Bỏ khỏi bảng"
-                          >
-                            ✕
-                          </button>
-                        </div>
-                      );
+                <button
+                  className="btn-accent"
+                  onClick={autoGroups}
+                  title="Tự động chia và xáo trộn ngẫu nhiên các đội vào các bảng"
+                >
+                  Chia bảng tự động
+                </button>
+                <button
+                  className="btn-ghost"
+                  onClick={() =>
+                    updateEvent(ev.id, {
+                      groups: Array.from({ length: ev.groupCount }, (_, i) => ({
+                        name: getGroupName(i),
+                        entryIds: [],
+                      })),
                     })
-                  )}
-                </div>
+                  }
+                >
+                  Làm trống
+                </button>
               </div>
-            ))}
-          </div>
 
-          {/* Khu vực các đội chưa xếp bảng */}
-          {ev.groups.length > 0 &&
-          entries.some((e) => !ev.groups.some((g) => g.entryIds.includes(e.id))) ? (
-            <div
-              className="panel mt-4 p-3.5"
-              onDragOver={(e) => {
-                e.preventDefault();
-                e.dataTransfer.dropEffect = "move";
-              }}
-              onDrop={(e) => {
-                e.preventDefault();
-                const id = e.dataTransfer.getData("text/plain") || dragEntryId;
-                if (id) removeFromGroups(id);
-                setDragEntryId(null);
-              }}
-            >
-              <div className="flex items-center justify-between">
-                <p className="text-xs font-bold uppercase tracking-wide text-line/70">
-                  Chưa xếp bảng ({entries.filter((e) => !ev.groups.some((g) => g.entryIds.includes(e.id))).length} đội)
-                </p>
-                <span className="text-[11px] text-line/50">Kéo thả vào các bảng ở trên</span>
-              </div>
-              <div className="mt-2.5 flex flex-wrap gap-2">
-                {entries
-                  .filter((e) => !ev.groups.some((g) => g.entryIds.includes(e.id)))
-                  .map((e) => {
-                    const pts = e.players.reduce((sum, p) => sum + (p.rating ?? 0), 0);
-                    return (
-                      <div
-                        key={e.id}
-                        draggable
-                        onDragStart={(evt) => {
-                          evt.dataTransfer.setData("text/plain", e.id);
-                          setDragEntryId(e.id);
-                        }}
-                        onDragEnd={() => setDragEntryId(null)}
-                        className="flex cursor-grab items-center gap-2 rounded-lg bg-card px-2.5 py-1.5 text-xs font-semibold shadow-xs ring-1 ring-line/20 active:cursor-grabbing hover:border-accent hover:ring-accent"
-                      >
-                        {/* Ô tích đóng phí cho từng VĐV */}
-                        <div
-                          className="flex items-center gap-1 shrink-0"
-                          onClick={(evt) => evt.stopPropagation()}
-                        >
-                          {e.players.map((p, pIdx) => (
-                            <input
-                              key={pIdx}
-                              type="checkbox"
-                              checked={Boolean(p.paid)}
-                              title={`${p.name || `VĐV ${pIdx + 1}`}: ${Boolean(p.paid) ? "Đã đóng phí" : "Chưa đóng phí"}`}
-                              className="size-3.5 rounded accent-[oklch(0.615_0.145_154.2)] cursor-pointer"
-                              onChange={(evt) => {
-                                const checked = evt.target.checked;
-                                patchPlayer(e.id, pIdx, { paid: checked });
-                              }}
-                            />
-                          ))}
+              <p className="mt-3 text-xs text-line/60">
+                💡 Kéo thả thẻ đội vào các ô bảng bên dưới để chia thủ công theo ý bạn.
+              </p>
+
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                {ev.groups.map((g, gi) => (
+                  <div
+                    key={g.name}
+                    data-group-idx={gi}
+                    className={`panel p-3 transition-colors ${
+                      touchOverGroupIdx === gi
+                        ? "border-2 border-accent bg-accent/15 ring-2 ring-accent/30"
+                        : dragEntryId
+                          ? "border-2 border-dashed border-accent/40 bg-accent/5"
+                          : ""
+                    }`}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = "move";
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      const id = e.dataTransfer.getData("text/plain") || dragEntryId;
+                      if (id) moveEntry(id, gi);
+                      setDragEntryId(null);
+                      setTouchOverGroupIdx(null);
+                    }}
+                  >
+                    <div className="flex items-center justify-between pointer-events-none">
+                      <p className="font-head text-lg font-bold uppercase tracking-tight text-accent">
+                        {g.name}
+                      </p>
+                      <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-bold text-accent">
+                        {g.entryIds.length} đội
+                      </span>
+                    </div>
+                    <div className="mt-2 min-h-[60px] space-y-1.5">
+                      {g.entryIds.length === 0 ? (
+                        <div className="flex h-[56px] items-center justify-center rounded-lg border border-dashed border-line/20 text-xs text-line/40 pointer-events-none">
+                          Thả đội vào đây
                         </div>
-                        <span className="truncate max-w-[140px]">{entryName(e)}</span>
-                        {pts > 0 && (
-                          <span className="rounded bg-accent/15 px-1 py-0.5 text-[10px] font-bold text-accent">
-                            {formatRating(Number(pts.toFixed(4)))}
-                          </span>
-                        )}
-                        <select
-                          className="rounded bg-paper px-1 py-0.5 text-[10px] ring-1 ring-line/15"
-                          value=""
-                          onChange={(x) => moveEntry(e.id, Number(x.target.value))}
-                        >
-                          <option value="">Vào bảng</option>
-                          {ev.groups.map((gg, i) => (
-                            <option key={gg.name} value={i}>
-                              {gg.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    );
-                  })}
-              </div>
-            </div>
-          ) : null}
+                      ) : (
+                        g.entryIds.map((id) => {
+                          const entry = entries.find((e) => e.id === id);
+                          const pts = entry ? entry.players.reduce((sum, p) => sum + (p.rating ?? 0), 0) : 0;
+                          const isPair = entry && entry.players.length === 2 && entry.players[0]?.name && entry.players[1]?.name;
+                          const isBeingDragged = dragEntryId === id;
+                          const isOverThisEntry = touchOverEntryId === id && dragEntryId !== id;
+                          return (
+                            <div
+                              key={id}
+                              data-group-entry-id={id}
+                              draggable
+                              onDragStart={(e) => {
+                                e.dataTransfer.setData("text/plain", id);
+                                setDragEntryId(id);
+                              }}
+                              onDragEnd={() => {
+                                setDragEntryId(null);
+                                setTouchOverGroupIdx(null);
+                                setTouchOverEntryId(null);
+                                setTouchOverUnassigned(false);
+                              }}
+                              onDragOver={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                e.dataTransfer.dropEffect = "move";
+                              }}
+                              onDrop={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                const sourceId = e.dataTransfer.getData("text/plain") || dragEntryId;
+                                if (sourceId && sourceId !== id) {
+                                  swapEntriesInGroups(sourceId, id);
+                                  setDragEntryId(null);
+                                }
+                              }}
+                              className={`flex items-center justify-between gap-1.5 rounded-lg bg-paper p-2 text-xs font-semibold shadow-xs ring-1 transition-all ${
+                                isBeingDragged
+                                  ? "opacity-50 ring-2 ring-accent border-dashed"
+                                  : isOverThisEntry
+                                    ? "ring-2 ring-accent bg-accent/15 scale-[1.01]"
+                                    : "ring-line/15 hover:ring-accent/60"
+                              }`}
+                            >
+                              <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                                {/* Nút kéo 6 chấm tròn hỗ trợ touch & mouse */}
+                                <div
+                                  style={{ touchAction: "none" }}
+                                  className="flex items-center justify-center p-1 cursor-grab active:cursor-grabbing text-line/40 hover:text-accent shrink-0 rounded hover:bg-black/5 dark:hover:bg-white/5"
+                                  title="Kéo thả để chuyển bảng hoặc đổi chỗ"
+                                  onTouchStart={() => {
+                                    setDragEntryId(id);
+                                    try { navigator.vibrate?.(15); } catch {}
+                                  }}
+                                  onTouchMove={(e) => {
+                                    const touch = e.touches[0];
+                                    if (!touch) return;
+                                    const target = document.elementFromPoint(touch.clientX, touch.clientY);
+                                    
+                                    const groupEl = target?.closest("[data-group-idx]");
+                                    if (groupEl) {
+                                      const gIdx = Number(groupEl.getAttribute("data-group-idx"));
+                                      if (!isNaN(gIdx)) setTouchOverGroupIdx(gIdx);
+                                    } else {
+                                      setTouchOverGroupIdx(null);
+                                    }
 
-          <Link to="/quan-ly-giai" className="btn-accent mt-4">
-            Tiếp tục — Quản lý giải đấu
-          </Link>
-        </div>
-      )}
-    </div>
-  </div>
+                                    const entryEl = target?.closest("[data-group-entry-id]");
+                                    if (entryEl) {
+                                      const targetEid = entryEl.getAttribute("data-group-entry-id");
+                                      if (targetEid && targetEid !== id) {
+                                        setTouchOverEntryId(targetEid);
+                                      } else {
+                                        setTouchOverEntryId(null);
+                                      }
+                                    } else {
+                                      setTouchOverEntryId(null);
+                                    }
+
+                                    const unassignedEl = target?.closest("[data-unassigned-pool]");
+                                    setTouchOverUnassigned(Boolean(unassignedEl));
+                                  }}
+                                  onTouchEnd={() => {
+                                    if (dragEntryId) {
+                                      if (touchOverEntryId && touchOverEntryId !== dragEntryId) {
+                                        swapEntriesInGroups(dragEntryId, touchOverEntryId);
+                                        try { navigator.vibrate?.(25); } catch {}
+                                      } else if (touchOverGroupIdx !== null) {
+                                        moveEntry(dragEntryId, touchOverGroupIdx);
+                                        try { navigator.vibrate?.(25); } catch {}
+                                      } else if (touchOverUnassigned) {
+                                        removeFromGroups(dragEntryId);
+                                        try { navigator.vibrate?.(25); } catch {}
+                                      }
+                                    }
+                                    setDragEntryId(null);
+                                    setTouchOverGroupIdx(null);
+                                    setTouchOverEntryId(null);
+                                    setTouchOverUnassigned(false);
+                                  }}
+                                >
+                                  <svg className="size-3.5 shrink-0 pointer-events-none" viewBox="0 0 16 16" fill="currentColor">
+                                    <circle cx="5" cy="4" r="1.5" />
+                                    <circle cx="11" cy="4" r="1.5" />
+                                    <circle cx="5" cy="8" r="1.5" />
+                                    <circle cx="11" cy="8" r="1.5" />
+                                    <circle cx="5" cy="12" r="1.5" />
+                                    <circle cx="11" cy="12" r="1.5" />
+                                  </svg>
+                                </div>
+
+                                {entry && (
+                                  <div
+                                    className="flex items-center gap-1 shrink-0"
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    {entry.players.map((p, pIdx) => (
+                                      <input
+                                        key={pIdx}
+                                        type="checkbox"
+                                        checked={Boolean(p.paid)}
+                                        title={`${p.name || `VĐV ${pIdx + 1}`}: ${Boolean(p.paid) ? "Đã đóng phí" : "Chưa đóng phí"}`}
+                                        className="size-3.5 rounded accent-[oklch(0.615_0.145_154.2)] cursor-pointer"
+                                        onChange={(e) => {
+                                          const checked = e.target.checked;
+                                          patchPlayer(entry.id, pIdx, { paid: checked });
+                                        }}
+                                      />
+                                    ))}
+                                  </div>
+                                )}
+                                {isPair ? (
+                                  <div className="flex flex-col min-w-0 flex-1">
+                                    <span className="truncate font-bold text-ink">
+                                      {entry.players[0]?.name} / {entry.players[1]?.name}
+                                    </span>
+                                    <span className="text-[10px] text-line/60">
+                                      Tổng điểm: <strong className="text-accent font-bold">{pts > 0 ? formatRating(Number(pts.toFixed(4))) : "0"}</strong>
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                                    <span className="truncate flex-1">{entryName(entry)}</span>
+                                    {pts > 0 && (
+                                      <span className="shrink-0 rounded bg-accent/15 px-1 py-0.5 text-[10px] font-bold text-accent">
+                                        {formatRating(Number(pts.toFixed(4)))}
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                              <button
+                                className="text-line/40 hover:text-destructive shrink-0 p-1 cursor-pointer"
+                                onClick={() => removeFromGroups(id)}
+                                title="Bỏ khỏi bảng"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Khu vực các đội chưa xếp bảng */}
+              {ev.groups.length > 0 &&
+              entries.some((e) => !ev.groups.some((g) => g.entryIds.includes(e.id))) ? (
+                <div
+                  data-unassigned-pool="true"
+                  className={`panel mt-4 p-3.5 transition-colors ${
+                    touchOverUnassigned
+                      ? "border-2 border-accent bg-accent/15 ring-2 ring-accent/30"
+                      : ""
+                  }`}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const id = e.dataTransfer.getData("text/plain") || dragEntryId;
+                    if (id) removeFromGroups(id);
+                    setDragEntryId(null);
+                    setTouchOverUnassigned(false);
+                  }}
+                >
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-bold uppercase tracking-wide text-line/70">
+                      Chưa xếp bảng ({entries.filter((e) => !ev.groups.some((g) => g.entryIds.includes(e.id))).length} đội)
+                    </p>
+                    <span className="text-[11px] text-line/50">Kéo thả vào các bảng ở trên</span>
+                  </div>
+                  <div className="mt-2.5 flex flex-wrap gap-2">
+                    {entries
+                      .filter((e) => !ev.groups.some((g) => g.entryIds.includes(e.id)))
+                      .map((e) => {
+                        const pts = e.players.reduce((sum, p) => sum + (p.rating ?? 0), 0);
+                        const isPair = e.players.length === 2 && e.players[0]?.name && e.players[1]?.name;
+                        const isBeingDragged = dragEntryId === e.id;
+                        return (
+                          <div
+                            key={e.id}
+                            draggable
+                            onDragStart={(evt) => {
+                              evt.dataTransfer.setData("text/plain", e.id);
+                              setDragEntryId(e.id);
+                            }}
+                            onDragEnd={() => {
+                              setDragEntryId(null);
+                              setTouchOverGroupIdx(null);
+                              setTouchOverUnassigned(false);
+                            }}
+                            className={`flex items-center gap-1.5 rounded-lg bg-card px-2.5 py-1.5 text-xs font-semibold shadow-xs ring-1 transition-all ${
+                              isBeingDragged
+                                ? "opacity-50 ring-2 ring-accent"
+                                : "ring-line/20 hover:border-accent hover:ring-accent"
+                            }`}
+                          >
+                            {/* Nút kéo 6 chấm tròn hỗ trợ touch & mouse */}
+                            <div
+                              style={{ touchAction: "none" }}
+                              className="flex items-center justify-center p-0.5 cursor-grab active:cursor-grabbing text-line/40 hover:text-accent shrink-0 rounded hover:bg-black/5 dark:hover:bg-white/5"
+                              title="Kéo thả vào ô bảng ở trên"
+                              onTouchStart={() => {
+                                setDragEntryId(e.id);
+                                try { navigator.vibrate?.(15); } catch {}
+                              }}
+                              onTouchMove={(evt) => {
+                                const touch = evt.touches[0];
+                                if (!touch) return;
+                                const target = document.elementFromPoint(touch.clientX, touch.clientY);
+                                const groupEl = target?.closest("[data-group-idx]");
+                                if (groupEl) {
+                                  const gIdx = Number(groupEl.getAttribute("data-group-idx"));
+                                  if (!isNaN(gIdx)) {
+                                    setTouchOverGroupIdx(gIdx);
+                                  }
+                                } else {
+                                  setTouchOverGroupIdx(null);
+                                }
+                              }}
+                              onTouchEnd={() => {
+                                if (dragEntryId && touchOverGroupIdx !== null) {
+                                  moveEntry(dragEntryId, touchOverGroupIdx);
+                                  try { navigator.vibrate?.(25); } catch {}
+                                }
+                                setDragEntryId(null);
+                                setTouchOverGroupIdx(null);
+                              }}
+                            >
+                              <svg className="size-3.5 shrink-0 pointer-events-none" viewBox="0 0 16 16" fill="currentColor">
+                                <circle cx="5" cy="4" r="1.5" />
+                                <circle cx="11" cy="4" r="1.5" />
+                                <circle cx="5" cy="8" r="1.5" />
+                                <circle cx="11" cy="8" r="1.5" />
+                                <circle cx="5" cy="12" r="1.5" />
+                                <circle cx="11" cy="12" r="1.5" />
+                              </svg>
+                            </div>
+
+                            <div
+                              className="flex items-center gap-1 shrink-0"
+                              onClick={(evt) => evt.stopPropagation()}
+                            >
+                              {e.players.map((p, pIdx) => (
+                                <input
+                                  key={pIdx}
+                                  type="checkbox"
+                                  checked={Boolean(p.paid)}
+                                  title={`${p.name || `VĐV ${pIdx + 1}`}: ${Boolean(p.paid) ? "Đã đóng phí" : "Chưa đóng phí"}`}
+                                  className="size-3.5 rounded accent-[oklch(0.615_0.145_154.2)] cursor-pointer"
+                                  onChange={(evt) => {
+                                    const checked = evt.target.checked;
+                                    patchPlayer(e.id, pIdx, { paid: checked });
+                                  }}
+                                />
+                              ))}
+                            </div>
+                            {isPair ? (
+                              <div className="flex flex-col min-w-0 flex-1">
+                                <span className="truncate max-w-[150px] font-bold text-ink">
+                                  {e.players[0]?.name || "VĐV 1"} / {e.players[1]?.name || "VĐV 2"}
+                                </span>
+                                <span className="text-[10px] text-line/60">
+                                  Tổng điểm: <strong className="text-accent font-bold">{pts > 0 ? formatRating(Number(pts.toFixed(4))) : "0"}</strong>
+                                </span>
+                              </div>
+                            ) : (
+                              <>
+                                <span className="truncate max-w-[140px]">{entryName(e)}</span>
+                                {pts > 0 && (
+                                  <span className="rounded bg-accent/15 px-1 py-0.5 text-[10px] font-bold text-accent">
+                                    {formatRating(Number(pts.toFixed(4)))}
+                                  </span>
+                                )}
+                              </>
+                            )}
+                            <select
+                              className="rounded bg-paper px-1 py-0.5 text-[10px] ring-1 ring-line/15"
+                              value=""
+                              onChange={(x) => moveEntry(e.id, Number(x.target.value))}
+                            >
+                              <option value="">Vào bảng</option>
+                              {ev.groups.map((gg, i) => (
+                                <option key={gg.name} value={i}>
+                                  {gg.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        );
+                      })}
+                  </div>
+                </div>
+              ) : null}
+
+              <Link to="/quan-ly-giai" className="btn-accent mt-4">
+                Tiếp tục — Quản lý giải đấu
+              </Link>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Modal Xuất Bảng Đấu (PDF / In) */}
       {showPrintModal && (
@@ -1441,6 +1974,20 @@ function PlayersPage() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
+                {isTeamMode && (
+                  <button
+                    type="button"
+                    onClick={() => setShowTeamMembersInPrint((v) => !v)}
+                    className={`text-xs px-2.5 py-1.5 rounded-lg border font-semibold flex items-center gap-1.5 cursor-pointer transition ${
+                      showTeamMembersInPrint
+                        ? "bg-accent text-accent-foreground border-accent shadow-xs"
+                        : "bg-card text-line/80 border-line/20 hover:bg-card/80"
+                    }`}
+                    title="Bật/Tắt hiển thị danh sách các VĐV trong từng đội trên bảng in"
+                  >
+                    <span>{showTeamMembersInPrint ? "✓ Đang hiện thành viên" : "👥 Hiện thành viên đội"}</span>
+                  </button>
+                )}
                 <button
                   className="btn-accent text-xs !py-1.5"
                   onClick={() => window.print()}
@@ -1486,13 +2033,28 @@ function PlayersPage() {
                       {g.entryIds.map((id, idx) => {
                         const entry = entries.find((e) => e.id === id);
                         return (
-                          <div key={id} className="flex items-center py-1.5 text-xs">
-                            <span className="font-head font-bold text-line/40 w-4 shrink-0">
-                              {idx + 1}.
-                            </span>
-                            <span className="font-medium text-line truncate">
-                              {entryName(entry)}
-                            </span>
+                          <div key={id} className="py-1.5 text-xs">
+                            <div className="flex items-center">
+                              <span className="font-head font-bold text-line/40 w-4 shrink-0">
+                                {idx + 1}.
+                              </span>
+                              <span className="font-semibold text-line truncate">
+                                {entryName(entry)}
+                              </span>
+                            </div>
+                            {showTeamMembersInPrint && isTeamMode && entry && (
+                              <div className="pl-4 mt-1 grid grid-cols-4 gap-1 text-[10px] text-line/80 font-medium">
+                                {entry.players.slice(0, 4).map((p, pidx) => (
+                                  <span
+                                    key={pidx}
+                                    className="truncate text-center bg-black/5 dark:bg-white/5 px-1 py-0.5 rounded border border-line/10 leading-tight"
+                                    title={p.name || "—"}
+                                  >
+                                    {p.name || "—"}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         );
                       })}
@@ -1566,9 +2128,11 @@ function formatRating(v: number | null | undefined): string {
 function RatingInput({
   value,
   onChange,
+  className,
 }: {
   value: number | null;
   onChange: (v: number | null) => void;
+  className?: string;
 }) {
   const [raw, setRaw] = useState(formatRating(value));
   useEffect(() => {
@@ -1589,7 +2153,10 @@ function RatingInput({
 
   return (
     <input
-      className="field !w-16 sm:!w-20 shrink-0 text-center !px-1 text-xs sm:text-sm font-semibold tabular-nums"
+      className={
+        className ||
+        "field !w-16 sm:!w-20 shrink-0 text-center !px-1 text-xs sm:text-sm font-semibold tabular-nums"
+      }
       placeholder="—"
       inputMode="decimal"
       value={raw}
