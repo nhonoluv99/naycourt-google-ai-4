@@ -17,7 +17,10 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
   const { state, update, user, activeTournamentId, saveCurrentToArchive, loginWithGoogle } = useTournament();
   const [tab, setTab] = useState<"email" | "qr">("email");
   const [inputEmail, setInputEmail] = useState("");
+  const [inputName, setInputName] = useState("");
   const [inputRole, setInputRole] = useState<CollaboratorRole>("editor");
+  const [editingNameEmail, setEditingNameEmail] = useState<string | null>(null);
+  const [editingNameVal, setEditingNameVal] = useState("");
   const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
   const [isPublicLive, setIsPublicLive] = useState(true);
   const [qrDataUrl, setQrDataUrl] = useState<string>("");
@@ -74,11 +77,12 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
 
   const persistCollaborators = async (
     updatedList: Collaborator[],
-    updatedPublic: boolean = isPublicLive
+    updatedPublic: boolean = isPublicLive,
+    extraPatch?: Partial<typeof state>
   ) => {
     setIsSaving(true);
     try {
-      update({ collaborators: updatedList, isPublicLive: updatedPublic });
+      update({ collaborators: updatedList, isPublicLive: updatedPublic, ...(extraPatch || {}) });
       if (activeTournamentId) {
         await updateTournamentCollaborators(activeTournamentId, updatedList, updatedPublic);
       }
@@ -91,6 +95,12 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const getRoleLabel = (role: CollaboratorRole) => {
+    if (role === "editor") return "Chỉnh sửa";
+    if (role === "referee") return "Trọng tài";
+    return "Chỉ xem";
   };
 
   const handleAddCollaborator = async (e: React.FormEvent) => {
@@ -115,9 +125,15 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
       return;
     }
 
+    const cleanRefName =
+      inputRole === "referee"
+        ? (inputName.trim() || clean.split("@")[0] || clean)
+        : undefined;
+
     const newCollab: Collaborator = {
       email: clean,
       role: inputRole,
+      ...(cleanRefName ? { name: cleanRefName } : {}),
       addedAt: new Date().toISOString(),
       addedBy: user?.email || "Chủ giải",
     };
@@ -125,15 +141,76 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
     const updated = [...collaborators, newCollab];
     setCollaborators(updated);
     setInputEmail("");
-    await persistCollaborators(updated);
-    toast.success(`Đã thêm ${clean} với quyền ${inputRole === "editor" ? "Chỉnh sửa" : "Chỉ xem"}!`);
+    setInputName("");
+
+    let extraPatch: Partial<typeof state> | undefined;
+    if (cleanRefName) {
+      const existingRefs = state.referees || [];
+      if (!existingRefs.includes(cleanRefName)) {
+        extraPatch = { referees: [...existingRefs, cleanRefName] };
+      }
+    }
+
+    await persistCollaborators(updated, isPublicLive, extraPatch);
+    toast.success(
+      cleanRefName
+        ? `Đã thêm trọng tài "${cleanRefName}" (${clean})!`
+        : `Đã thêm ${clean} với quyền ${getRoleLabel(inputRole)}!`,
+    );
   };
 
   const handleChangeRole = async (email: string, newRole: CollaboratorRole) => {
-    const updated = collaborators.map((c) => (c.email === email ? { ...c, role: newRole } : c));
+    let addedRefName: string | undefined;
+    const updated = collaborators.map((c) => {
+      if (c.email !== email) return c;
+      if (newRole === "referee") {
+        const refName = c.name?.trim() || c.email.split("@")[0] || c.email;
+        addedRefName = refName;
+        return { ...c, role: newRole, name: refName };
+      }
+      return { ...c, role: newRole };
+    });
     setCollaborators(updated);
-    await persistCollaborators(updated);
-    toast.success(`Đã đổi quyền của ${email} thành "${newRole === "editor" ? "Chỉnh sửa" : "Chỉ xem"}"`);
+
+    let extraPatch: Partial<typeof state> | undefined;
+    if (addedRefName) {
+      const existingRefs = state.referees || [];
+      if (!existingRefs.includes(addedRefName)) {
+        extraPatch = { referees: [...existingRefs, addedRefName] };
+      }
+    }
+
+    await persistCollaborators(updated, isPublicLive, extraPatch);
+    toast.success(`Đã đổi quyền của ${email} thành "${getRoleLabel(newRole)}"`);
+  };
+
+  const handleSaveRefereeName = async (email: string) => {
+    const trimmed = editingNameVal.trim();
+    if (!trimmed) {
+      setEditingNameEmail(null);
+      return;
+    }
+    const target = collaborators.find((c) => c.email === email);
+    const oldName = target?.name?.trim() || "";
+    const updated = collaborators.map((c) =>
+      c.email === email ? { ...c, name: trimmed } : c,
+    );
+    setCollaborators(updated);
+    setEditingNameEmail(null);
+
+    const existingRefs = (state.referees || []).filter((r) => r !== oldName);
+    const nextRefs = existingRefs.includes(trimmed) ? existingRefs : [...existingRefs, trimmed];
+    const nextMatches = oldName
+      ? state.matches.map((m) =>
+          (m.referee || "").trim() === oldName ? { ...m, referee: trimmed } : m,
+        )
+      : state.matches;
+
+    await persistCollaborators(updated, isPublicLive, {
+      referees: nextRefs,
+      matches: nextMatches,
+    });
+    toast.success(`Đã cập nhật tên trọng tài thành "${trimmed}".`);
   };
 
   const handleRemoveCollaborator = async (email: string) => {
@@ -149,13 +226,175 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
     toast.success("Đã sao chép link xem trực tiếp vào bộ nhớ tạm!");
   };
 
-  const handleDownloadQr = () => {
+  const handleDownloadQr = async () => {
     if (!qrDataUrl) return;
-    const a = document.createElement("a");
-    a.href = qrDataUrl;
-    a.download = `QR_TheoDoi_${(state.name || "Giai_Dau").replace(/\s+/g, "_")}.png`;
-    a.click();
-    toast.success("Đã tải ảnh mã QR về máy!");
+    try {
+      const qrImg = new Image();
+      qrImg.src = qrDataUrl;
+      await new Promise<void>((resolve, reject) => {
+        qrImg.onload = () => resolve();
+        qrImg.onerror = () => reject(new Error("Failed to load QR image"));
+      });
+
+      const W = 1000;
+      const padX = 72;
+      const maxTextW = W - padX * 2;
+      const fontFamily = `-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+
+      const measureCanvas = document.createElement("canvas");
+      const mCtx = measureCanvas.getContext("2d");
+      if (!mCtx) return;
+
+      const wrapText = (ctx: CanvasRenderingContext2D, text: string, maxW: number): string[] => {
+        const words = text.split(/\s+/).filter(Boolean);
+        const lines: string[] = [];
+        let current = "";
+        for (const word of words) {
+          const test = current ? `${current} ${word}` : word;
+          if (ctx.measureText(test).width <= maxW) {
+            current = test;
+          } else {
+            if (current) lines.push(current);
+            current = word;
+          }
+        }
+        if (current) lines.push(current);
+        return lines.length > 0 ? lines : [""];
+      };
+
+      const titleText = (state.name || "GIẢI ĐẤU PICKLEBALL").trim().toUpperCase();
+      const subtitleText =
+        "Quét mã QR để xem trực tiếp lịch thi đấu, bảng xếp hạng và tỉ số theo thời gian thực";
+      const tipText = "Không cần cài ứng dụng • Không cần đăng nhập tài khoản";
+      const brandLine =
+        "Nảy Court . Hệ thống quản lý điều hành giải chuyên nghiệp, hiện đại, đầy khả ái và ngây ngất lòng người...";
+      const websiteLine = "naycourt.ai.studio";
+      const phoneLine = "0929700148";
+
+      mCtx.font = `800 44px ${fontFamily}`;
+      const titleLines = wrapText(mCtx, titleText, maxTextW);
+
+      mCtx.font = `400 23px ${fontFamily}`;
+      const subtitleLines = wrapText(mCtx, subtitleText, maxTextW);
+
+      mCtx.font = `400 15.5px ${fontFamily}`;
+      const brandLines = wrapText(mCtx, brandLine, 760);
+
+      const topPad = 68;
+      const titleLineH = 54;
+      const subLineH = 32;
+      const boxSize = 480;
+      const qrSize = 416;
+      const boxRadius = 32;
+      const bottomPad = 64;
+
+      const totalH =
+        topPad +
+        titleLines.length * titleLineH +
+        14 +
+        subtitleLines.length * subLineH +
+        38 +
+        boxSize +
+        34 +
+        26 +
+        24 +
+        brandLines.length * 22 +
+        48 +
+        bottomPad;
+
+      const canvas = document.createElement("canvas");
+      canvas.width = W;
+      canvas.height = totalH;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      // Nền trắng sạch
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, W, totalH);
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+
+      let y = topPad;
+
+      // Tên giải đấu
+      ctx.fillStyle = "#093220";
+      ctx.font = `800 44px ${fontFamily}`;
+      for (const line of titleLines) {
+        ctx.fillText(line, W / 2, y);
+        y += titleLineH;
+      }
+
+      y += 14;
+
+      // Dòng mô tả quét QR
+      ctx.fillStyle = "#374151";
+      ctx.font = `400 23px ${fontFamily}`;
+      for (const line of subtitleLines) {
+        ctx.fillText(line, W / 2, y);
+        y += subLineH;
+      }
+
+      y += 38;
+
+      // Khung viền bo góc chứa QR
+      const boxX = (W - boxSize) / 2;
+      const boxY = y;
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(boxX + boxRadius, boxY);
+      ctx.lineTo(boxX + boxSize - boxRadius, boxY);
+      ctx.quadraticCurveTo(boxX + boxSize, boxY, boxX + boxSize, boxY + boxRadius);
+      ctx.lineTo(boxX + boxSize, boxY + boxSize - boxRadius);
+      ctx.quadraticCurveTo(boxX + boxSize, boxY + boxSize, boxX + boxSize - boxRadius, boxY + boxSize);
+      ctx.lineTo(boxX + boxRadius, boxY + boxSize);
+      ctx.quadraticCurveTo(boxX, boxY + boxSize, boxX, boxY + boxSize - boxRadius);
+      ctx.lineTo(boxX, boxY + boxRadius);
+      ctx.quadraticCurveTo(boxX, boxY, boxX + boxRadius, boxY);
+      ctx.closePath();
+      ctx.fillStyle = "#ffffff";
+      ctx.fill();
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = "#093220";
+      ctx.stroke();
+      ctx.restore();
+
+      // Ảnh mã QR
+      ctx.drawImage(qrImg, boxX + (boxSize - qrSize) / 2, boxY + (boxSize - qrSize) / 2, qrSize, qrSize);
+      y += boxSize + 34;
+
+      // Dòng tip chính
+      ctx.fillStyle = "#6b7280";
+      ctx.font = `400 20px ${fontFamily}`;
+      ctx.fillText(tipText, W / 2, y);
+      y += 26 + 24;
+
+      // Dòng chữ nhỏ Nảy Court bên dưới
+      ctx.fillStyle = "#6b7280";
+      ctx.font = `400 15.5px ${fontFamily}`;
+      for (const line of brandLines) {
+        ctx.fillText(line, W / 2, y);
+        y += 22;
+      }
+
+      ctx.fillStyle = "#093220";
+      ctx.font = `600 15.5px ${fontFamily}`;
+      ctx.fillText(websiteLine, W / 2, y + 2);
+      ctx.fillText(phoneLine, W / 2, y + 24);
+
+      const pngUrl = canvas.toDataURL("image/png");
+      const a = document.createElement("a");
+      a.href = pngUrl;
+      a.download = `QR_TheoDoi_${(state.name || "Giai_Dau").replace(/\s+/g, "_")}.png`;
+      a.click();
+      toast.success("Đã tải ảnh mã QR đầy đủ thông tin về máy!");
+    } catch (e) {
+      console.error("Lỗi tạo ảnh QR:", e);
+      const a = document.createElement("a");
+      a.href = qrDataUrl;
+      a.download = `QR_TheoDoi_${(state.name || "Giai_Dau").replace(/\s+/g, "_")}.png`;
+      a.click();
+      toast.success("Đã tải ảnh mã QR về máy!");
+    }
   };
 
   const handlePrintQr = () => {
@@ -165,10 +404,14 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
       toast.error("Vui lòng cho phép mở popup để in mã QR.");
       return;
     }
+    const safeTitle = (state.name || "GIẢI ĐẤU PICKLEBALL")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
     printWindow.document.write(`
       <html>
         <head>
-          <title>Mã QR Theo Dõi Giải Đấu - ${state.name || "Pickleball"}</title>
+          <title>Mã QR Theo Dõi Giải Đấu - ${safeTitle}</title>
           <style>
             body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; text-align: center; padding: 40px; color: #093220; }
             h1 { font-size: 26px; margin-bottom: 8px; text-transform: uppercase; font-weight: 800; }
@@ -176,15 +419,22 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
             .qr-box { display: inline-block; padding: 20px; border: 4px solid #093220; border-radius: 20px; background: #fff; margin-bottom: 20px; }
             .qr-img { width: 280px; height: 280px; }
             .tip { font-size: 13px; color: #6b7280; margin-top: 10px; }
+            .brand-footer { font-size: 10.5px; color: #6b7280; margin-top: 14px; line-height: 1.55; max-width: 480px; margin-left: auto; margin-right: auto; }
+            .brand-contact { font-weight: 600; color: #093220; }
           </style>
         </head>
         <body>
-          <h1>${state.name || "GIẢI ĐẤU PICKLEBALL"}</h1>
+          <h1>${safeTitle}</h1>
           <p>Quét mã QR để xem trực tiếp lịch thi đấu, bảng xếp hạng và tỉ số theo thời gian thực</p>
           <div class="qr-box">
             <img class="qr-img" src="${qrDataUrl}" />
           </div>
           <div class="tip">Không cần cài ứng dụng • Không cần đăng nhập tài khoản</div>
+          <div class="brand-footer">
+            <div>Nảy Court . Hệ thống quản lý điều hành giải chuyên nghiệp, hiện đại, đầy khả ái và ngây ngất lòng người...</div>
+            <div class="brand-contact">naycourt.ai.studio</div>
+            <div class="brand-contact">0929700148</div>
+          </div>
           <script>
             window.onload = function() { window.print(); }
           </script>
@@ -247,12 +497,12 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
           {tab === "email" ? (
             <div className="space-y-5">
               {/* Form thêm email */}
-              <form onSubmit={handleAddCollaborator} className="rounded-xl border border-line/20 bg-paper/50 p-4 shadow-2xs">
+              <form onSubmit={handleAddCollaborator} className="rounded-xl border border-line/20 bg-paper/50 p-4 shadow-2xs space-y-2.5">
                 <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                   <input
                     type="email"
                     required
-                    placeholder="Nhập email người cần thêm (ví dụ: trongtai@gmail.com)"
+                    placeholder="Nhập email"
                     className="field flex-1 !text-xs !py-2"
                     value={inputEmail}
                     onChange={(e) => setInputEmail(e.target.value)}
@@ -263,6 +513,7 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
                     onChange={(e) => setInputRole(e.target.value as CollaboratorRole)}
                   >
                     <option value="editor">✏️ Có thể chỉnh sửa</option>
+                    <option value="referee">⚖️ Trọng tài</option>
                     <option value="viewer">👁️ Chỉ có thể xem</option>
                   </select>
                   <button
@@ -272,6 +523,18 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
                     + Thêm quyền
                   </button>
                 </div>
+                {inputRole === "referee" && (
+                  <div className="pt-1">
+                    <input
+                      type="text"
+                      required
+                      placeholder="Nhập tên"
+                      className="field w-full !text-xs !py-2 bg-white"
+                      value={inputName}
+                      onChange={(e) => setInputName(e.target.value)}
+                    />
+                  </div>
+                )}
               </form>
 
               {/* Danh sách người có quyền */}
@@ -289,11 +552,8 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
                         👑
                       </div>
                       <div className="min-w-0">
-                        <div className="font-bold text-ink truncate flex items-center gap-1.5">
+                        <div className="font-bold text-ink truncate">
                           <span>{user?.email || "Chủ giải đấu hiện tại"}</span>
-                          <span className="rounded bg-[#093220] text-white text-[9px] font-black px-1.5 py-0.2 uppercase">
-                            Chủ giải
-                          </span>
                         </div>
                         <span className="text-[10px] text-line/50">Toàn quyền quản trị và phân quyền</span>
                       </div>
@@ -309,44 +569,123 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
                       Chưa có email nào được cấp quyền. Hãy nhập email ở trên để cùng điều hành giải.
                     </div>
                   ) : (
-                    collaborators.map((c) => (
-                      <div key={c.email} className="flex items-center justify-between p-3 text-xs hover:bg-paper/30 transition">
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <div className="w-8 h-8 rounded-full bg-secondary text-line/70 flex items-center justify-center font-bold text-xs shrink-0">
-                            {c.email.charAt(0).toUpperCase()}
-                          </div>
-                          <div className="min-w-0">
-                            <span className="font-bold text-ink truncate block">{c.email}</span>
-                            <span className="text-[10px] text-line/50">
-                              Được thêm bởi {c.addedBy || "Chủ giải"} • {new Date(c.addedAt).toLocaleDateString("vi-VN")}
-                            </span>
-                          </div>
-                        </div>
+                    collaborators.map((c) => {
+                      const isRef = c.role === "referee";
+                      const isEditingThisName = editingNameEmail === c.email;
+                      const displayLabel = isRef
+                        ? c.name?.trim() || c.email.split("@")[0]
+                        : c.email;
 
-                        <div className="flex items-center gap-2 shrink-0">
-                          <select
-                            className={`rounded-lg px-2 py-1 text-xs font-bold border transition cursor-pointer ${
-                              c.role === "editor"
-                                ? "border-amber-500/40 bg-amber-50 text-amber-800"
-                                : "border-line/25 bg-card text-line/80"
-                            }`}
-                            value={c.role}
-                            onChange={(e) => handleChangeRole(c.email, e.target.value as CollaboratorRole)}
-                          >
-                            <option value="editor">✏️ Chỉnh sửa</option>
-                            <option value="viewer">👁️ Chỉ xem</option>
-                          </select>
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveCollaborator(c.email)}
-                            className="p-1 text-line/40 hover:text-red-600 rounded hover:bg-red-50 cursor-pointer transition"
-                            title="Xóa quyền truy cập"
-                          >
-                            🗑️
-                          </button>
+                      return (
+                        <div key={c.email} className="flex items-center justify-between gap-2 p-3 text-xs hover:bg-paper/30 transition">
+                          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                            <div
+                              className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs shrink-0 ${
+                                isRef
+                                  ? "bg-[#093220]/15 text-[#093220]"
+                                  : "bg-secondary text-line/70"
+                              }`}
+                            >
+                              {isRef ? "⚖️" : c.email.charAt(0).toUpperCase()}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              {isRef && isEditingThisName ? (
+                                <div className="flex items-center gap-1.5">
+                                  <input
+                                    type="text"
+                                    autoFocus
+                                    value={editingNameVal}
+                                    onChange={(e) => setEditingNameVal(e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") {
+                                        e.preventDefault();
+                                        void handleSaveRefereeName(c.email);
+                                      } else if (e.key === "Escape") {
+                                        setEditingNameEmail(null);
+                                      }
+                                    }}
+                                    className="rounded-md border border-[#093220]/40 bg-white px-2 py-1 text-xs font-bold text-ink outline-none w-44"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleSaveRefereeName(c.email)}
+                                    className="rounded-md bg-[#093220] px-2 py-1 text-[11px] font-bold text-white cursor-pointer"
+                                  >
+                                    Lưu
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingNameEmail(null)}
+                                    className="rounded-md px-1.5 py-1 text-[11px] text-line/60 hover:text-ink cursor-pointer"
+                                  >
+                                    Hủy
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <span className="font-bold text-ink truncate">{displayLabel}</span>
+                                  {isRef && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingNameEmail(c.email);
+                                        setEditingNameVal(c.name?.trim() || c.email.split("@")[0] || "");
+                                      }}
+                                      className="inline-flex items-center justify-center rounded p-1 text-line/55 hover:bg-[#093220]/10 hover:text-[#093220] shrink-0 cursor-pointer transition"
+                                      title="Đổi tên trọng tài"
+                                      aria-label="Đổi tên trọng tài"
+                                    >
+                                      <svg
+                                        className="size-3.5"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        strokeWidth="2"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                      >
+                                        <path d="M12 20h9" />
+                                        <path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4Z" />
+                                      </svg>
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+                              <span className="text-[10px] text-line/55 truncate block">
+                                {isRef ? `${c.email} • ` : ""}
+                                Được thêm bởi {c.addedBy || "Chủ giải"} • {new Date(c.addedAt).toLocaleDateString("vi-VN")}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            <select
+                              className={`rounded-lg px-2 py-1 text-xs font-bold border transition cursor-pointer ${
+                                c.role === "editor"
+                                  ? "border-amber-500/40 bg-amber-50 text-amber-800"
+                                  : c.role === "referee"
+                                    ? "border-[#093220]/30 bg-[#093220]/10 text-[#093220]"
+                                    : "border-line/25 bg-card text-line/80"
+                              }`}
+                              value={c.role}
+                              onChange={(e) => handleChangeRole(c.email, e.target.value as CollaboratorRole)}
+                            >
+                              <option value="editor">✏️ Chỉnh sửa</option>
+                              <option value="referee">⚖️ Trọng tài</option>
+                              <option value="viewer">👁️ Chỉ xem</option>
+                            </select>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveCollaborator(c.email)}
+                              className="p-1 text-line/40 hover:text-red-600 rounded hover:bg-red-50 cursor-pointer transition"
+                              title="Xóa quyền truy cập"
+                            >
+                              🗑️
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
               </div>

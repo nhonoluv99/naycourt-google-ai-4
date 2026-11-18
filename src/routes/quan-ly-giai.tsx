@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import * as React from "react";
@@ -26,9 +26,11 @@ import {
   getLiveTournamentIdFromUrl,
   getMatchEntryA,
   getMatchEntryB,
+  getRefereeCollaboratorForUser,
   getRotatingMatchesPerPlayer,
   groupColor,
   groupTag,
+  isMatchAssignedToRefereeUser,
   isRotatingDoubles,
   propagateKnockout,
   RANKING_CRITERIA_LABELS,
@@ -42,6 +44,7 @@ import {
   type TEvent,
 } from "@/lib/tournament-store";
 import { ShareCollaboratorsModal } from "@/components/ShareCollaboratorsModal";
+import { listSharedTournaments, type UserTournamentArchiveItem } from "@/lib/firebase";
 
 export const Route = createFileRoute("/quan-ly-giai")({
   head: () => ({
@@ -70,30 +73,46 @@ function ScoreBox({
   isWinning,
   compact,
   large,
+  readOnly,
 }: {
   value: number | null;
   onCommit: (v: number | null) => void;
   isWinning?: boolean;
   compact?: boolean;
   large?: boolean;
+  readOnly?: boolean;
 }) {
   const [raw, setRaw] = useState(value === null ? "" : String(value));
   useEffect(() => {
     setRaw(value === null ? "" : String(value));
   }, [value]);
+
+  const boxClass = `${
+    large
+      ? "w-14 px-2 py-1.5 text-base sm:text-lg"
+      : compact
+        ? "w-9 px-1 py-0.5 text-xs"
+        : "w-11 px-1 py-1 text-sm"
+  } rounded-md text-center font-bold ring-1 shrink-0 ${
+    isWinning
+      ? "bg-[#e44c11]/15 text-[#e44c11] ring-2 ring-[#e44c11] font-bold shadow-xs"
+      : "bg-card text-ink ring-line/20"
+  }`;
+
+  if (readOnly) {
+    return (
+      <div
+        className={`${boxClass} select-none`}
+        style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+      >
+        {value === null ? "—" : value}
+      </div>
+    );
+  }
+
   return (
     <input
-      className={`${
-        large
-          ? "w-14 px-2 py-1.5 text-base sm:text-lg"
-          : compact
-            ? "w-9 px-1 py-0.5 text-xs"
-            : "w-11 px-1 py-1 text-sm"
-      } rounded-md text-center font-bold ring-1 outline-none focus:ring-2 focus:ring-[#e44c11] transition-all shrink-0 ${
-        isWinning
-          ? "bg-[#e44c11]/15 text-[#e44c11] ring-2 ring-[#e44c11] font-bold shadow-xs"
-          : "bg-card text-ink ring-line/20"
-      }`}
+      className={`${boxClass} outline-none focus:ring-2 focus:ring-[#e44c11] transition-all`}
       style={{ fontFamily: "'Space Grotesk', sans-serif" }}
       inputMode="numeric"
       placeholder="—"
@@ -323,9 +342,11 @@ function LiveStopwatch({ startedAt, onReset }: { startedAt?: number; onReset?: (
 
   return (
     <span
-      className="text-[11px] font-bold text-red-600 dark:text-red-400 bg-red-500/10 px-2 py-0.5 rounded flex items-center gap-1 shadow-2xs shrink-0 select-none cursor-pointer"
+      className={`text-[11px] font-bold text-red-600 dark:text-red-400 bg-red-500/10 px-2 py-0.5 rounded flex items-center gap-1 shadow-2xs shrink-0 select-none ${
+        onReset ? "cursor-pointer" : ""
+      }`}
       style={{ fontFamily: "'Courier New', Courier, monospace" }}
-      title="Bấm để khởi động lại đồng hồ từ 00:00"
+      title={onReset ? "Bấm để khởi động lại đồng hồ từ 00:00" : undefined}
       onClick={onReset}
     >
       ⏱️ {mm}:{ss}
@@ -602,6 +623,7 @@ function TeamMatchModal({
   ev,
   onClose,
   onSave,
+  isReadOnly = false,
 }: {
   match: Match;
   entries: Entry[];
@@ -613,6 +635,7 @@ function TeamMatchModal({
     overallScoreB: number,
     done: boolean,
   ) => void;
+  isReadOnly?: boolean;
 }) {
   const entryA = getMatchEntryA(match, entries);
   const entryB = getMatchEntryB(match, entries);
@@ -627,6 +650,11 @@ function TeamMatchModal({
   }, [match, entryA, entryB, ev?.hasDreambreaker]);
 
   const [subMatches, setSubMatches] = useState<TeamSubMatch[]>(initialSubMatches);
+  useEffect(() => {
+    if (isReadOnly) {
+      setSubMatches(initialSubMatches);
+    }
+  }, [isReadOnly, initialSubMatches]);
   const [draggedMatchIdx, setDraggedMatchIdx] = useState<number | null>(null);
   const [dragOverMatchIdx, setDragOverMatchIdx] = useState<number | null>(null);
 
@@ -858,8 +886,12 @@ function TeamMatchModal({
               <div
                 key={sm.id}
                 data-submatch-idx={idx}
-                draggable
+                draggable={!isReadOnly}
                 onDragStart={(e) => {
+                  if (isReadOnly) {
+                    e.preventDefault();
+                    return;
+                  }
                   const target = e.target as HTMLElement;
                   if (target.closest("input, select, button")) {
                     e.preventDefault();
@@ -870,14 +902,17 @@ function TeamMatchModal({
                   e.dataTransfer.effectAllowed = "move";
                 }}
                 onDragOver={(e) => {
+                  if (isReadOnly) return;
                   e.preventDefault();
                   e.dataTransfer.dropEffect = "move";
                   if (dragOverMatchIdx !== idx) setDragOverMatchIdx(idx);
                 }}
                 onDragLeave={() => {
+                  if (isReadOnly) return;
                   if (dragOverMatchIdx === idx) setDragOverMatchIdx(null);
                 }}
                 onDrop={(e) => {
+                  if (isReadOnly) return;
                   e.preventDefault();
                   if (draggedMatchIdx !== null && draggedMatchIdx !== idx) {
                     handleDragReorder(draggedMatchIdx, idx);
@@ -898,51 +933,54 @@ function TeamMatchModal({
                         ? isTied22
                           ? "bg-amber-50/70 border-amber-300 ring-2 ring-amber-400/30"
                           : "bg-paper/60 border-line/15 opacity-75"
-                        : "bg-card border-line/20 shadow-2xs hover:border-[#ea580c]/30 cursor-grab active:cursor-grabbing"
+                        : isReadOnly
+                          ? "bg-card border-line/20 shadow-2xs"
+                          : "bg-card border-line/20 shadow-2xs hover:border-[#ea580c]/30 cursor-grab active:cursor-grabbing"
                 }`}
               >
                 <div className="flex items-center justify-between gap-2 mb-2.5">
                   <div className="flex items-center gap-1.5 flex-wrap">
-                    {/* 6 chấm tròn kéo thả hỗ trợ cả máy tính và màn hình cảm ứng */}
-                    <div
-                      style={{ touchAction: "none" }}
-                      onTouchStart={(e) => {
-                        setDraggedMatchIdx(idx);
-                        setDragOverMatchIdx(idx);
-                        try { navigator.vibrate?.(15); } catch {}
-                      }}
-                      onTouchMove={(e) => {
-                        const touch = e.touches[0];
-                        if (!touch) return;
-                        const target = document.elementFromPoint(touch.clientX, touch.clientY);
-                        const itemEl = target?.closest("[data-submatch-idx]");
-                        if (itemEl) {
-                          const targetIdx = Number(itemEl.getAttribute("data-submatch-idx"));
-                          if (!isNaN(targetIdx) && targetIdx !== dragOverMatchIdx) {
-                            setDragOverMatchIdx(targetIdx);
+                    {!isReadOnly && (
+                      <div
+                        style={{ touchAction: "none" }}
+                        onTouchStart={() => {
+                          setDraggedMatchIdx(idx);
+                          setDragOverMatchIdx(idx);
+                          try { navigator.vibrate?.(15); } catch {}
+                        }}
+                        onTouchMove={(e) => {
+                          const touch = e.touches[0];
+                          if (!touch) return;
+                          const target = document.elementFromPoint(touch.clientX, touch.clientY);
+                          const itemEl = target?.closest("[data-submatch-idx]");
+                          if (itemEl) {
+                            const targetIdx = Number(itemEl.getAttribute("data-submatch-idx"));
+                            if (!isNaN(targetIdx) && targetIdx !== dragOverMatchIdx) {
+                              setDragOverMatchIdx(targetIdx);
+                            }
                           }
-                        }
-                      }}
-                      onTouchEnd={() => {
-                        if (draggedMatchIdx !== null && dragOverMatchIdx !== null && draggedMatchIdx !== dragOverMatchIdx) {
-                          handleDragReorder(draggedMatchIdx, dragOverMatchIdx);
-                          try { navigator.vibrate?.(25); } catch {}
-                        }
-                        setDraggedMatchIdx(null);
-                        setDragOverMatchIdx(null);
-                      }}
-                      className="flex items-center justify-center p-1.5 text-line/40 hover:text-[#ea580c] active:text-[#ea580c] cursor-grab active:cursor-grabbing transition select-none"
-                      title="Kéo thả lên/xuống để đổi thứ tự trận đấu"
-                    >
-                      <svg className="size-4 fill-current pointer-events-none" viewBox="0 0 24 24">
-                        <circle cx="8.5" cy="6" r="1.5" />
-                        <circle cx="15.5" cy="6" r="1.5" />
-                        <circle cx="8.5" cy="12" r="1.5" />
-                        <circle cx="15.5" cy="12" r="1.5" />
-                        <circle cx="8.5" cy="18" r="1.5" />
-                        <circle cx="15.5" cy="18" r="1.5" />
-                      </svg>
-                    </div>
+                        }}
+                        onTouchEnd={() => {
+                          if (draggedMatchIdx !== null && dragOverMatchIdx !== null && draggedMatchIdx !== dragOverMatchIdx) {
+                            handleDragReorder(draggedMatchIdx, dragOverMatchIdx);
+                            try { navigator.vibrate?.(25); } catch {}
+                          }
+                          setDraggedMatchIdx(null);
+                          setDragOverMatchIdx(null);
+                        }}
+                        className="flex items-center justify-center p-1.5 text-line/40 hover:text-[#ea580c] active:text-[#ea580c] cursor-grab active:cursor-grabbing transition select-none"
+                        title="Kéo thả lên/xuống để đổi thứ tự trận đấu"
+                      >
+                        <svg className="size-4 fill-current pointer-events-none" viewBox="0 0 24 24">
+                          <circle cx="8.5" cy="6" r="1.5" />
+                          <circle cx="15.5" cy="6" r="1.5" />
+                          <circle cx="8.5" cy="12" r="1.5" />
+                          <circle cx="15.5" cy="12" r="1.5" />
+                          <circle cx="8.5" cy="18" r="1.5" />
+                          <circle cx="15.5" cy="18" r="1.5" />
+                        </svg>
+                      </div>
+                    )}
 
                     <span className="font-head text-xs font-bold uppercase tracking-wider text-ink">
                       Trận {idx + 1}: {rawTitle}
@@ -955,7 +993,41 @@ function TeamMatchModal({
                   </div>
                 </div>
 
-                {isDreambreaker ? (
+                {isReadOnly ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
+                    <div className="sm:col-span-5 text-xs font-semibold text-ink sm:text-right truncate">
+                      {isDreambreaker
+                        ? sm.teamAPlayers || nameA
+                        : [pA1, pA2].filter(Boolean).join(" & ") || "—"}
+                    </div>
+                    <div className="sm:col-span-2 flex items-center justify-center gap-1.5">
+                      <span
+                        className={`w-11 text-center font-mono font-bold text-sm py-1 rounded-lg border ${
+                          aWon
+                            ? "bg-orange-50 border-orange-400 text-[#ea580c] font-black"
+                            : "bg-paper border-line/30 text-ink"
+                        }`}
+                      >
+                        {sm.scoreA ?? "—"}
+                      </span>
+                      <span className="text-line/40 font-bold text-xs">:</span>
+                      <span
+                        className={`w-11 text-center font-mono font-bold text-sm py-1 rounded-lg border ${
+                          bWon
+                            ? "bg-orange-50 border-orange-400 text-[#ea580c] font-black"
+                            : "bg-paper border-line/30 text-ink"
+                        }`}
+                      >
+                        {sm.scoreB ?? "—"}
+                      </span>
+                    </div>
+                    <div className="sm:col-span-5 text-xs font-semibold text-ink sm:text-left truncate">
+                      {isDreambreaker
+                        ? sm.teamBPlayers || nameB
+                        : [pB1, pB2].filter(Boolean).join(" & ") || "—"}
+                    </div>
+                  </div>
+                ) : isDreambreaker ? (
                   <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
                     <div className="sm:col-span-5">
                       <PlayerSelectBox
@@ -1116,13 +1188,17 @@ function TeamMatchModal({
 
         {/* Footer controls: tự động lưu liên tục khi thay đổi */}
         <div className="bg-paper p-3.5 border-t border-line/15 shrink-0 flex items-center justify-between gap-2">
-          <button
-            type="button"
-            onClick={handleReset}
-            className="btn-ghost text-xs font-semibold !py-1.5 px-3 cursor-pointer"
-          >
-            ↺ Đặt lại tất cả trận con
-          </button>
+          {!isReadOnly ? (
+            <button
+              type="button"
+              onClick={handleReset}
+              className="btn-ghost text-xs font-semibold !py-1.5 px-3 cursor-pointer"
+            >
+              ↺ Đặt lại tất cả trận con
+            </button>
+          ) : (
+            <span className="text-xs text-line/60 font-medium">Chế độ xem trực tiếp</span>
+          )}
 
           <button
             type="button"
@@ -1145,7 +1221,6 @@ function KoSlotPickerModal({
   groupMatches,
   onClose,
   onAssignTeam,
-  onAssignPlaceholder,
   onClearSlot,
 }: {
   pickerSlot: { matchId: string; side: "aId" | "bId" };
@@ -1155,7 +1230,6 @@ function KoSlotPickerModal({
   groupMatches: Match[];
   onClose: () => void;
   onAssignTeam: (entryId: string, seedBadge?: string) => void;
-  onAssignPlaceholder: (placeholder: string) => void;
   onClearSlot: () => void;
 }) {
   const [search, setSearch] = useState("");
@@ -1224,33 +1298,15 @@ function KoSlotPickerModal({
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 p-0 sm:p-4 backdrop-blur-xs animate-in fade-in duration-150">
       <div className="w-full sm:max-w-lg max-h-[88vh] rounded-t-2xl sm:rounded-2xl bg-card p-4 sm:p-5 shadow-2xl ring-1 ring-line/20 flex flex-col border border-line/10 animate-in slide-in-from-bottom-6 sm:zoom-in-95 duration-150">
         {/* Header */}
-        <div className="flex items-start justify-between gap-3 border-b border-line/10 pb-3">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-xl">🎯</span>
-              <h3 className="font-head text-base sm:text-lg font-bold text-ink">
-                Chọn đội xếp vào ô thi đấu
-              </h3>
-            </div>
-            <p className="mt-1 text-xs text-line/70 flex items-center gap-1.5 flex-wrap">
-              <span className="font-bold text-[#e44c11]">
-                {targetMatch?.koRound || `Vòng ${targetMatch?.round}`}
-              </span>
-              <span>•</span>
-              <span className="font-semibold text-ink">
-                {targetSide === "aId" ? "Nhánh trên (Đội 1)" : "Nhánh dưới (Đội 2)"}
-              </span>
-              {currentPlaceholder && (
-                <span className="rounded bg-secondary px-1.5 py-0.5 text-[10px] font-bold text-line/80">
-                  Ký hiệu: {currentPlaceholder.replace(/[*#]/g, "")}
-                </span>
-              )}
-            </p>
-          </div>
+        <div className="relative flex items-center justify-center border-b border-line/10 pb-3">
+          <h3 className="font-head text-lg font-extrabold uppercase tracking-tight text-[#e44c11] text-center">
+            {targetMatch?.koRound || `Vòng ${targetMatch?.round}`}
+          </h3>
           <button
             type="button"
-            className="rounded-lg p-1.5 text-line/50 hover:bg-muted hover:text-ink cursor-pointer"
+            className="absolute right-0 top-1/2 -translate-y-1/2 rounded-lg p-1.5 text-line/50 hover:bg-muted hover:text-ink cursor-pointer"
             onClick={onClose}
+            aria-label="Đóng"
           >
             <svg className="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M18 6 6 18M6 6l12 12" />
@@ -1296,46 +1352,21 @@ function KoSlotPickerModal({
 
         {/* Danh sách cuộn */}
         <div className="mt-3 flex-1 overflow-y-auto space-y-4 pr-1 max-h-[50vh]">
-          {/* Nhanh: Ký hiệu vị trí hạt giống chờ (1A, 2A, 3C...) */}
-          <div className="rounded-xl border border-line/15 bg-paper/60 p-2.5">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-line/60 mb-2">
-              ⚡ Gán nhanh ký hiệu chờ (1A, 2B, 3C...)
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {groupsWithStandings.flatMap((gw) =>
-                [1, 2, 3, 4].slice(0, Math.min(4, gw.group.entryIds.length)).map((rank) => {
-                  const badge = `${rank}${gw.key}`;
-                  const isCurrent = currentPlaceholder?.replace(/[*#]/g, "") === badge;
-                  return (
-                    <button
-                      key={badge}
-                      type="button"
-                      className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer border ${
-                        isCurrent
-                          ? "bg-accent text-accent-foreground border-accent shadow-xs"
-                          : rank === 1
-                            ? "bg-orange-500/15 text-[#e44c11] border-orange-500/30 hover:bg-orange-500/25"
-                            : rank === 2
-                              ? "bg-[#0a3320]/15 text-[#0a3320] border-[#0a3320]/30 hover:bg-[#0a3320]/25"
-                              : "bg-[#cedbea] text-[#001592] border-[#001592]/30 hover:bg-[#cedbea]/80"
-                      }`}
-                      style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                      onClick={() => onAssignPlaceholder(badge)}
-                      title={`Gán vị trí ${badge} vào ô này`}
-                    >
-                      {badge}
-                    </button>
-                  );
-                }),
-              )}
-            </div>
-          </div>
-
           {/* Danh sách các đội theo từng bảng */}
-          {filteredGroups.map((gw) => (
+          {filteredGroups.map((gw) => {
+            const rawGroupName = gw.group.name.trim();
+            const cleanExpected = `Bảng ${gw.key}`.toLowerCase();
+            const showRawName =
+              rawGroupName &&
+              rawGroupName.toLowerCase() !== cleanExpected &&
+              rawGroupName.toLowerCase() !== gw.key.toLowerCase();
+            return (
             <div key={gw.group.name} className="rounded-xl border border-line/15 bg-card overflow-hidden">
               <div className="bg-secondary/70 px-3 py-1.5 font-bold text-xs flex items-center justify-between border-b border-line/10">
-                <span className="text-ink">Bảng {gw.key} ({gw.group.name})</span>
+                <span className="text-ink">
+                  Bảng {gw.key}
+                  {showRawName ? ` (${rawGroupName})` : ""}
+                </span>
                 <span className="text-[11px] text-line/60">{gw.standings.length} đội</span>
               </div>
               <div className="divide-y divide-line/10">
@@ -1398,10 +1429,12 @@ function KoSlotPickerModal({
                         ) : (
                           <button
                             type="button"
-                            className="btn-accent !px-2.5 !py-1 text-[11px] font-bold cursor-pointer"
+                            className="px-2 py-1 text-2xl font-bold leading-none text-[#e44c11] hover:opacity-75 transition-opacity cursor-pointer"
                             onClick={() => onAssignTeam(entry.id, rankBadge)}
+                            title="Chọn xếp vào"
+                            aria-label="Chọn xếp vào"
                           >
-                            ➕ Chọn xếp vào
+                            +
                           </button>
                         )}
                       </div>
@@ -1410,7 +1443,8 @@ function KoSlotPickerModal({
                 })}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
 
         {/* Footer */}
@@ -1459,6 +1493,7 @@ type CardProps = {
   slotMinutes?: number;
   isTeamMode?: boolean;
   onManageTeamMatch?: (m: Match) => void;
+  isReadOnly?: boolean;
   key?: React.Key;
 };
 
@@ -1493,6 +1528,7 @@ function MatchCard({
   slotMinutes = 30,
   isTeamMode,
   onManageTeamMatch,
+  isReadOnly = false,
 }: CardProps) {
   const c = groupColor(m.groupName);
   const aWin = m.scoreA !== null && m.scoreB !== null && m.scoreA > m.scoreB;
@@ -1520,7 +1556,7 @@ function MatchCard({
   return (
     <div
       className={`group relative rounded-xl transition-all select-none flex flex-col justify-between box-border ${
-        compact ? "cursor-grab active:cursor-grabbing overflow-hidden" : "ring-1"
+        compact ? `${isReadOnly ? "" : "cursor-grab active:cursor-grabbing "}overflow-hidden` : "ring-1"
       } ${
         compact ? (isUltraCompact ? "p-1" : isMidCompact ? "p-1" : "p-1.5") : "p-2.5"
       } ${
@@ -1541,7 +1577,7 @@ function MatchCard({
         height: compact ? "100%" : undefined,
         maxHeight: compact ? "100%" : undefined,
       }}
-      title={compact ? "Nắm giữ thẻ trận đấu để kéo thả sang sân khác hoặc đổi giờ thi đấu" : undefined}
+      title={compact && !isReadOnly ? "Nắm giữ thẻ trận đấu để kéo thả sang sân khác hoặc đổi giờ thi đấu" : undefined}
     >
       <div className="flex items-center justify-between gap-1 shrink-0">
         <div className="flex items-center gap-1.5 min-w-0">
@@ -1587,7 +1623,7 @@ function MatchCard({
             <span className="text-[10px] font-medium text-line/50">Chờ</span>
           )}
 
-          {compact && onRemoveFromTimeline && (
+          {compact && !isReadOnly && onRemoveFromTimeline && (
             <button
               type="button"
               className="ml-1 rounded px-1 py-0.5 text-[11px] text-line/40 hover:bg-destructive/10 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer shrink-0"
@@ -1615,7 +1651,7 @@ function MatchCard({
               isMatchDone={isDone}
             />
           </div>
-          <ScoreBox value={m.scoreA} onCommit={(v) => onScore("scoreA", v)} isWinning={aWin} compact={compact} />
+          <ScoreBox value={m.scoreA} onCommit={(v) => onScore("scoreA", v)} isWinning={aWin} compact={compact} readOnly={isReadOnly} />
         </div>
 
         <div className="flex items-center justify-between gap-2">
@@ -1629,12 +1665,46 @@ function MatchCard({
               isMatchDone={isDone}
             />
           </div>
-          <ScoreBox value={m.scoreB} onCommit={(v) => onScore("scoreB", v)} isWinning={bWin} compact={compact} />
+          <ScoreBox value={m.scoreB} onCommit={(v) => onScore("scoreB", v)} isWinning={bWin} compact={compact} readOnly={isReadOnly} />
         </div>
       </div>
 
       {/* Hành động dưới thẻ */}
-      {compact ? (
+      {isReadOnly ? (
+        isTeamMode || (!compact && (m.referee || hasNote)) ? (
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-1.5 border-t border-line/10 pt-1.5 text-[10px]">
+            {!compact && m.referee ? (
+              <span className="text-[11px] font-medium text-line/65 truncate">
+                TT: {m.referee}
+              </span>
+            ) : (
+              <span />
+            )}
+            <div className="flex items-center gap-1.5">
+              {!compact && hasNote && onViewNote && (
+                <button
+                  type="button"
+                  className="rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-700 ring-1 ring-amber-300 dark:bg-amber-950/30 dark:text-amber-400 cursor-pointer"
+                  style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                  onClick={() => onViewNote(m.note || m.live?.note || "")}
+                >
+                  📝 Ghi chú
+                </button>
+              )}
+              {isTeamMode && (
+                <button
+                  type="button"
+                  onClick={() => onManageTeamMatch?.(m)}
+                  style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                  className="btn-accent !px-2.5 !py-0.5 text-[10px] flex items-center justify-center whitespace-nowrap font-bold cursor-pointer shrink-0 shadow-2xs"
+                >
+                  Các Trận Con
+                </button>
+              )}
+            </div>
+          </div>
+        ) : null
+      ) : compact ? (
         /* Trên Timeline: thanh thao tác hiển thị rõ chữ bắt đầu và chấm điểm */
         rowHeight >= 65 ? (
           <div className="mt-1 flex items-center justify-between gap-1 border-t border-line/10 pt-1 text-[10px] shrink-0">
@@ -1764,7 +1834,7 @@ function MatchCard({
       )}
 
       {/* Cạnh phải nắm kéo trực tiếp để kéo dãn / thu gọn thời lượng (Direct Drag-to-Resize Handle) */}
-      {compact && onDurationChange && (
+      {compact && !isReadOnly && onDurationChange && (
         <div
           data-no-drag="true"
           className="absolute right-0 top-0 bottom-0 w-3.5 cursor-ew-resize hover:bg-accent/40 active:bg-accent/60 rounded-r transition-colors select-none z-30 flex items-center justify-center group/resize"
@@ -1846,6 +1916,7 @@ function KoCard({
   onAddReferee,
   onClearReferees,
   onSelectTeamSlot,
+  isReadOnly = false,
 }: {
   m: Match;
   nameA: string;
@@ -1874,8 +1945,10 @@ function KoCard({
   onAddReferee?: (r: string) => void;
   onClearReferees?: () => void;
   onSelectTeamSlot?: (side: "aId" | "bId") => void;
+  isReadOnly?: boolean;
   key?: React.Key;
 }) {
+  const effectiveLocked = isKoLocked || isReadOnly;
   const aWin = m.scoreA !== null && m.scoreB !== null && m.scoreA > m.scoreB;
   const bWin = m.scoreA !== null && m.scoreB !== null && m.scoreB > m.scoreA;
   const isDone = m.status === "done" || (m.scoreA !== null && m.scoreB !== null);
@@ -2028,26 +2101,28 @@ function KoCard({
               ? "border-[#e44c11]/50 bg-[#e44c11]/10 dark:bg-[#e44c11]/15 shadow-xs"
               : "border-line/25 dark:border-line/30 bg-muted/25 dark:bg-muted/15"
           } ${row(aWin, isLiveA, isConflictA)} ${
-            !isKoLocked ? "cursor-pointer hover:border-accent/60 hover:bg-muted/40 transition-colors" : ""
+            !effectiveLocked ? "cursor-pointer hover:border-accent/60 hover:bg-muted/40 transition-colors" : ""
           } ${
-            !isKoLocked && m.aId ? "active:cursor-grabbing" : ""
+            !effectiveLocked && m.aId ? "active:cursor-grabbing" : ""
           }`}
           onClick={() => {
-            if (isKoLocked) return;
+            if (effectiveLocked) return;
             onSelectTeamSlot?.("aId");
           }}
-          draggable={!isKoLocked && Boolean(m.aId || (seedA && !isByeA))}
+          draggable={!effectiveLocked && Boolean(m.aId || (seedA && !isByeA))}
           onDragStart={(e) => {
-            if (isKoLocked) return;
+            if (effectiveLocked) return;
             e.stopPropagation();
             onStartDragTeam?.("aId");
           }}
-          onDragOver={(e) => e.preventDefault()}
+          onDragOver={(e) => {
+            if (!effectiveLocked) e.preventDefault();
+          }}
           onDrop={(e) => {
             e.stopPropagation();
-            if (!isKoLocked) onDropTeam("aId");
+            if (!effectiveLocked) onDropTeam("aId");
           }}
-          title={!isKoLocked ? "Bấm vào để chọn đội xếp vào ô này (tiện lợi trên điện thoại), hoặc kéo thả để đổi chỗ" : undefined}
+          title={!effectiveLocked ? "Bấm vào để chọn đội xếp vào ô này (tiện lợi trên điện thoại), hoặc kéo thả để đổi chỗ" : undefined}
         >
           <div className="flex items-center gap-1.5 min-w-0 flex-1">
             {seedA && (
@@ -2076,7 +2151,7 @@ function KoCard({
                 ⚠️ Trùng đội
               </span>
             )}
-            {!isKoLocked && (m.aId || (seedA && !isByeA)) && onClearTeam && (
+            {!effectiveLocked && (m.aId || (seedA && !isByeA)) && onClearTeam && (
               <button
                 type="button"
                 className="opacity-0 group-hover/slot:opacity-100 hover:text-red-600 p-0.5 rounded text-line/40 hover:bg-red-50 dark:hover:bg-red-950/40 transition-opacity cursor-pointer shrink-0"
@@ -2100,7 +2175,7 @@ function KoCard({
             {isByeA ? (
               <span className="text-line/40 font-mono text-xs px-2 select-none">-</span>
             ) : (
-              <ScoreBox value={m.scoreA} onCommit={(v) => onScore("scoreA", v)} isWinning={aWin} large={isFinal} />
+              <ScoreBox value={m.scoreA} onCommit={(v) => onScore("scoreA", v)} isWinning={aWin} large={isFinal} readOnly={isReadOnly} />
             )}
           </div>
         </div>
@@ -2114,26 +2189,28 @@ function KoCard({
               ? "border-[#e44c11]/50 bg-[#e44c11]/10 dark:bg-[#e44c11]/15 shadow-xs"
               : "border-line/25 dark:border-line/30 bg-muted/25 dark:bg-muted/15"
           } ${row(bWin, isLiveB, isConflictB)} ${
-            !isKoLocked ? "cursor-pointer hover:border-accent/60 hover:bg-muted/40 transition-colors" : ""
+            !effectiveLocked ? "cursor-pointer hover:border-accent/60 hover:bg-muted/40 transition-colors" : ""
           } ${
-            !isKoLocked && m.bId ? "active:cursor-grabbing" : ""
+            !effectiveLocked && m.bId ? "active:cursor-grabbing" : ""
           }`}
           onClick={() => {
-            if (isKoLocked) return;
+            if (effectiveLocked) return;
             onSelectTeamSlot?.("bId");
           }}
-          draggable={!isKoLocked && Boolean(m.bId || (seedB && !isByeB))}
+          draggable={!effectiveLocked && Boolean(m.bId || (seedB && !isByeB))}
           onDragStart={(e) => {
-            if (isKoLocked) return;
+            if (effectiveLocked) return;
             e.stopPropagation();
             onStartDragTeam?.("bId");
           }}
-          onDragOver={(e) => e.preventDefault()}
+          onDragOver={(e) => {
+            if (!effectiveLocked) e.preventDefault();
+          }}
           onDrop={(e) => {
             e.stopPropagation();
-            if (!isKoLocked) onDropTeam("bId");
+            if (!effectiveLocked) onDropTeam("bId");
           }}
-          title={!isKoLocked ? "Bấm vào để chọn đội xếp vào ô này (tiện lợi trên điện thoại), hoặc kéo thả để đổi chỗ" : undefined}
+          title={!effectiveLocked ? "Bấm vào để chọn đội xếp vào ô này (tiện lợi trên điện thoại), hoặc kéo thả để đổi chỗ" : undefined}
         >
           <div className="flex items-center gap-1.5 min-w-0 flex-1">
             {seedB && (
@@ -2162,7 +2239,7 @@ function KoCard({
                 ⚠️ Trùng đội
               </span>
             )}
-            {!isKoLocked && (m.bId || (seedB && !isByeB)) && onClearTeam && (
+            {!effectiveLocked && (m.bId || (seedB && !isByeB)) && onClearTeam && (
               <button
                 type="button"
                 className="opacity-0 group-hover/slot:opacity-100 hover:text-red-600 p-0.5 rounded text-line/40 hover:bg-red-50 dark:hover:bg-red-950/40 transition-opacity cursor-pointer shrink-0"
@@ -2186,68 +2263,86 @@ function KoCard({
             {isByeB ? (
               <span className="text-line/40 font-mono text-xs px-2 select-none">-</span>
             ) : (
-              <ScoreBox value={m.scoreB} onCommit={(v) => onScore("scoreB", v)} isWinning={bWin} large={isFinal} />
+              <ScoreBox value={m.scoreB} onCommit={(v) => onScore("scoreB", v)} isWinning={bWin} large={isFinal} readOnly={isReadOnly} />
             )}
           </div>
         </div>
       </div>
 
-      <div className="flex items-center justify-between gap-1 bg-secondary/50 px-1.5 py-1.5 border-t border-line/10 rounded-b-xl whitespace-nowrap">
-        <div className="flex items-center gap-1 shrink-0">
-          {m.status === "done" ? (
-            <button
-              className="btn-ghost !px-1.5 !py-0.5 text-[10px] whitespace-nowrap shrink-0 cursor-pointer"
+      {isReadOnly ? (
+        (m.referee || isByeA || isByeB) ? (
+          <div className="flex items-center justify-between gap-1 bg-secondary/50 px-2 py-1 border-t border-line/10 rounded-b-xl text-[10px]">
+            <span className="text-line/65 font-medium truncate">
+              {m.referee ? `TT: ${m.referee}` : ""}
+            </span>
+            {(isByeA || isByeB) && (
+              <span
+                className="text-[10px] font-bold text-accent px-1.5 py-0.5 rounded bg-accent/10 whitespace-nowrap shrink-0"
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+              >
+                Vào thẳng
+              </span>
+            )}
+          </div>
+        ) : null
+      ) : (
+        <div className="flex items-center justify-between gap-1 bg-secondary/50 px-1.5 py-1.5 border-t border-line/10 rounded-b-xl whitespace-nowrap">
+          <div className="flex items-center gap-1 shrink-0">
+            {m.status === "done" ? (
+              <button
+                className="btn-ghost !px-1.5 !py-0.5 text-[10px] whitespace-nowrap shrink-0 cursor-pointer"
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                onClick={onReset}
+              >
+                ↺ Lại
+              </button>
+            ) : (
+              <button
+                disabled={isByeA || isByeB}
+                className={`btn-ghost !px-1.5 !py-0.5 text-[10px] whitespace-nowrap shrink-0 cursor-pointer ${
+                  m.status === "live" ? "text-red-600 font-bold" : ""
+                } ${isByeA || isByeB ? "opacity-40 cursor-not-allowed" : ""}`}
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                onClick={() => onStatus(m.status === "live" ? "pending" : "live")}
+              >
+                {m.status === "live" ? "⏸ Dừng" : "▶ Bắt đầu"}
+              </button>
+            )}
+          </div>
+
+          {/* Nút chọn trọng tài nằm giữa nút bắt đầu và nút chấm điểm */}
+          {onReferee && (
+            <div className="shrink-0">
+              <RefereeSelector
+                value={m.referee}
+                referees={referees}
+                onSelect={onReferee}
+                onAddReferee={onAddReferee}
+                onClearReferees={onClearReferees}
+                compactWidth
+              />
+            </div>
+          )}
+
+          {isByeA || isByeB ? (
+            <span
+              className="text-[10px] font-bold text-accent px-1.5 py-0.5 rounded bg-accent/10 whitespace-nowrap shrink-0"
               style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-              onClick={onReset}
             >
-              ↺ Lại
-            </button>
+              Vào thẳng
+            </span>
           ) : (
-            <button
-              disabled={isByeA || isByeB}
-              className={`btn-ghost !px-1.5 !py-0.5 text-[10px] whitespace-nowrap shrink-0 cursor-pointer ${
-                m.status === "live" ? "text-red-600 font-bold" : ""
-              } ${isByeA || isByeB ? "opacity-40 cursor-not-allowed" : ""}`}
+            <Link
+              to="/cham-diem/$matchId"
+              params={{ matchId: m.id } as any}
+              className="btn-ghost !px-1.5 !py-0.5 text-[10px] flex items-center gap-0.5 whitespace-nowrap shrink-0"
               style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-              onClick={() => onStatus(m.status === "live" ? "pending" : "live")}
             >
-              {m.status === "live" ? "⏸ Dừng" : "▶ Bắt đầu"}
-            </button>
+              ⚡ Chấm điểm
+            </Link>
           )}
         </div>
-
-        {/* Nút chọn trọng tài nằm giữa nút bắt đầu và nút chấm điểm */}
-        {onReferee && (
-          <div className="shrink-0">
-            <RefereeSelector
-              value={m.referee}
-              referees={referees}
-              onSelect={onReferee}
-              onAddReferee={onAddReferee}
-              onClearReferees={onClearReferees}
-              compactWidth
-            />
-          </div>
-        )}
-
-        {isByeA || isByeB ? (
-          <span
-            className="text-[10px] font-bold text-accent px-1.5 py-0.5 rounded bg-accent/10 whitespace-nowrap shrink-0"
-            style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-          >
-            Vào thẳng
-          </span>
-        ) : (
-          <Link
-            to="/cham-diem/$matchId"
-            params={{ matchId: m.id } as any}
-            className="btn-ghost !px-1.5 !py-0.5 text-[10px] flex items-center gap-0.5 whitespace-nowrap shrink-0"
-            style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-          >
-            ⚡ Chấm điểm
-          </Link>
-        )}
-      </div>
+      )}
     </div>
   );
 }
@@ -2483,30 +2578,46 @@ function ManagePage() {
     currentRole,
     updateCollaborators,
   } = useTournament();
+  const navigate = useNavigate();
   const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [isLoadingLive, setIsLoadingLive] = useState(() => Boolean(getLiveTournamentIdFromUrl()));
+  const [sharedTournaments, setSharedTournaments] = useState<UserTournamentArchiveItem[]>([]);
+  const [loadingShared, setLoadingShared] = useState(false);
 
   // Lắng nghe xem trực tiếp nếu URL có tham số ?live=
   useEffect(() => {
     if (typeof window === "undefined") return;
     const liveId = getLiveTournamentIdFromUrl();
-    if (!liveId) return;
+    if (!liveId) {
+      setIsLoadingLive(false);
+      return;
+    }
 
     let unsub: (() => void) | undefined;
+    let mounted = true;
     import("@/lib/firebase").then(({ subscribeToPublicTournament, fetchPublicTournament }) => {
       // Nạp ngay tức thì bản mới nhất từ Firestore
-      void fetchPublicTournament(liveId).then((data) => {
-        if (data?.stateJson) {
-          try {
-            const parsed = JSON.parse(data.stateJson);
-            loadTournament(parsed, liveId);
-          } catch (e) {
-            console.error("Lỗi nạp giải đấu trực tiếp:", e);
+      void fetchPublicTournament(liveId)
+        .then((data) => {
+          if (data?.stateJson) {
+            try {
+              const parsed = JSON.parse(data.stateJson);
+              loadTournament(parsed, liveId);
+            } catch (e) {
+              console.error("Lỗi nạp giải đấu trực tiếp:", e);
+            }
           }
-        }
-      });
+        })
+        .catch((e) => {
+          console.error("Lỗi fetchPublicTournament:", e);
+        })
+        .finally(() => {
+          if (mounted) setIsLoadingLive(false);
+        });
 
       // Lắng nghe cập nhật thời gian thực
       unsub = subscribeToPublicTournament(liveId, (data) => {
+        if (mounted) setIsLoadingLive(false);
         if (data?.stateJson) {
           try {
             const parsed = JSON.parse(data.stateJson);
@@ -2519,9 +2630,95 @@ function ManagePage() {
     });
 
     return () => {
+      mounted = false;
       if (unsub) unsub();
     };
   }, [loadTournament]);
+
+  // Tải danh sách giải đấu người dùng được mời tham gia (trọng tài / điều hành / chỉ xem)
+  useEffect(() => {
+    if (!user?.email || getLiveTournamentIdFromUrl()) {
+      setSharedTournaments([]);
+      return;
+    }
+    let active = true;
+    setLoadingShared(true);
+    listSharedTournaments(user.email)
+      .then((list) => {
+        if (active) setSharedTournaments(list);
+      })
+      .catch((err) => {
+        console.error("Lỗi tải danh sách giải được mời:", err);
+      })
+      .finally(() => {
+        if (active) setLoadingShared(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [user?.email]);
+
+  const mergedReferees = useMemo(() => {
+    const base = Array.isArray(state.referees) ? state.referees : [];
+    const fromCollabs = (state.collaborators || [])
+      .filter((c) => c.role === "referee" && c.name?.trim())
+      .map((c) => c.name!.trim());
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const r of [...base, ...fromCollabs]) {
+      const clean = r.trim();
+      if (!clean) continue;
+      const key = clean.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        result.push(clean);
+      }
+    }
+    return result;
+  }, [state.referees, state.collaborators]);
+
+  const myRefereeCollab = useMemo(
+    () => getRefereeCollaboratorForUser(state.collaborators, user?.email),
+    [state.collaborators, user?.email],
+  );
+
+  const assignedMatches = useMemo(() => {
+    if (currentRole !== "referee" || getLiveTournamentIdFromUrl()) return [];
+    const matching = (state.matches || []).filter(
+      (m) =>
+        m.status !== "done" &&
+        isMatchAssignedToRefereeUser(m, state.collaborators, user?.email, user?.displayName),
+    );
+    return matching.sort((a, b) => {
+      if (a.status === "live" && b.status !== "live") return -1;
+      if (b.status === "live" && a.status !== "live") return 1;
+      return (a.round ?? 0) - (b.round ?? 0);
+    });
+  }, [currentRole, state.matches, state.collaborators, user?.email, user?.displayName]);
+
+  const assignedMatch = useMemo(() => {
+    return assignedMatches.find((m) => m.status === "live");
+  }, [assignedMatches]);
+
+  // Trọng tài chỉ tự động chuyển sang màn hình cài đặt chấm điểm khi người điều hành bấm Bắt đầu trận đấu (status === "live")
+  useEffect(() => {
+    if (currentRole !== "referee" || !assignedMatch || getLiveTournamentIdFromUrl()) return;
+    void navigate({
+      to: "/cham-diem/$matchId",
+      params: { matchId: assignedMatch.id },
+    });
+  }, [currentRole, assignedMatch, navigate]);
+
+  const handleSelectSharedTournament = (item: UserTournamentArchiveItem) => {
+    try {
+      const parsed = JSON.parse(item.stateJson);
+      loadTournament(parsed, item.id);
+      toast.success(`Đã mở giải "${item.name || "Chưa đặt tên"}"`);
+    } catch (e) {
+      console.error("Lỗi đọc dữ liệu giải đấu:", e);
+      toast.error("Không thể mở giải đấu này.");
+    }
+  };
 
   const activeId =
     state.selectedEventId && state.events.some((e) => e.id === state.selectedEventId)
@@ -2655,7 +2852,7 @@ function ManagePage() {
   };
 
   useEffect(() => {
-    if (tab !== "timeline") return;
+    if (tab !== "timeline" || isReadOnly) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
         if (e.shiftKey) {
@@ -2713,46 +2910,26 @@ function ManagePage() {
 
   const isKoLocked = Boolean(ev && state.koLocked?.[ev.id]);
 
-  if (!ev) {
-    return (
-      <div className="max-w-xl">
-        <h1
-          className="font-head text-3xl font-extrabold uppercase tracking-tight text-[#0a3320] sm:text-4xl"
-          style={{ color: "#0a3320" }}
-        >
-          Quản lý giải đấu
-        </h1>
-        <p className="mt-3 text-sm text-line/60">Chưa có nội dung nào để điều hành.</p>
-        <Link to="/noi-dung" className="btn-accent mt-4 inline-block">
-          Tạo nội dung
-        </Link>
-      </div>
-    );
-  }
-
-  const isTeamMode = ev.mode === "dong_doi";
+  const isTeamMode = ev?.mode === "dong_doi";
 
   // Thống kê phụ ưu tiên hàng đầu hiển thị ở bảng thu nhỏ (giữa diff, points_won_pct, game_diff)
   const primaryTeamStat = useMemo<"diff" | "points_won_pct" | "game_diff">(() => {
-    const list = ev.mlpRankingCriteria || ["points", "h2h", "game_diff", "diff", "points_won_pct", "draw"];
+    const list = ev?.mlpRankingCriteria || ["points", "h2h", "game_diff", "diff", "points_won_pct", "draw"];
     for (const c of list) {
       if (c === "points_won_pct") return "points_won_pct";
       if (c === "diff") return "diff";
       if (c === "game_diff") return "game_diff";
     }
     return "diff";
-  }, [ev.mlpRankingCriteria]);
+  }, [ev?.mlpRankingCriteria]);
 
   // Thứ tự các cột thống kê khi phóng to bảng xếp hạng theo thiết lập của nội dung
   const mlpStatOrder = useMemo<Array<"game_diff" | "diff" | "points_won_pct">>(() => {
-    const list = ev.mlpRankingCriteria || ["points", "h2h", "game_diff", "diff", "points_won_pct", "draw"];
+    const list = ev?.mlpRankingCriteria || ["points", "h2h", "game_diff", "diff", "points_won_pct", "draw"];
     return list.filter((c): c is "game_diff" | "diff" | "points_won_pct" =>
       c === "game_diff" || c === "diff" || c === "points_won_pct"
     );
-  }, [ev.mlpRankingCriteria]);
-
-  const nameOf = (id: string | null) =>
-    id ? entryName(entries.find((e) => e.id === id)) : "Chờ xác định";
+  }, [ev?.mlpRankingCriteria]);
 
   const isActualByeMatch = (m?: Match) => {
     if (!m || m.stage !== "ko") return false;
@@ -2760,6 +2937,567 @@ function ManagePage() {
     const pB = m.customPlaceholderB?.trim().toLowerCase();
     return pA === "bye" || pB === "bye";
   };
+
+  const groupMatches = matches.filter((m) => m.stage === "group");
+  const koMatches = matches.filter((m) => m.stage === "ko");
+
+  const hasKoProgress = useMemo(() => {
+    return koMatches.some(
+      (m) => m.aId !== null || m.scoreA !== null || m.status === "done" || m.status === "live",
+    );
+  }, [koMatches]);
+
+  // Kiểm tra vòng loại trực tiếp đã bắt đầu (có trận đang đấu, đã xong hoặc có điểm)
+  const hasKoStarted = useMemo(() => {
+    return koMatches.some(
+      (m) => m.scoreA !== null || m.scoreB !== null || m.status === "done" || m.status === "live",
+    );
+  }, [koMatches]);
+
+  const rankingCriteria = state.rankingCriteria || ["points", "diff", "h2h", "draw"];
+  const withdrawnEntryIds = useMemo(() => {
+    if (!ev) return new Set<string>();
+    return new Set(state.entries.filter((e) => e.eventId === ev.id && e.withdrawn).map((e) => e.id));
+  }, [state.entries, ev]);
+
+  // Phát hiện các trận trùng giờ nhau trên cùng một sân để cảnh báo viền đỏ
+  const conflictsSet = useMemo(() => {
+    const set = new Set<string>();
+    if (!ev) return set;
+    const slotMins = state.slotMinutes || 30;
+    const scheduled = state.matches.filter(
+      (m) => m.eventId === ev.id && m.court && m.timeSlot !== undefined,
+    );
+    for (let i = 0; i < scheduled.length; i++) {
+      const mA = scheduled[i];
+      const startA = (mA.timeSlot ?? 0) * slotMins + (mA.offsetMinutes ?? 0);
+      const endA = startA + (mA.durationMinutes ?? slotMins);
+      for (let j = i + 1; j < scheduled.length; j++) {
+        const mB = scheduled[j];
+        if (mA.court === mB.court) {
+          const startB = (mB.timeSlot ?? 0) * slotMins + (mB.offsetMinutes ?? 0);
+          const endB = startB + (mB.durationMinutes ?? slotMins);
+          if (Math.max(startA, startB) < Math.min(endA, endB)) {
+            set.add(mA.id);
+            set.add(mB.id);
+          }
+        }
+      }
+    }
+    return set;
+  }, [state.matches, state.slotMinutes, ev]);
+
+  /* -------- Vòng bảng theo cột vòng -------- */
+  const rounds = [...new Set(groupMatches.map((m) => m.round))].sort((a, b) => (a ?? 0) - (b ?? 0));
+
+  const maxAllowedRotatingRounds = useMemo(() => {
+    if (!ev) return 0;
+    if (ev.randomRoundsCount && ev.randomRoundsCount > 0) {
+      return ev.randomRoundsCount;
+    }
+    const activeCount = entries.filter((e) => !e.withdrawn).length;
+    if (activeCount < 2) return 1;
+    // N chẵn: N - 1 vòng; N lẻ: N vòng (do mỗi vòng có 1 người nghỉ bye)
+    return activeCount % 2 === 0 ? activeCount - 1 : activeCount;
+  }, [ev, entries]);
+
+  const isRotatingRoundsCompleted = useMemo(() => {
+    if (!isRotatingDoubles(ev)) return false;
+    return rounds.length >= maxAllowedRotatingRounds;
+  }, [ev, rounds.length, maxAllowedRotatingRounds]);
+
+  const canDrawMoreRotatingRounds = useMemo(() => {
+    if (!isRotatingDoubles(ev)) return false;
+    return rounds.length > 0 && !isRotatingRoundsCompleted;
+  }, [ev, rounds.length, isRotatingRoundsCompleted]);
+
+  // Đếm số lượng vòng đã hoàn thành (tất cả các trận trong vòng đã nhập điểm xong)
+  const completedRotatingRoundsCount = useMemo(() => {
+    return rounds.filter((r) => {
+      const rMatches = groupMatches.filter((m) => m.round === r);
+      return (
+        rMatches.length > 0 &&
+        rMatches.every(
+          (m) => m.status === "done" || (m.scoreA !== null && m.scoreB !== null),
+        )
+      );
+    }).length;
+  }, [rounds, groupMatches]);
+
+  // Tự động phân chia các vòng thành nhiều hàng cân đối đẹp mắt (10 vòng -> 2 hàng x 5, 12 vòng -> 2 hàng x 6, 15 vòng -> 3 hàng x 5)
+  const exportRoundRows = useMemo(() => {
+    const n = rounds.length;
+    if (n <= 6) return [rounds];
+    let numRows = 2;
+    if (n > 18) numRows = 4;
+    else if (n > 12) numRows = 3;
+    else numRows = 2;
+
+    const rows: number[][] = [];
+    let startIndex = 0;
+    for (let r = 0; r < numRows; r++) {
+      const remainingItems = n - startIndex;
+      const remainingRows = numRows - r;
+      const count = Math.ceil(remainingItems / remainingRows);
+      rows.push(rounds.slice(startIndex, startIndex + count));
+      startIndex += count;
+    }
+    return rows;
+  }, [rounds]);
+
+  /* -------- Timeline -------- */
+  const timelinePrintRef = useRef<HTMLDivElement>(null);
+  const dragGrabPxRef = useRef<number | null>(null);
+
+  const safeCourts = state.courts || [];
+  const timelineSource = tab === "timeline" ? matches : [];
+  const grid = buildTimeline(timelineSource, safeCourts);
+
+  // Hiển thị toàn bộ ngày hoặc khung giờ được người dùng chọn
+  const [startH = 8, startM = 0] = (state.startTime || "08:00").split(":").map(Number);
+  const startTotalMinutes = (startH % 24) * 60 + startM;
+  const minutesUntilMidnight = Math.max(60, 24 * 60 - startTotalMinutes);
+  const fullDaySlots = Math.ceil(minutesUntilMidnight / Math.max(5, state.slotMinutes || 30));
+
+  const selectedEndMinutes = (timelineEndHour ?? 24) * 60;
+  const minutesFromStart = Math.max(60, selectedEndMinutes - startTotalMinutes);
+  const targetSlots = Math.ceil(minutesFromStart / Math.max(5, state.slotMinutes || 30));
+
+  const maxSlot = Math.max(
+    1,
+    timelineEndHour !== null
+      ? targetSlots - 1
+      : Math.max(
+          fullDaySlots,
+          3,
+          ...[...grid.values()].flatMap((list) => list.map((s) => s.slot + 1)),
+        ),
+  );
+  const slotIdxs = Array.from({ length: maxSlot + 1 }, (_, i) => i);
+
+  // Trạng thái vòng bảng của nội dung hiện tại
+  const currentGroupMatches = useMemo(
+    () => matches.filter((m) => m.stage === "group"),
+    [matches],
+  );
+  const hasGroupStage = currentGroupMatches.length > 0;
+  const allGroupStageDone = useMemo(
+    () => hasGroupStage && currentGroupMatches.every((m) => m.status === "done"),
+    [hasGroupStage, currentGroupMatches],
+  );
+
+  // Khi toàn bộ vòng bảng hoàn thành, tự động điền tên đội vào các vị trí thứ hạng bảng (1A, 2B...) trong nhánh KO
+  useEffect(() => {
+    if (isReadOnly || !allGroupStageDone || !ev) return;
+    const needsResolve = koMatches.some(
+      (m) =>
+        m.round === 1 &&
+        ((m.customPlaceholderA && !m.aId && m.customPlaceholderA !== "BYE") ||
+          (m.customPlaceholderB && !m.bId && m.customPlaceholderB !== "BYE")),
+    );
+    if (needsResolve) {
+      const propagated = propagateKnockout(state.matches, ev.id, ev);
+      const changed = propagated.some((m, idx) => {
+        const orig = state.matches[idx];
+        return orig && (m.aId !== orig.aId || m.bId !== orig.bId);
+      });
+      if (changed) {
+        update({ matches: propagated });
+      }
+    }
+  }, [isReadOnly, allGroupStageDone, ev, koMatches, state.matches, update]);
+
+  // Trận chờ xếp lịch (chưa gán timeSlot, bỏ qua các trận miễn đấu BYE ở vòng KO)
+  const unassignedMatches = useMemo(
+    () => matches.filter((m) => m.timeSlot === undefined && !isActualByeMatch(m)),
+    [matches],
+  );
+
+  // Nhóm các trận chờ theo từng vòng: hiển thị các vòng ở vòng bảng trước, các vòng loại trực tiếp ngay bên dưới
+  const unassignedByRound = useMemo(() => {
+    const map = new Map<
+      string,
+      { stage: "group" | "ko"; round: number; sortOrder: number; label: string; matches: Match[] }
+    >();
+    unassignedMatches.forEach((m) => {
+      let key = "";
+      let label = "";
+      let sortOrder = m.round ?? 1;
+      if (m.stage === "ko") {
+        if (m.slot === 99) {
+          key = `ko-third-${m.round}`;
+          label = m.koRound || "Tranh hạng 3";
+          sortOrder = (m.round ?? 1) - 0.5;
+        } else {
+          key = `ko-${m.round}`;
+          label = m.koRound || `Loại trực tiếp · Vòng ${m.round}`;
+          sortOrder = m.round ?? 1;
+        }
+      } else {
+        key = `round-${m.round}`;
+        label = `Vòng ${m.round}`;
+        sortOrder = m.round ?? 1;
+      }
+      if (!map.has(key)) {
+        map.set(key, {
+          stage: m.stage,
+          round: m.round ?? 1,
+          sortOrder,
+          label,
+          matches: [],
+        });
+      }
+      map.get(key)!.matches.push(m);
+    });
+
+    return Array.from(map.entries())
+      .map(([key, data]) => ({
+        key,
+        stage: data.stage,
+        round: data.round,
+        sortOrder: data.sortOrder,
+        label: data.label,
+        matches: data.matches,
+      }))
+      .sort((a, b) => {
+        // Vòng bảng luôn hiển thị trước, loại trực tiếp tiếp theo
+        if (a.stage !== b.stage) {
+          return a.stage === "group" ? -1 : 1;
+        }
+        return a.sortOrder - b.sortOrder;
+      });
+  }, [unassignedMatches]);
+
+  /* Tính toán vị trí đường kẻ đỏ thời gian hiện tại */
+  const diffMinutes = nowMinutes - startTotalMinutes;
+  const isNowInGrid =
+    diffMinutes >= 0 && diffMinutes <= slotIdxs.length * (state.slotMinutes || 30);
+  const redLineOffsetPx = isNowInGrid
+    ? 130 + (diffMinutes / (state.slotMinutes || 30)) * colWidth
+    : null;
+
+  /* -------- Nhánh loại trực tiếp -------- */
+  const koRounds = [...new Set(koMatches.filter((m) => m.slot !== 99).map((m) => m.round))].sort(
+    (a, b) => (a ?? 0) - (b ?? 0),
+  );
+  const thirdMatch = koMatches.find((m) => m.slot === 99);
+
+  // Đếm số lần mỗi đội xuất hiện trong cùng 1 vòng KO để cảnh báo trùng đội (Ảnh 3)
+  const roundEntryCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    koMatches.forEach((m) => {
+      if (m.slot === 99) return;
+      const keyPrefix = `${m.round}_`;
+      if (m.aId) {
+        const k = keyPrefix + m.aId;
+        counts.set(k, (counts.get(k) || 0) + 1);
+      }
+      if (m.bId) {
+        const k = keyPrefix + m.bId;
+        counts.set(k, (counts.get(k) || 0) + 1);
+      }
+    });
+    return counts;
+  }, [koMatches]);
+
+  const calculateOptimalKoScale = useCallback((isRotated: boolean) => {
+    if (typeof window === "undefined") return 0.6;
+    const isMobile = window.innerWidth < 768;
+    const screenW = window.innerWidth;
+    const screenH = window.innerHeight;
+
+    const maxR = koRounds.length > 0 ? Math.max(...koRounds) : 3;
+    const isTwoSided = koLayout === "two_sided" && koRounds.length > 1;
+    const preCount = Math.max(1, maxR - 1);
+    const treeW = isTwoSided
+      ? preCount * 2 * (275 + 50) + 360
+      : maxR * (275 + 50) + 120;
+    const maxMatchesInRound = Math.max(
+      1,
+      ...koRounds.map((r) => koMatches.filter((m) => m.round === r && m.slot !== 99).length)
+    );
+    const treeH = Math.max(480, maxMatchesInRound * 115 + 60);
+
+    const availW = isRotated ? (screenH - 50) : (screenW - 24);
+    const availH = isRotated ? (screenW - 24) : (screenH - (isMobile ? 70 : 100));
+
+    const scaleW = availW / treeW;
+    const scaleH = availH / treeH;
+    const optimal = Math.min(scaleW, scaleH);
+    return Math.max(0.18, Math.min(1.2, Number((optimal * 0.95).toFixed(2))));
+  }, [koRounds, koLayout, koMatches]);
+
+  const handleOpenFullscreenKo = useCallback(() => {
+    setIsFullscreenKo(true);
+    const isMobile = typeof window !== "undefined" && window.innerWidth < 768;
+    const shouldRotate = isMobile && window.innerHeight > window.innerWidth;
+    setKoRotate(shouldRotate);
+    const optimal = calculateOptimalKoScale(shouldRotate);
+    setKoZoom(optimal);
+  }, [calculateOptimalKoScale]);
+
+  const handleFitTimelineScreen = useCallback(() => {
+    const isMobile = typeof window !== "undefined" && window.innerWidth < 768;
+    const screenW = typeof window !== "undefined" ? window.innerWidth : 1200;
+    const screenH = typeof window !== "undefined" ? window.innerHeight : 800;
+
+    const courtColW = isMobile ? 75 : 85;
+    const availW = Math.max(120, screenW - courtColW - (isMobile ? 16 : 40));
+    const countSlots = Math.max(1, slotIdxs.length);
+    // Tính toán độ rộng để toàn bộ các khung giờ được chọn co vừa khít vào màn hình (hỗ trợ zoom nhỏ xuống từ 20px)
+    const idealW = Math.max(20, Math.floor(availW / countSlots));
+
+    const headerH = isMobile ? 180 : 160;
+    const availH = Math.max(150, screenH - headerH);
+    const countCourts = Math.max(1, safeCourts.length);
+    const idealH = Math.max(isMobile ? 50 : 65, Math.floor(availH / countCourts));
+
+    setColWidth(idealW);
+    setRowHeight(idealH);
+    toast.success(`Đã căn vừa khít màn hình (${idealW}px/cột)!`);
+  }, [slotIdxs.length, safeCourts.length]);
+
+  if (!ev) {
+    return (
+      <div className="max-w-2xl space-y-6">
+        <div>
+          <h1
+            className="font-head text-3xl font-extrabold uppercase tracking-tight text-[#0a3320] sm:text-4xl"
+            style={{ color: "#0a3320" }}
+          >
+            Quản lý giải đấu
+          </h1>
+          <p className="mt-3 text-sm text-line/60">
+            {isLoadingLive
+              ? "Đang tải dữ liệu giải đấu trực tiếp..."
+              : isReadOnly
+                ? "Chưa có nội dung nào được công bố cho giải đấu này."
+                : "Chưa có nội dung nào để điều hành."}
+          </p>
+          {!isReadOnly && currentRole !== "referee" && (
+            <Link to="/noi-dung" className="btn-accent mt-4 inline-block">
+              Tạo nội dung
+            </Link>
+          )}
+        </div>
+
+        {!isReadOnly && !getLiveTournamentIdFromUrl() && user?.email && (
+          <div className="rounded-2xl border border-line/15 bg-card p-5 shadow-xs space-y-3">
+            <h2 className="font-head text-sm font-bold uppercase tracking-wider text-[#0a3320]">
+              Giải đấu bạn được mời tham gia
+            </h2>
+            {loadingShared ? (
+              <p className="text-xs text-line/55">Đang kiểm tra các giải đấu được mời...</p>
+            ) : sharedTournaments.length === 0 ? (
+              <p className="text-xs text-line/55">
+                Chưa có giải đấu nào mời email <strong>{user.email}</strong>.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {sharedTournaments.map((item) => {
+                  const cleanEmail = user.email?.toLowerCase().trim();
+                  const isRef = item.refereeEmails?.some((e) => e.toLowerCase().trim() === cleanEmail);
+                  const isEd = item.editorEmails?.some((e) => e.toLowerCase().trim() === cleanEmail);
+                  return (
+                    <div
+                      key={item.id}
+                      className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line/12 bg-paper/70 px-4 py-3"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-bold text-ink truncate">
+                            {item.name || "Giải đấu chưa đặt tên"}
+                          </span>
+                          <span className="rounded bg-[#0a3320]/10 px-2 py-0.5 text-[10px] font-bold text-[#0a3320]">
+                            {isRef ? "⚖️ Trọng tài" : isEd ? "✏️ Điều hành" : "👁️ Chỉ xem"}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 text-[11px] text-line/60">
+                          {item.date || "Chưa rõ ngày"} · {item.courtsCount} sân · {item.eventsCount} nội dung
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleSelectSharedTournament(item)}
+                        className="btn-accent text-xs !py-1.5"
+                      >
+                        {isRef ? "⚖️ Vào chấm điểm" : "Mở giải"}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (currentRole === "referee" && !getLiveTournamentIdFromUrl()) {
+    const refereeDisplayName =
+      myRefereeCollab?.name?.trim() || user?.displayName?.trim() || user?.email || "Trọng tài";
+    const assignedEvent = assignedMatch
+      ? state.events.find((e) => e.id === assignedMatch.eventId)
+      : undefined;
+    const assignedTeamA = assignedMatch
+      ? entryName(getMatchEntryA(assignedMatch, state.entries))
+      : "";
+    const assignedTeamB = assignedMatch
+      ? entryName(getMatchEntryB(assignedMatch, state.entries))
+      : "";
+
+    return (
+      <div className="mx-auto max-w-2xl py-4 sm:py-8 space-y-6">
+        <div className="rounded-2xl border border-line/15 bg-card p-6 sm:p-8 shadow-sm">
+          <div className="border-b border-line/10 pb-4">
+            <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-accent">
+              ⚖️ Chế độ trọng tài
+            </p>
+            <h1
+              className="mt-1 font-head text-2xl sm:text-3xl font-extrabold uppercase tracking-tight text-[#0a3320]"
+              style={{ color: "#0a3320" }}
+            >
+              {assignedMatch ? "Đã có trận được phân công" : "Màn hình chờ phân công"}
+            </h1>
+          </div>
+
+          {assignedMatch ? (
+            <div className="mt-6 space-y-4">
+              <div className="rounded-xl border border-accent/30 bg-accent/5 p-4">
+                <p className="text-xs font-bold uppercase tracking-wider text-accent">
+                  {assignedEvent?.name || "Trận đấu"} · {assignedMatch.court || "Chưa gán sân"}
+                </p>
+                <p className="mt-1.5 font-head text-xl font-bold text-ink">
+                  {assignedTeamA} <span className="text-line/40">vs</span> {assignedTeamB}
+                </p>
+                <p className="mt-1 text-xs text-line/65">
+                  Đang tự động chuyển sang màn hình cài đặt chấm điểm...
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  void navigate({
+                    to: "/cham-diem/$matchId",
+                    params: { matchId: assignedMatch.id },
+                  })
+                }
+                className="btn-accent w-full justify-center py-3 text-sm font-bold"
+              >
+                Vào cài đặt chấm điểm ngay
+              </button>
+            </div>
+          ) : (
+            <div className="mt-6 space-y-5">
+              <p className="text-sm leading-relaxed text-line/75">
+                Xin chào <strong className="text-ink">{refereeDisplayName}</strong>. Khi chủ giải phân công tên trọng tài{" "}
+                <strong className="text-[#0a3320]">
+                  "{myRefereeCollab?.name?.trim() || refereeDisplayName}"
+                </strong>{" "}
+                vào một trận đấu trên sơ đồ quản lý giải, màn hình này sẽ tự động chuyển ngay sang phần cài đặt chấm điểm cho trận đó.
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 border-t border-line/10 pt-5">
+                <div className="rounded-xl border border-line/12 bg-paper/70 px-4 py-3">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-line/50">
+                    Tên trọng tài
+                  </p>
+                  <p className="mt-1 text-sm font-bold text-[#0a3320]">
+                    {myRefereeCollab?.name?.trim() || "Chưa đặt tên trọng tài"}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-line/12 bg-paper/70 px-4 py-3">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-line/50">
+                    Email đăng nhập
+                  </p>
+                  <p className="mt-1 text-sm font-semibold text-ink truncate">
+                    {user?.email || "—"}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-2xl border border-line/15 bg-card p-5 shadow-xs space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="font-head text-sm font-bold uppercase tracking-wider text-[#0a3320]">
+              Các trận đấu được phân công ({assignedMatches.length})
+            </h2>
+            <span className="text-[11px] text-line/55">
+              Tự động mở khi người điều hành bấm Bắt đầu
+            </span>
+          </div>
+          {assignedMatches.length === 0 ? (
+            <div className="rounded-xl border border-line/12 bg-paper/60 px-4 py-4 text-center text-xs text-line/60">
+              Chưa có trận đấu nào được phân công cho bạn.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {assignedMatches.map((m) => {
+                const evItem = state.events.find((e) => e.id === m.eventId);
+                const tA = entryName(getMatchEntryA(m, state.entries));
+                const tB = entryName(getMatchEntryB(m, state.entries));
+                const stageMeta =
+                  m.stage === "ko"
+                    ? m.koRound || `Loại trực tiếp V${m.round}`
+                    : m.groupName
+                      ? `${m.groupName} · V${m.round}`
+                      : `Vòng ${m.round}`;
+                const metaParts = [
+                  evItem?.name || "Nội dung",
+                  m.court || "Chưa gán sân",
+                  stageMeta,
+                ];
+                const isLive = m.status === "live";
+                return (
+                  <div
+                    key={m.id}
+                    className={`flex items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 ${
+                      isLive
+                        ? "border-[#e44c11]/45 bg-[#e44c11]/[0.05]"
+                        : "border-line/12 bg-paper/60"
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-ink truncate">
+                        {tA} <span className="text-line/40 font-normal">vs</span> {tB}
+                      </p>
+                      <p className="text-[11px] text-line/60 truncate">
+                        {metaParts.join(" · ")}
+                      </p>
+                    </div>
+                    {isLive ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void navigate({
+                            to: "/cham-diem/$matchId",
+                            params: { matchId: m.id },
+                          })
+                        }
+                        className="shrink-0 rounded-lg bg-[#e44c11] px-3 py-1.5 text-xs font-bold text-white cursor-pointer hover:bg-[#e44c11]/90 transition"
+                      >
+                        Đang diễn ra
+                      </button>
+                    ) : (
+                      <span className="shrink-0 rounded-lg border border-line/20 bg-card px-3 py-1.5 text-xs font-bold text-line/70">
+                        Chờ bắt đầu
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const nameOf = (id: string | null) =>
+    id ? entryName(entries.find((e) => e.id === id)) : "Chờ xác định";
 
   const resolveSideLabel = (m: Match, side: "aId" | "bId"): string => {
     if (side === "aId" && m.aEntryIds && m.aEntryIds.length === 2) {
@@ -2813,27 +3551,6 @@ function ManagePage() {
       }) ?? false
     );
   };
-
-  const groupMatches = matches.filter((m) => m.stage === "group");
-  const koMatches = matches.filter((m) => m.stage === "ko");
-
-  const hasKoProgress = useMemo(() => {
-    return koMatches.some(
-      (m) => m.aId !== null || m.scoreA !== null || m.status === "done" || m.status === "live",
-    );
-  }, [koMatches]);
-
-  // Kiểm tra vòng loại trực tiếp đã bắt đầu (có trận đang đấu, đã xong hoặc có điểm)
-  const hasKoStarted = useMemo(() => {
-    return koMatches.some(
-      (m) => m.scoreA !== null || m.scoreB !== null || m.status === "done" || m.status === "live",
-    );
-  }, [koMatches]);
-
-  const rankingCriteria = state.rankingCriteria || ["points", "diff", "h2h", "draw"];
-  const withdrawnEntryIds = useMemo(() => {
-    return new Set(state.entries.filter((e) => e.eventId === ev.id && e.withdrawn).map((e) => e.id));
-  }, [state.entries, ev.id]);
 
   const toggleWithdrawn = (entryId: string) => {
     const entry = state.entries.find((e) => e.id === entryId);
@@ -3210,32 +3927,6 @@ function ManagePage() {
     setNote(`Đã hoán đổi vị trí trận đấu trên lịch.`);
   };
 
-  // Phát hiện các trận trùng giờ nhau trên cùng một sân để cảnh báo viền đỏ
-  const conflictsSet = useMemo(() => {
-    const set = new Set<string>();
-    const slotMins = state.slotMinutes || 30;
-    const scheduled = state.matches.filter(
-      (m) => m.eventId === ev.id && m.court && m.timeSlot !== undefined,
-    );
-    for (let i = 0; i < scheduled.length; i++) {
-      const mA = scheduled[i];
-      const startA = (mA.timeSlot ?? 0) * slotMins + (mA.offsetMinutes ?? 0);
-      const endA = startA + (mA.durationMinutes ?? slotMins);
-      for (let j = i + 1; j < scheduled.length; j++) {
-        const mB = scheduled[j];
-        if (mA.court === mB.court) {
-          const startB = (mB.timeSlot ?? 0) * slotMins + (mB.offsetMinutes ?? 0);
-          const endB = startB + (mB.durationMinutes ?? slotMins);
-          if (Math.max(startA, startB) < Math.min(endA, endB)) {
-            set.add(mA.id);
-            set.add(mB.id);
-          }
-        }
-      }
-    }
-    return set;
-  }, [state.matches, state.slotMinutes, ev.id]);
-
   const cardProps = (m: Match, compact?: boolean): CardProps => ({
     m,
     nameA: resolveSideLabel(m, "aId"),
@@ -3249,8 +3940,12 @@ function ManagePage() {
     isLiveB:
       !(m.status === "done" || (m.scoreA !== null && m.scoreB !== null)) &&
       (m.bEntryIds ? m.bEntryIds.some((id) => isEntryActive(id)) : isEntryActive(m.bId)),
-    onScore: (k, v) => setScore(m, k, v),
+    onScore: (k, v) => {
+      if (isReadOnly) return;
+      setScore(m, k, v);
+    },
     onStatus: (s) => {
+      if (isReadOnly) return;
       const doStatus = () => {
         updateMatch(m.id, {
           status: s,
@@ -3263,216 +3958,60 @@ function ManagePage() {
       }
       doStatus();
     },
-    onReset: () => resetMatch(m),
+    onReset: () => {
+      if (isReadOnly) return;
+      resetMatch(m);
+    },
     courts: state.courts,
-    referees: state.referees,
-    onCourt: (c) => updateMatch(m.id, { court: c }),
-    onReferee: (r) => updateMatch(m.id, { referee: r }),
-    onAddReferee: handleAddReferee,
-    onClearReferees: handleClearReferees,
-    onRemoveFromTimeline: () => {
-      recordTimelineState();
-      updateMatch(m.id, { timeSlot: undefined });
+    referees: mergedReferees,
+    onCourt: (c) => {
+      if (isReadOnly) return;
+      updateMatch(m.id, { court: c });
     },
+    onReferee: (r) => {
+      if (isReadOnly) return;
+      updateMatch(m.id, { referee: r });
+    },
+    onAddReferee: (r) => {
+      if (isReadOnly) return;
+      handleAddReferee(r);
+    },
+    onClearReferees: () => {
+      if (isReadOnly) return;
+      handleClearReferees();
+    },
+    onRemoveFromTimeline: isReadOnly
+      ? undefined
+      : () => {
+          recordTimelineState();
+          updateMatch(m.id, { timeSlot: undefined });
+        },
     onViewNote: (n) => setViewNoteText(n),
-    onDurationChange: (mins, recordHistory = true) => {
-      if (recordHistory) recordTimelineState();
-      updateMatch(m.id, { durationMinutes: mins });
-    },
-    onOffsetChange: (offset, recordHistory = true) => {
-      if (recordHistory) recordTimelineState();
-      updateMatch(m.id, { offsetMinutes: offset });
-    },
-    onMoveHorizontal: (newSlot, newOffset, recordHistory = true) => {
-      if (recordHistory) recordTimelineState();
-      updateMatch(m.id, { timeSlot: newSlot, offsetMinutes: newOffset });
-    },
-    onDropOnMatch: handleMatchDrop,
+    onDurationChange: isReadOnly
+      ? undefined
+      : (mins, recordHistory = true) => {
+          if (recordHistory) recordTimelineState();
+          updateMatch(m.id, { durationMinutes: mins });
+        },
+    onOffsetChange: isReadOnly
+      ? undefined
+      : (offset, recordHistory = true) => {
+          if (recordHistory) recordTimelineState();
+          updateMatch(m.id, { offsetMinutes: offset });
+        },
+    onMoveHorizontal: isReadOnly
+      ? undefined
+      : (newSlot, newOffset, recordHistory = true) => {
+          if (recordHistory) recordTimelineState();
+          updateMatch(m.id, { timeSlot: newSlot, offsetMinutes: newOffset });
+        },
+    onDropOnMatch: isReadOnly ? undefined : handleMatchDrop,
     hasConflict: compact && conflictsSet.has(m.id),
     compact,
     isTeamMode: ev?.mode === "dong_doi",
     onManageTeamMatch: (target) => setTeamMatchToManage(target),
+    isReadOnly,
   });
-
-  /* -------- Vòng bảng theo cột vòng -------- */
-  const rounds = [...new Set(groupMatches.map((m) => m.round))].sort((a, b) => (a ?? 0) - (b ?? 0));
-
-  const maxAllowedRotatingRounds = useMemo(() => {
-    if (!ev) return 0;
-    if (ev.randomRoundsCount && ev.randomRoundsCount > 0) {
-      return ev.randomRoundsCount;
-    }
-    const activeCount = entries.filter((e) => !e.withdrawn).length;
-    if (activeCount < 2) return 1;
-    // N chẵn: N - 1 vòng; N lẻ: N vòng (do mỗi vòng có 1 người nghỉ bye)
-    return activeCount % 2 === 0 ? activeCount - 1 : activeCount;
-  }, [ev, entries]);
-
-  const isRotatingRoundsCompleted = useMemo(() => {
-    if (!isRotatingDoubles(ev)) return false;
-    return rounds.length >= maxAllowedRotatingRounds;
-  }, [ev, rounds.length, maxAllowedRotatingRounds]);
-
-  const canDrawMoreRotatingRounds = useMemo(() => {
-    if (!isRotatingDoubles(ev)) return false;
-    return rounds.length > 0 && !isRotatingRoundsCompleted;
-  }, [ev, rounds.length, isRotatingRoundsCompleted]);
-
-  // Đếm số lượng vòng đã hoàn thành (tất cả các trận trong vòng đã nhập điểm xong)
-  const completedRotatingRoundsCount = useMemo(() => {
-    return rounds.filter((r) => {
-      const rMatches = groupMatches.filter((m) => m.round === r);
-      return (
-        rMatches.length > 0 &&
-        rMatches.every(
-          (m) => m.status === "done" || (m.scoreA !== null && m.scoreB !== null),
-        )
-      );
-    }).length;
-  }, [rounds, groupMatches]);
-
-  // Tự động phân chia các vòng thành nhiều hàng cân đối đẹp mắt (10 vòng -> 2 hàng x 5, 12 vòng -> 2 hàng x 6, 15 vòng -> 3 hàng x 5)
-  const exportRoundRows = useMemo(() => {
-    const n = rounds.length;
-    if (n <= 6) return [rounds];
-    let numRows = 2;
-    if (n > 18) numRows = 4;
-    else if (n > 12) numRows = 3;
-    else numRows = 2;
-
-    const rows: number[][] = [];
-    let startIndex = 0;
-    for (let r = 0; r < numRows; r++) {
-      const remainingItems = n - startIndex;
-      const remainingRows = numRows - r;
-      const count = Math.ceil(remainingItems / remainingRows);
-      rows.push(rounds.slice(startIndex, startIndex + count));
-      startIndex += count;
-    }
-    return rows;
-  }, [rounds]);
-
-  /* -------- Timeline -------- */
-  const timelinePrintRef = useRef<HTMLDivElement>(null);
-  const dragGrabPxRef = useRef<number | null>(null);
-
-  const timelineSource = tab === "timeline" ? matches : [];
-  const grid = buildTimeline(timelineSource, state.courts);
-
-  // Hiển thị toàn bộ ngày hoặc khung giờ được người dùng chọn
-  const [startH = 8, startM = 0] = (state.startTime || "08:00").split(":").map(Number);
-  const startTotalMinutes = (startH % 24) * 60 + startM;
-  const minutesUntilMidnight = Math.max(60, 24 * 60 - startTotalMinutes);
-  const fullDaySlots = Math.ceil(minutesUntilMidnight / Math.max(5, state.slotMinutes || 30));
-
-  const selectedEndMinutes = (timelineEndHour ?? 24) * 60;
-  const minutesFromStart = Math.max(60, selectedEndMinutes - startTotalMinutes);
-  const targetSlots = Math.ceil(minutesFromStart / Math.max(5, state.slotMinutes || 30));
-
-  const maxSlot = Math.max(
-    1,
-    timelineEndHour !== null
-      ? targetSlots - 1
-      : Math.max(
-          fullDaySlots,
-          3,
-          ...[...grid.values()].flatMap((list) => list.map((s) => s.slot + 1)),
-        ),
-  );
-  const slotIdxs = Array.from({ length: maxSlot + 1 }, (_, i) => i);
-
-  // Trạng thái vòng bảng của nội dung hiện tại
-  const currentGroupMatches = useMemo(
-    () => matches.filter((m) => m.stage === "group"),
-    [matches],
-  );
-  const hasGroupStage = currentGroupMatches.length > 0;
-  const allGroupStageDone = useMemo(
-    () => hasGroupStage && currentGroupMatches.every((m) => m.status === "done"),
-    [hasGroupStage, currentGroupMatches],
-  );
-
-  // Khi toàn bộ vòng bảng hoàn thành, tự động điền tên đội vào các vị trí thứ hạng bảng (1A, 2B...) trong nhánh KO
-  useEffect(() => {
-    if (!allGroupStageDone || !ev) return;
-    const needsResolve = koMatches.some(
-      (m) =>
-        m.round === 1 &&
-        ((m.customPlaceholderA && !m.aId && m.customPlaceholderA !== "BYE") ||
-          (m.customPlaceholderB && !m.bId && m.customPlaceholderB !== "BYE")),
-    );
-    if (needsResolve) {
-      const propagated = propagateKnockout(state.matches, ev.id, ev);
-      const changed = propagated.some((m, idx) => {
-        const orig = state.matches[idx];
-        return orig && (m.aId !== orig.aId || m.bId !== orig.bId);
-      });
-      if (changed) {
-        update({ matches: propagated });
-      }
-    }
-  }, [allGroupStageDone, ev, koMatches, state.matches, update]);
-
-  // Trận chờ xếp lịch (chưa gán timeSlot, bỏ qua các trận miễn đấu BYE ở vòng KO)
-  const unassignedMatches = useMemo(
-    () => matches.filter((m) => m.timeSlot === undefined && !isActualByeMatch(m)),
-    [matches],
-  );
-
-  // Nhóm các trận chờ theo từng vòng: hiển thị các vòng ở vòng bảng trước, các vòng loại trực tiếp ngay bên dưới
-  const unassignedByRound = useMemo(() => {
-    const map = new Map<
-      string,
-      { stage: "group" | "ko"; round: number; sortOrder: number; label: string; matches: Match[] }
-    >();
-    unassignedMatches.forEach((m) => {
-      let key = "";
-      let label = "";
-      let sortOrder = m.round ?? 1;
-      if (m.stage === "ko") {
-        if (m.slot === 99) {
-          key = `ko-third-${m.round}`;
-          label = m.koRound || "Tranh hạng 3";
-          sortOrder = (m.round ?? 1) - 0.5;
-        } else {
-          key = `ko-${m.round}`;
-          label = m.koRound || `Loại trực tiếp · Vòng ${m.round}`;
-          sortOrder = m.round ?? 1;
-        }
-      } else {
-        key = `round-${m.round}`;
-        label = `Vòng ${m.round}`;
-        sortOrder = m.round ?? 1;
-      }
-      if (!map.has(key)) {
-        map.set(key, {
-          stage: m.stage,
-          round: m.round ?? 1,
-          sortOrder,
-          label,
-          matches: [],
-        });
-      }
-      map.get(key)!.matches.push(m);
-    });
-
-    return Array.from(map.entries())
-      .map(([key, data]) => ({
-        key,
-        stage: data.stage,
-        round: data.round,
-        sortOrder: data.sortOrder,
-        label: data.label,
-        matches: data.matches,
-      }))
-      .sort((a, b) => {
-        // Vòng bảng luôn hiển thị trước, loại trực tiếp tiếp theo
-        if (a.stage !== b.stage) {
-          return a.stage === "group" ? -1 : 1;
-        }
-        return a.sortOrder - b.sortOrder;
-      });
-  }, [unassignedMatches]);
 
   const dropOn = (court: string, slot: number, offsetMinutes = 0) => {
     if (!dragMatch) return;
@@ -3794,95 +4333,6 @@ function ManagePage() {
     setNote("Đã xuất file Excel lịch thi đấu.");
   };
 
-  /* Tính toán vị trí đường kẻ đỏ thời gian hiện tại */
-  const diffMinutes = nowMinutes - startTotalMinutes;
-  const isNowInGrid =
-    diffMinutes >= 0 && diffMinutes <= slotIdxs.length * state.slotMinutes;
-  const redLineOffsetPx = isNowInGrid
-    ? 130 + (diffMinutes / state.slotMinutes) * colWidth
-    : null;
-
-  /* -------- Nhánh loại trực tiếp -------- */
-  const koRounds = [...new Set(koMatches.filter((m) => m.slot !== 99).map((m) => m.round))].sort(
-    (a, b) => (a ?? 0) - (b ?? 0),
-  );
-  const thirdMatch = koMatches.find((m) => m.slot === 99);
-
-  // Đếm số lần mỗi đội xuất hiện trong cùng 1 vòng KO để cảnh báo trùng đội (Ảnh 3)
-  const roundEntryCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    koMatches.forEach((m) => {
-      if (m.slot === 99) return;
-      const keyPrefix = `${m.round}_`;
-      if (m.aId) {
-        const k = keyPrefix + m.aId;
-        counts.set(k, (counts.get(k) || 0) + 1);
-      }
-      if (m.bId) {
-        const k = keyPrefix + m.bId;
-        counts.set(k, (counts.get(k) || 0) + 1);
-      }
-    });
-    return counts;
-  }, [koMatches]);
-
-  const calculateOptimalKoScale = useCallback((isRotated: boolean) => {
-    if (typeof window === "undefined") return 0.6;
-    const isMobile = window.innerWidth < 768;
-    const screenW = window.innerWidth;
-    const screenH = window.innerHeight;
-
-    const maxR = koRounds.length > 0 ? Math.max(...koRounds) : 3;
-    const isTwoSided = koLayout === "two_sided" && koRounds.length > 1;
-    const preCount = Math.max(1, maxR - 1);
-    const treeW = isTwoSided
-      ? preCount * 2 * (275 + 50) + 360
-      : maxR * (275 + 50) + 120;
-    const maxMatchesInRound = Math.max(
-      1,
-      ...koRounds.map((r) => koMatches.filter((m) => m.round === r && m.slot !== 99).length)
-    );
-    const treeH = Math.max(480, maxMatchesInRound * 115 + 60);
-
-    const availW = isRotated ? (screenH - 50) : (screenW - 24);
-    const availH = isRotated ? (screenW - 24) : (screenH - (isMobile ? 70 : 100));
-
-    const scaleW = availW / treeW;
-    const scaleH = availH / treeH;
-    const optimal = Math.min(scaleW, scaleH);
-    return Math.max(0.18, Math.min(1.2, Number((optimal * 0.95).toFixed(2))));
-  }, [koRounds, koLayout, koMatches]);
-
-  const handleOpenFullscreenKo = useCallback(() => {
-    setIsFullscreenKo(true);
-    const isMobile = typeof window !== "undefined" && window.innerWidth < 768;
-    const shouldRotate = isMobile && window.innerHeight > window.innerWidth;
-    setKoRotate(shouldRotate);
-    const optimal = calculateOptimalKoScale(shouldRotate);
-    setKoZoom(optimal);
-  }, [calculateOptimalKoScale]);
-
-  const handleFitTimelineScreen = useCallback(() => {
-    const isMobile = typeof window !== "undefined" && window.innerWidth < 768;
-    const screenW = typeof window !== "undefined" ? window.innerWidth : 1200;
-    const screenH = typeof window !== "undefined" ? window.innerHeight : 800;
-
-    const courtColW = isMobile ? 75 : 85;
-    const availW = Math.max(120, screenW - courtColW - (isMobile ? 16 : 40));
-    const countSlots = Math.max(1, slotIdxs.length);
-    // Tính toán độ rộng để toàn bộ các khung giờ được chọn co vừa khít vào màn hình (hỗ trợ zoom nhỏ xuống từ 20px)
-    const idealW = Math.max(20, Math.floor(availW / countSlots));
-
-    const headerH = isMobile ? 180 : 160;
-    const availH = Math.max(150, screenH - headerH);
-    const countCourts = Math.max(1, state.courts.length);
-    const idealH = Math.max(isMobile ? 50 : 65, Math.floor(availH / countCourts));
-
-    setColWidth(idealW);
-    setRowHeight(idealH);
-    toast.success(`Đã căn vừa khít màn hình (${idealW}px/cột)!`);
-  }, [slotIdxs.length, state.courts.length]);
-
   const handleDownloadGroupScheduleImage = async () => {
     if (!exportGroupScheduleRef.current) return;
     setIsExportingImage(true);
@@ -4171,30 +4621,6 @@ function ManagePage() {
     toast.success("Đã xếp đội vào ô thi đấu.");
   };
 
-  const handleAssignPlaceholderFromPicker = (placeholder: string) => {
-    if (!koSlotPicker) return;
-    const targetMatch = state.matches.find((m) => m.id === koSlotPicker.matchId);
-    if (!targetMatch) return;
-    const targetSide = koSlotPicker.side;
-    const placeholderKey = targetSide === "aId" ? "customPlaceholderA" : "customPlaceholderB";
-
-    const patched = state.matches.map((m) =>
-      m.id === targetMatch.id
-        ? {
-            ...m,
-            [targetSide]: null,
-            [placeholderKey]: placeholder,
-            scoreA: null,
-            scoreB: null,
-            status: "pending" as const,
-          }
-        : m,
-    );
-    update({ matches: propagateKnockout(patched, ev.id, ev) });
-    setKoSlotPicker(null);
-    toast.success(`Đã gán ký hiệu ${placeholder} vào ô thi đấu.`);
-  };
-
   const handleClearSlotFromPicker = () => {
     if (!koSlotPicker) return;
     const targetMatch = state.matches.find((m) => m.id === koSlotPicker.matchId);
@@ -4277,15 +4703,29 @@ function ManagePage() {
         isConflictB={isConflictB}
         hasRoundConflict={hasRoundConflict}
         isKoLocked={isKoLocked}
-        onScore={(k, v) => setScore(m, k, v)}
-        onStatus={(s) => updateMatch(m.id, { status: s, startedAt: s === "live" ? Date.now() : undefined } as any)}
-        onReset={() => resetMatch(m)}
-        onDropTeam={(side) => dropTeam(m, side)}
+        isReadOnly={isReadOnly}
+        onScore={(k, v) => {
+          if (isReadOnly) return;
+          setScore(m, k, v);
+        }}
+        onStatus={(s) => {
+          if (isReadOnly) return;
+          updateMatch(m.id, { status: s, startedAt: s === "live" ? Date.now() : undefined } as any);
+        }}
+        onReset={() => {
+          if (isReadOnly) return;
+          resetMatch(m);
+        }}
+        onDropTeam={(side) => {
+          if (isReadOnly) return;
+          dropTeam(m, side);
+        }}
         onSelectTeamSlot={(side) => {
-          if (!isKoLocked) setKoSlotPicker({ matchId: m.id, side });
+          if (isReadOnly || isKoLocked) return;
+          setKoSlotPicker({ matchId: m.id, side });
         }}
         onClearTeam={(side) => {
-          if (isKoLocked) return;
+          if (isReadOnly || isKoLocked) return;
           const placeholderKey = side === "aId" ? "customPlaceholderA" : "customPlaceholderB";
           const patched = state.matches.map((x) =>
             x.id === m.id
@@ -4303,7 +4743,7 @@ function ManagePage() {
           setNote("Đã xóa đội / vị trí khỏi ô thi đấu.");
         }}
         onStartDragTeam={(side) => {
-          if (isKoLocked) return;
+          if (isReadOnly || isKoLocked) return;
           setDragKoSlot({
             matchId: m.id,
             side,
@@ -4315,10 +4755,19 @@ function ManagePage() {
           });
         }}
         onViewNote={(n) => setViewNoteText(n)}
-        referees={state.referees}
-        onReferee={(r) => updateMatch(m.id, { referee: r })}
-        onAddReferee={handleAddReferee}
-        onClearReferees={handleClearReferees}
+        referees={mergedReferees}
+        onReferee={(r) => {
+          if (isReadOnly) return;
+          updateMatch(m.id, { referee: r });
+        }}
+        onAddReferee={(r) => {
+          if (isReadOnly) return;
+          handleAddReferee(r);
+        }}
+        onClearReferees={() => {
+          if (isReadOnly) return;
+          handleClearReferees();
+        }}
       />
     );
   };
@@ -4585,7 +5034,11 @@ function ManagePage() {
               {slotIdxs.map((s) => (
                 <div
                   key={`${court}-${s}`}
-                  className="relative border-b border-r border-line/10 p-0.5 transition hover:bg-accent/10 group overflow-hidden"
+                  className={
+                    isReadOnly
+                      ? "relative border-b border-r border-line/10 p-0.5 overflow-hidden"
+                      : "relative border-b border-r border-line/10 p-0.5 transition hover:bg-accent/10 group overflow-hidden"
+                  }
                   style={{
                     gridRow: rowNum,
                     gridColumn: s + 2,
@@ -4593,11 +5046,18 @@ function ManagePage() {
                     height: `${rowHeight}px`,
                     maxHeight: `${rowHeight}px`,
                   }}
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    e.dataTransfer.dropEffect = "move";
-                  }}
-                  onDrop={(e) => {
+                  onDragOver={
+                    isReadOnly
+                      ? undefined
+                      : (e) => {
+                          e.preventDefault();
+                          e.dataTransfer.dropEffect = "move";
+                        }
+                  }
+                  onDrop={
+                    isReadOnly
+                      ? undefined
+                      : (e) => {
                     e.preventDefault();
                     e.stopPropagation();
                     const draggedId = e.dataTransfer.getData("text/plain") || dragMatch;
@@ -4695,19 +5155,22 @@ function ManagePage() {
                         droppedStartMins,
                       )})`,
                     );
-                  }}
+                  }
+                  }
                 >
                   {/* Vạch chia 5 phút khi hover để kéo thả chính xác (+5p, +10p, +15p...) */}
-                  <div className="pointer-events-none absolute inset-0 hidden group-hover:flex">
-                    {Array.from({ length: Math.max(1, Math.floor(slotMins / 5)) }).map((_, stepI) => (
-                      <div
-                        key={stepI}
-                        className="flex-1 border-r border-accent/20 border-dashed last:border-r-0 flex items-end justify-center pb-0.5"
-                      >
-                        <span className="text-[8px] font-mono text-accent font-semibold">+{(stepI + 1) * 5}p</span>
-                      </div>
-                    ))}
-                  </div>
+                  {!isReadOnly && (
+                    <div className="pointer-events-none absolute inset-0 hidden group-hover:flex">
+                      {Array.from({ length: Math.max(1, Math.floor(slotMins / 5)) }).map((_, stepI) => (
+                        <div
+                          key={stepI}
+                          className="flex-1 border-r border-accent/20 border-dashed last:border-r-0 flex items-end justify-center pb-0.5"
+                        >
+                          <span className="text-[8px] font-mono text-accent font-semibold">+{(stepI + 1) * 5}p</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
 
@@ -4733,24 +5196,34 @@ function ManagePage() {
                   return (
                     <div
                       key={m.id}
-                      draggable={true}
-                      onDragStart={(e) => {
-                        if ((e.target as HTMLElement).closest("[data-no-drag]")) {
-                          e.preventDefault();
-                          return;
-                        }
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        dragGrabPxRef.current = e.clientX - rect.left;
-                        e.dataTransfer.setData("text/plain", m.id);
-                        e.dataTransfer.effectAllowed = "move";
-                        // Cho phép chuyển sang trạng thái drag ngay sau khi event dragstart được browser khởi tạo
-                        setTimeout(() => setDragMatch(m.id), 0);
-                      }}
-                      onDragEnd={() => {
-                        setDragMatch(null);
-                        dragGrabPxRef.current = null;
-                      }}
-                      className={`timeline-card-wrapper pointer-events-auto cursor-grab active:cursor-grabbing absolute transition-[opacity] ${
+                      draggable={!isReadOnly}
+                      onDragStart={
+                        isReadOnly
+                          ? undefined
+                          : (e) => {
+                              if ((e.target as HTMLElement).closest("[data-no-drag]")) {
+                                e.preventDefault();
+                                return;
+                              }
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              dragGrabPxRef.current = e.clientX - rect.left;
+                              e.dataTransfer.setData("text/plain", m.id);
+                              e.dataTransfer.effectAllowed = "move";
+                              // Cho phép chuyển sang trạng thái drag ngay sau khi event dragstart được browser khởi tạo
+                              setTimeout(() => setDragMatch(m.id), 0);
+                            }
+                      }
+                      onDragEnd={
+                        isReadOnly
+                          ? undefined
+                          : () => {
+                              setDragMatch(null);
+                              dragGrabPxRef.current = null;
+                            }
+                      }
+                      className={`timeline-card-wrapper pointer-events-auto ${
+                        isReadOnly ? "" : "cursor-grab active:cursor-grabbing"
+                      } absolute transition-[opacity] ${
                         dragMatch === m.id ? "opacity-30 !pointer-events-none" : ""
                       } ${dragMatch && dragMatch !== m.id ? "pointer-events-none" : ""} hover:z-30`}
                       style={{
@@ -4797,21 +5270,18 @@ function ManagePage() {
             Quản lý giải đấu
           </h1>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {isReadOnly && (
-            <span className="rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-800 dark:text-amber-300 px-3 py-1.5 text-xs font-bold flex items-center gap-1.5 shadow-2xs">
-              👁️ Đang xem trực tiếp (Chỉ xem)
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={() => setShareModalOpen(true)}
-            className="rounded-xl bg-[#093220] hover:bg-[#093220]/90 text-white px-3.5 py-2 text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer transition"
-            title="Thêm email người cùng điều hành hoặc xem, chia sẻ mã QR theo dõi trực tiếp"
-          >
-            🤝 Chia sẻ & QR
-          </button>
-        </div>
+        {!isReadOnly && (
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShareModalOpen(true)}
+              className="rounded-xl border border-line/20 bg-card hover:bg-secondary text-[#0a3320] px-3.5 py-2 text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer transition"
+              title="Thêm email người cùng điều hành hoặc xem, chia sẻ mã QR theo dõi trực tiếp"
+            >
+              Chia sẻ
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Thanh thông báo các trận ĐANG DIỄN RA (Active Matches Bar - Ảnh 4) */}
@@ -4882,30 +5352,42 @@ function ManagePage() {
                   </div>
 
                   {/* Thanh nút bấm theo Ảnh 4: Tạm dừng bên trái, Đồng hồ bấm giờ ở giữa, Chấm điểm bên phải */}
-                  <div className="mt-2.5 flex items-center justify-between gap-1.5 pt-2 border-t border-line/10">
-                    <button
-                      type="button"
-                      onClick={() => updateMatch(m.id, { status: "pending", startedAt: undefined } as any)}
-                      className="rounded px-2 py-1 text-[10px] font-bold text-red-600 bg-red-500/10 hover:bg-red-500/20 transition cursor-pointer flex items-center gap-1 shrink-0"
-                      style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                      title="Tạm dừng trận đấu"
-                    >
-                      ⏸ Tạm dừng
-                    </button>
+                  <div
+                    className={`mt-2.5 flex items-center ${
+                      isReadOnly ? "justify-center" : "justify-between"
+                    } gap-1.5 pt-2 border-t border-line/10`}
+                  >
+                    {!isReadOnly && (
+                      <button
+                        type="button"
+                        onClick={() => updateMatch(m.id, { status: "pending", startedAt: undefined } as any)}
+                        className="rounded px-2 py-1 text-[10px] font-bold text-red-600 bg-red-500/10 hover:bg-red-500/20 transition cursor-pointer flex items-center gap-1 shrink-0"
+                        style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                        title="Tạm dừng trận đấu"
+                      >
+                        ⏸ Tạm dừng
+                      </button>
+                    )}
 
                     <LiveStopwatch
                       startedAt={(m as any).startedAt}
-                      onReset={() => updateMatch(m.id, { startedAt: Date.now() } as any)}
+                      onReset={
+                        isReadOnly
+                          ? undefined
+                          : () => updateMatch(m.id, { startedAt: Date.now() } as any)
+                      }
                     />
 
-                    <Link
-                      to="/cham-diem/$matchId"
-                      params={{ matchId: m.id } as any}
-                      className="btn-accent !px-2.5 !py-1 text-[10px] font-bold shrink-0"
-                      style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                    >
-                      ⚡ Chấm điểm
-                    </Link>
+                    {!isReadOnly && (
+                      <Link
+                        to="/cham-diem/$matchId"
+                        params={{ matchId: m.id } as any}
+                        className="btn-accent !px-2.5 !py-1 text-[10px] font-bold shrink-0"
+                        style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                      >
+                        ⚡ Chấm điểm
+                      </Link>
+                    )}
                   </div>
                 </div>
               );
@@ -4938,147 +5420,151 @@ function ManagePage() {
           <TabBtn id="group" label={ev.bracket === "rr" ? "Vòng tròn" : "Vòng bảng"} />
           <TabBtn id="timeline" label="Timeline sân" />
           {ev.bracket !== "rr" && <TabBtn id="ko" label="Loại trực tiếp" />}
-          <span className="mx-1 h-5 w-px bg-line/15" />
+          {!(tab === "timeline" && isReadOnly) && <span className="mx-1 h-5 w-px bg-line/15" />}
 
           {tab === "ko" ? (
             <div className="flex flex-wrap items-center gap-2">
-              {/* Chế độ chọn tổng số đội KO vs Theo đội đi tiếp / bảng */}
-              <div className="flex items-center gap-1 rounded-lg bg-card p-0.5 ring-1 ring-line/20 text-xs">
-                <button
-                  type="button"
-                  onClick={() => setKoType("total")}
-                  style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: "bold" }}
-                  className={`px-2.5 py-1 rounded-md font-bold transition cursor-pointer ${
-                    koType === "total"
-                      ? "bg-accent text-accent-foreground shadow-2xs"
-                      : "text-line/60 hover:text-ink"
-                  }`}
-                  title="Tạo nhánh KO lấy đúng số đội đã chọn (bổ sung các đội hạng ba có hiệu số trung bình mỗi trận cao nhất, không dùng BYE)"
-                >
-                  Tổng số đội KO
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setKoType("advance")}
-                  style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: "bold" }}
-                  className={`px-2.5 py-1 rounded-md font-bold transition cursor-pointer ${
-                    koType === "advance"
-                      ? "bg-accent text-accent-foreground shadow-2xs"
-                      : "text-line/60 hover:text-ink"
-                  }`}
-                  title="Tự động xếp hạt giống theo số lượng đội đi tiếp mỗi bảng (có thể dùng suất BYE nếu số đội không tròn lũy thừa 2)"
-                >
-                  Theo đội đi tiếp / bảng
-                </button>
-              </div>
-
-              {koType === "total" ? (
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-line/70">
-                  <span style={{ fontFamily: "'Space Grotesk', sans-serif" }}>Tổng đội KO:</span>
-                  <div className="flex items-center gap-1">
-                    {[4, 8, 16, 32, 64].map((cnt) => (
-                      <button
-                        key={cnt}
-                        type="button"
-                        onClick={() => setTotalKoTeams(cnt)}
-                        style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                        className={`px-2 py-0.5 rounded text-xs font-bold transition cursor-pointer ${
-                          totalKoTeams === cnt
-                            ? "bg-accent text-accent-foreground shadow-2xs"
-                            : "bg-card text-line/60 ring-1 ring-line/15 hover:bg-card/80"
-                        }`}
-                      >
-                        {cnt}
-                      </button>
-                    ))}
+              {!isReadOnly && (
+                <>
+                  {/* Chế độ chọn tổng số đội KO vs Theo đội đi tiếp / bảng */}
+                  <div className="flex items-center gap-1 rounded-lg bg-card p-0.5 ring-1 ring-line/20 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setKoType("total")}
+                      style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: "bold" }}
+                      className={`px-2.5 py-1 rounded-md font-bold transition cursor-pointer ${
+                        koType === "total"
+                          ? "bg-accent text-accent-foreground shadow-2xs"
+                          : "text-line/60 hover:text-ink"
+                      }`}
+                      title="Tạo nhánh KO lấy đúng số đội đã chọn (bổ sung các đội hạng ba có hiệu số trung bình mỗi trận cao nhất, không dùng BYE)"
+                    >
+                      Tổng số đội KO
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setKoType("advance")}
+                      style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: "bold" }}
+                      className={`px-2.5 py-1 rounded-md font-bold transition cursor-pointer ${
+                        koType === "advance"
+                          ? "bg-accent text-accent-foreground shadow-2xs"
+                          : "text-line/60 hover:text-ink"
+                      }`}
+                      title="Tự động xếp hạt giống theo số lượng đội đi tiếp mỗi bảng (có thể dùng suất BYE nếu số đội không tròn lũy thừa 2)"
+                    >
+                      Theo đội đi tiếp / bảng
+                    </button>
                   </div>
-                </div>
-              ) : (
-                <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-line/70">
-                  Đi tiếp / bảng:
-                  <input
-                    type="number"
-                    min={1}
-                    max={64}
-                    className="field w-14 text-center !py-1 text-xs"
-                    value={ev.advancePerGroup}
-                    onChange={(e) => {
-                      const newAdvance = Math.max(1, Math.min(64, Number(e.target.value) || 1));
-                      updateEvent(ev.id, { advancePerGroup: newAdvance });
-                    }}
-                    title="Số lượng đội được chọn đi tiếp từ mỗi bảng vào nhánh KO"
-                  />
-                </label>
-              )}
 
-              <div className="flex items-center gap-1.5">
-                <button
-                  className={`btn-accent text-xs ${isKoLocked ? "opacity-60 cursor-not-allowed" : ""}`}
-                  onClick={buildKo}
-                  title={isKoLocked ? "Nhánh KO đang khóa (bấm nút ổ khóa để mở khóa trước)" : undefined}
-                >
-                  Tạo nhánh KO
-                </button>
-                {koType === "total" && (
-                  <button
-                    type="button"
-                    onClick={autoFillKoByAlphabet}
-                    className={`btn-ghost text-xs font-bold flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-accent/40 bg-accent/10 text-accent hover:bg-accent/20 transition cursor-pointer ${
-                      isKoLocked ? "opacity-60 cursor-not-allowed" : ""
-                    }`}
-                    title="Tự động xếp các đội vào 2 nhánh KO theo quy luật thứ hạng chữ cái bảng (Nhánh trái: 1A-2B, 1C-2D... / Nhánh phải: 1B-2A, 1D-2C...)"
-                  >
-                    ⚡ Tự động xếp vào
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => toggleKoLock(ev.id)}
-                  aria-label={isKoLocked ? "Mở khóa nhánh KO" : "Khóa nhánh KO"}
-                  className={`grid size-8 place-items-center rounded-lg border transition-all cursor-pointer shadow-2xs ${
-                    isKoLocked
-                      ? "bg-[#e44c11] text-white border-[#e44c11] hover:bg-[#e44c11]/90"
-                      : "bg-card text-[#0a3320] dark:text-emerald-300 border-line/25 hover:border-[#0a3320]/60 hover:bg-[#0a3320]/5"
-                  }`}
-                  title={
-                    isKoLocked
-                      ? "Nhánh KO đang khóa (bấm để mở khóa chỉnh sửa)"
-                      : "Nhánh KO đang mở khóa (bấm để khóa lại tránh chỉnh sửa ngoài ý muốn)"
-                  }
-                >
-                  {isKoLocked ? (
-                    <svg
-                      className="size-4"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2.2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <rect x="5" y="11" width="14" height="10" rx="2.5" />
-                      <path d="M8 11V7a4 4 0 0 1 8 0v4" />
-                      <circle cx="12" cy="15.5" r="1" fill="currentColor" />
-                      <path d="M12 16.5v2" />
-                    </svg>
+                  {koType === "total" ? (
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-line/70">
+                      <span style={{ fontFamily: "'Space Grotesk', sans-serif" }}>Tổng đội KO:</span>
+                      <div className="flex items-center gap-1">
+                        {[4, 8, 16, 32, 64].map((cnt) => (
+                          <button
+                            key={cnt}
+                            type="button"
+                            onClick={() => setTotalKoTeams(cnt)}
+                            style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                            className={`px-2 py-0.5 rounded text-xs font-bold transition cursor-pointer ${
+                              totalKoTeams === cnt
+                                ? "bg-accent text-accent-foreground shadow-2xs"
+                                : "bg-card text-line/60 ring-1 ring-line/15 hover:bg-card/80"
+                            }`}
+                          >
+                            {cnt}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   ) : (
-                    <svg
-                      className="size-[18px]"
-                      viewBox="0 0 26 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2.2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <rect x="2" y="11" width="13" height="10" rx="2.5" />
-                      <path d="M12 11V6.5a4 4 0 0 1 8 0v3.5" />
-                      <circle cx="8.5" cy="15.5" r="1" fill="currentColor" />
-                      <path d="M8.5 16.5v2" />
-                    </svg>
+                    <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-line/70">
+                      Đi tiếp / bảng:
+                      <input
+                        type="number"
+                        min={1}
+                        max={64}
+                        className="field w-14 text-center !py-1 text-xs"
+                        value={ev.advancePerGroup}
+                        onChange={(e) => {
+                          const newAdvance = Math.max(1, Math.min(64, Number(e.target.value) || 1));
+                          updateEvent(ev.id, { advancePerGroup: newAdvance });
+                        }}
+                        title="Số lượng đội được chọn đi tiếp từ mỗi bảng vào nhánh KO"
+                      />
+                    </label>
                   )}
-                </button>
-              </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      className={`btn-accent text-xs ${isKoLocked ? "opacity-60 cursor-not-allowed" : ""}`}
+                      onClick={buildKo}
+                      title={isKoLocked ? "Nhánh KO đang khóa (bấm nút ổ khóa để mở khóa trước)" : undefined}
+                    >
+                      Tạo nhánh KO
+                    </button>
+                    {koType === "total" && (
+                      <button
+                        type="button"
+                        onClick={autoFillKoByAlphabet}
+                        className={`btn-ghost text-xs font-bold flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-accent/40 bg-accent/10 text-accent hover:bg-accent/20 transition cursor-pointer ${
+                          isKoLocked ? "opacity-60 cursor-not-allowed" : ""
+                        }`}
+                        title="Tự động xếp các đội vào 2 nhánh KO theo quy luật thứ hạng chữ cái bảng (Nhánh trái: 1A-2B, 1C-2D... / Nhánh phải: 1B-2A, 1D-2C...)"
+                      >
+                        ⚡ Tự động xếp vào
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => toggleKoLock(ev.id)}
+                      aria-label={isKoLocked ? "Mở khóa nhánh KO" : "Khóa nhánh KO"}
+                      className={`grid size-8 place-items-center rounded-lg border transition-all cursor-pointer shadow-2xs ${
+                        isKoLocked
+                          ? "bg-[#e44c11] text-white border-[#e44c11] hover:bg-[#e44c11]/90"
+                          : "bg-card text-[#0a3320] dark:text-emerald-300 border-line/25 hover:border-[#0a3320]/60 hover:bg-[#0a3320]/5"
+                      }`}
+                      title={
+                        isKoLocked
+                          ? "Nhánh KO đang khóa (bấm để mở khóa chỉnh sửa)"
+                          : "Nhánh KO đang mở khóa (bấm để khóa lại tránh chỉnh sửa ngoài ý muốn)"
+                      }
+                    >
+                      {isKoLocked ? (
+                        <svg
+                          className="size-4"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2.2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <rect x="5" y="11" width="14" height="10" rx="2.5" />
+                          <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+                          <circle cx="12" cy="15.5" r="1" fill="currentColor" />
+                          <path d="M12 16.5v2" />
+                        </svg>
+                      ) : (
+                        <svg
+                          className="size-[18px]"
+                          viewBox="0 0 26 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2.2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <rect x="2" y="11" width="13" height="10" rx="2.5" />
+                          <path d="M12 11V6.5a4 4 0 0 1 8 0v3.5" />
+                          <circle cx="8.5" cy="15.5" r="1" fill="currentColor" />
+                          <path d="M8.5 16.5v2" />
+                        </svg>
+                      )}
+                    </button>
+                  </div>
+                </>
+              )}
 
               {/* Lựa chọn dạng hiển thị 2 nhánh 2 bên hoặc 1 nhánh thẳng (Ảnh 4) */}
               <div className="flex items-center gap-1 rounded-lg bg-card p-0.5 ring-1 ring-line/20 text-xs">
@@ -5108,16 +5594,18 @@ function ManagePage() {
                 </button>
               </div>
 
-              <button
-                type="button"
-                className={`btn-ghost text-xs font-bold flex items-center gap-1 ${
-                  showManualSeeding ? "bg-accent/15 text-accent ring-1 ring-accent/30" : ""
-                }`}
-                onClick={() => setShowManualSeeding((v) => !v)}
-                title="Bật / Tắt danh sách kéo thả VĐV vào nhánh KO"
-              >
-                🎯 Xếp thủ công {showManualSeeding ? "▼ (Hiện)" : "▶ (Ẩn)"}
-              </button>
+              {!isReadOnly && (
+                <button
+                  type="button"
+                  className={`btn-ghost text-xs font-bold flex items-center gap-1 ${
+                    showManualSeeding ? "bg-accent/15 text-accent ring-1 ring-accent/30" : ""
+                  }`}
+                  onClick={() => setShowManualSeeding((v) => !v)}
+                  title="Bật / Tắt danh sách kéo thả VĐV vào nhánh KO"
+                >
+                  🎯 Xếp thủ công {showManualSeeding ? "▼ (Hiện)" : "▶ (Ẩn)"}
+                </button>
+              )}
 
               <button
                 type="button"
@@ -5129,48 +5617,50 @@ function ManagePage() {
               </button>
             </div>
           ) : tab === "timeline" ? (
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              <label className="flex items-center gap-1.5 font-semibold text-line/70">
-                Bắt đầu:
-                <input
-                  type="time"
-                  className="field !w-24 !py-1 text-xs"
-                  value={state.startTime}
-                  onChange={(e) => update({ startTime: e.target.value })}
-                />
-              </label>
+            !isReadOnly ? (
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <label className="flex items-center gap-1.5 font-semibold text-line/70">
+                  Bắt đầu:
+                  <input
+                    type="time"
+                    className="field !w-24 !py-1 text-xs"
+                    value={state.startTime}
+                    onChange={(e) => update({ startTime: e.target.value })}
+                  />
+                </label>
 
-              <div className="flex items-center gap-1 font-semibold text-line/70">
-                <span>Phút/trận:</span>
-                <input
-                  type="number"
-                  min={5}
-                  max={120}
-                  step={5}
-                  className="field !w-16 text-center !py-1 text-xs"
-                  value={state.slotMinutes}
-                  onChange={(e) =>
-                    update({ slotMinutes: Math.max(5, Number(e.target.value) || 30) })
-                  }
-                />
-                <div className="flex gap-0.5">
-                  {[15, 20, 25, 30, 45].map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                        state.slotMinutes === m
-                          ? "bg-accent text-accent-foreground"
-                          : "bg-card text-line/60 ring-1 ring-line/15"
-                      }`}
-                      onClick={() => update({ slotMinutes: m })}
-                    >
-                      {m}p
-                    </button>
-                  ))}
+                <div className="flex items-center gap-1 font-semibold text-line/70">
+                  <span>Phút/trận:</span>
+                  <input
+                    type="number"
+                    min={5}
+                    max={120}
+                    step={5}
+                    className="field !w-16 text-center !py-1 text-xs"
+                    value={state.slotMinutes}
+                    onChange={(e) =>
+                      update({ slotMinutes: Math.max(5, Number(e.target.value) || 30) })
+                    }
+                  />
+                  <div className="flex gap-0.5">
+                    {[15, 20, 25, 30, 45].map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                          state.slotMinutes === m
+                            ? "bg-accent text-accent-foreground"
+                            : "bg-card text-line/60 ring-1 ring-line/15"
+                        }`}
+                        onClick={() => update({ slotMinutes: m })}
+                      >
+                        {m}p
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
-            </div>
+            ) : null
           ) : (
             <div className="flex flex-wrap items-center gap-2">
               <button
@@ -5184,40 +5674,44 @@ function ManagePage() {
               >
                 📊 Bảng xếp hạng {showStandings ? "▼ (Hiện)" : "▶ (Ẩn)"}
               </button>
-              <button
-                type="button"
-                className="btn-ghost text-xs font-bold flex items-center gap-1.5 px-3 py-1.5 rounded-lg ring-1 ring-line/20 hover:bg-card shadow-2xs cursor-pointer text-[#0a3320] dark:text-emerald-300 font-semibold"
-                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                onClick={() => {
-                  if (rounds.length === 0) {
-                    toast.warning("Chưa có lịch thi đấu để xuất ảnh/PDF. Vui lòng bấm tạo lịch trước!");
-                    return;
-                  }
-                  setIsExportGroupModalOpen(true);
-                }}
-                title="Xuất ảnh hoặc file PDF sơ đồ lịch thi đấu các vòng sạch đẹp"
-              >
-                📸 Xuất ảnh / PDF sơ đồ
-              </button>
-              <div className="inline-flex items-center gap-1">
-                <button
-                  className="btn-accent text-xs"
-                  style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                  onClick={buildGroups}
-                >
-                  {ev.bracket === "rr" ? "Tạo lịch vòng tròn" : "Tạo lịch vòng bảng"}
-                </button>
-                <button
-                  type="button"
-                  className="btn-ghost text-xs !px-2.5 !py-2 font-bold text-line/70 hover:text-ink hover:bg-line/10 transition cursor-pointer"
-                  style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                  onClick={handleRestoreSchedule}
-                  title="Khôi phục trạng thái ban đầu (xóa toàn bộ lịch thi đấu và điểm số để tạo lại từ đầu)"
-                  aria-label="Khôi phục trạng thái ban đầu"
-                >
-                  ↺
-                </button>
-              </div>
+              {!isReadOnly && (
+                <>
+                  <button
+                    type="button"
+                    className="btn-ghost text-xs font-bold flex items-center gap-1.5 px-3 py-1.5 rounded-lg ring-1 ring-line/20 hover:bg-card shadow-2xs cursor-pointer text-[#0a3320] dark:text-emerald-300 font-semibold"
+                    style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                    onClick={() => {
+                      if (rounds.length === 0) {
+                        toast.warning("Chưa có lịch thi đấu để xuất ảnh/PDF. Vui lòng bấm tạo lịch trước!");
+                        return;
+                      }
+                      setIsExportGroupModalOpen(true);
+                    }}
+                    title="Xuất ảnh hoặc file PDF sơ đồ lịch thi đấu các vòng sạch đẹp"
+                  >
+                    📸 Xuất ảnh / PDF sơ đồ
+                  </button>
+                  <div className="inline-flex items-center gap-1">
+                    <button
+                      className="btn-accent text-xs"
+                      style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                      onClick={buildGroups}
+                    >
+                      {ev.bracket === "rr" ? "Tạo lịch vòng tròn" : "Tạo lịch vòng bảng"}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-ghost text-xs !px-2.5 !py-2 font-bold text-line/70 hover:text-ink hover:bg-line/10 transition cursor-pointer"
+                      style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                      onClick={handleRestoreSchedule}
+                      title="Khôi phục trạng thái ban đầu (xóa toàn bộ lịch thi đấu và điểm số để tạo lại từ đầu)"
+                      aria-label="Khôi phục trạng thái ban đầu"
+                    >
+                      ↺
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -5313,60 +5807,64 @@ function ManagePage() {
               <span className="w-9 text-[10px] font-mono text-line/50 text-right">{rowHeight}px</span>
             </div>
 
-            <button
-              type="button"
-              className={`btn-ghost text-xs !py-1.5 font-bold flex items-center gap-1.5 ${
-                showQueue ? "bg-accent/15 text-accent ring-1 ring-accent/30" : ""
-              }`}
-              onClick={() => setShowQueue((v) => !v)}
-              title="Ẩn / Hiện danh sách các trận chờ xếp lịch"
-            >
-              📋 Trận chờ xếp ({unassignedMatches.length}) {showQueue ? "▼" : "▶"}
-            </button>
+            {!isReadOnly && (
+              <>
+                <button
+                  type="button"
+                  className={`btn-ghost text-xs !py-1.5 font-bold flex items-center gap-1.5 ${
+                    showQueue ? "bg-accent/15 text-accent ring-1 ring-accent/30" : ""
+                  }`}
+                  onClick={() => setShowQueue((v) => !v)}
+                  title="Ẩn / Hiện danh sách các trận chờ xếp lịch"
+                >
+                  📋 Trận chờ xếp ({unassignedMatches.length}) {showQueue ? "▼" : "▶"}
+                </button>
 
-            {/* Nút Undo / Redo cho bảng timeline */}
-            <div className="flex items-center gap-1 rounded-lg bg-card p-0.5 ring-1 ring-line/20 shadow-2xs">
-              <button
-                type="button"
-                disabled={timelineHistory.length === 0}
-                onClick={handleUndoTimeline}
-                className="rounded px-2.5 py-1 text-xs font-bold text-ink hover:bg-line/10 disabled:opacity-30 disabled:pointer-events-none cursor-pointer flex items-center gap-1 transition"
-                title="Hoàn tác thay đổi vừa thực hiện trên timeline (Ctrl+Z)"
-              >
-                ↶ Hoàn tác
-              </button>
-              <button
-                type="button"
-                disabled={timelineRedoStack.length === 0}
-                onClick={handleRedoTimeline}
-                className="rounded px-2.5 py-1 text-xs font-bold text-ink hover:bg-line/10 disabled:opacity-30 disabled:pointer-events-none cursor-pointer flex items-center gap-1 transition"
-                title="Làm lại thao tác vừa hoàn tác trên timeline (Ctrl+Y)"
-              >
-                ↷ Làm lại
-              </button>
-            </div>
+                {/* Nút Undo / Redo cho bảng timeline */}
+                <div className="flex items-center gap-1 rounded-lg bg-card p-0.5 ring-1 ring-line/20 shadow-2xs">
+                  <button
+                    type="button"
+                    disabled={timelineHistory.length === 0}
+                    onClick={handleUndoTimeline}
+                    className="rounded px-2.5 py-1 text-xs font-bold text-ink hover:bg-line/10 disabled:opacity-30 disabled:pointer-events-none cursor-pointer flex items-center gap-1 transition"
+                    title="Hoàn tác thay đổi vừa thực hiện trên timeline (Ctrl+Z)"
+                  >
+                    ↶ Hoàn tác
+                  </button>
+                  <button
+                    type="button"
+                    disabled={timelineRedoStack.length === 0}
+                    onClick={handleRedoTimeline}
+                    className="rounded px-2.5 py-1 text-xs font-bold text-ink hover:bg-line/10 disabled:opacity-30 disabled:pointer-events-none cursor-pointer flex items-center gap-1 transition"
+                    title="Làm lại thao tác vừa hoàn tác trên timeline (Ctrl+Y)"
+                  >
+                    ↷ Làm lại
+                  </button>
+                </div>
 
-            <button
-              className="btn-accent text-xs !py-1.5"
-              onClick={handleAutoSchedule}
-              title="Tự động xếp tất cả các trận chưa có giờ vào timeline"
-            >
-              ⚡ Tự động sắp vào timeline
-            </button>
-            <button
-              className="btn-ghost text-xs !py-1.5"
-              onClick={clearTimeline}
-              title="Xoá toàn bộ giờ đã xếp trên timeline"
-            >
-              🧹 Xoá lịch
-            </button>
-            <button
-              className="btn-ghost text-xs !py-1.5 text-courtdeep font-bold"
-              onClick={exportCsv}
-              title="Xuất bảng lịch thi đấu Timeline ra file Excel (.xlsx)"
-            >
-              📊 Xuất Excel
-            </button>
+                <button
+                  className="btn-accent text-xs !py-1.5"
+                  onClick={handleAutoSchedule}
+                  title="Tự động xếp tất cả các trận chưa có giờ vào timeline"
+                >
+                  ⚡ Tự động sắp vào timeline
+                </button>
+                <button
+                  className="btn-ghost text-xs !py-1.5"
+                  onClick={clearTimeline}
+                  title="Xoá toàn bộ giờ đã xếp trên timeline"
+                >
+                  🧹 Xoá lịch
+                </button>
+                <button
+                  className="btn-ghost text-xs !py-1.5 text-courtdeep font-bold"
+                  onClick={exportCsv}
+                  title="Xuất bảng lịch thi đấu Timeline ra file Excel (.xlsx)"
+                >
+                  📊 Xuất Excel
+                </button>
+              </>
+            )}
           </div>
         )}
 
@@ -5425,7 +5923,7 @@ function ManagePage() {
                         <th className="w-6 sm:w-12 py-1.5 sm:py-2 text-center px-0.5">B</th>
                         <th className="w-8 sm:w-16 py-1.5 sm:py-2 text-center px-0.5">HS</th>
                         <th className="w-10 sm:w-20 py-1.5 sm:py-2 text-center font-bold text-accent px-0.5">Tổng điểm</th>
-                        <th className="w-16 sm:w-24 py-1.5 sm:py-2 text-center px-0.5">Tác vụ</th>
+                        {!isReadOnly && <th className="w-16 sm:w-24 py-1.5 sm:py-2 text-center px-0.5">Tác vụ</th>}
                       </tr>
                     </thead>
                     <tbody>
@@ -5449,24 +5947,26 @@ function ManagePage() {
                             <td className="w-6 sm:w-12 py-1.5 sm:py-2 text-center font-semibold text-destructive tabular-nums px-0.5">{r.loss}</td>
                             <td className="w-8 sm:w-16 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.diff > 0 ? `+${r.diff}` : r.diff}</td>
                             <td className="w-10 sm:w-20 py-1.5 sm:py-2 text-center font-head text-sm font-bold text-accent tabular-nums px-0.5">{r.points}</td>
-                            <td className="w-16 sm:w-24 py-1.5 sm:py-2 text-center px-0.5">
-                              <button
-                                type="button"
-                                onClick={() => toggleWithdrawn(r.entryId)}
-                                className={`px-2 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
-                                  rowEntry?.withdrawn
-                                    ? "bg-emerald-500/15 text-emerald-600 hover:bg-emerald-500/25 ring-1 ring-emerald-500/30"
-                                    : "bg-destructive/10 text-destructive hover:bg-destructive/20 ring-1 ring-destructive/20"
-                                }`}
-                                title={
-                                  rowEntry?.withdrawn
-                                    ? "Khôi phục thi đấu lại cho VĐV này"
-                                    : "Đánh dấu VĐV bỏ cuộc (Hủy toàn bộ kết quả trận đấu trước đó trên BXH)"
-                                }
-                              >
-                                {rowEntry?.withdrawn ? "Khôi phục" : "Bỏ cuộc"}
-                              </button>
-                            </td>
+                            {!isReadOnly && (
+                              <td className="w-16 sm:w-24 py-1.5 sm:py-2 text-center px-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() => toggleWithdrawn(r.entryId)}
+                                  className={`px-2 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
+                                    rowEntry?.withdrawn
+                                      ? "bg-emerald-500/15 text-emerald-600 hover:bg-emerald-500/25 ring-1 ring-emerald-500/30"
+                                      : "bg-destructive/10 text-destructive hover:bg-destructive/20 ring-1 ring-destructive/20"
+                                  }`}
+                                  title={
+                                    rowEntry?.withdrawn
+                                      ? "Khôi phục thi đấu lại cho VĐV này"
+                                      : "Đánh dấu VĐV bỏ cuộc (Hủy toàn bộ kết quả trận đấu trước đó trên BXH)"
+                                  }
+                                >
+                                  {rowEntry?.withdrawn ? "Khôi phục" : "Bỏ cuộc"}
+                                </button>
+                              </td>
+                            )}
                           </tr>
                         );
                       })}
@@ -5523,7 +6023,7 @@ function ManagePage() {
                             <th className="w-8 sm:w-16 py-1.5 sm:py-2 text-center px-0.5">HS</th>
                           )}
                           <th className="w-10 sm:w-20 py-1.5 sm:py-2 text-center font-bold text-accent px-0.5">Điểm</th>
-                          <th className="w-16 sm:w-24 py-1.5 sm:py-2 text-center px-0.5">Tác vụ</th>
+                          {!isReadOnly && <th className="w-16 sm:w-24 py-1.5 sm:py-2 text-center px-0.5">Tác vụ</th>}
                         </tr>
                       </thead>
                       <tbody>
@@ -5582,24 +6082,26 @@ function ManagePage() {
                                 <td className="w-8 sm:w-16 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.diff > 0 ? `+${r.diff}` : r.diff}</td>
                               )}
                               <td className="w-10 sm:w-20 py-1.5 sm:py-2 text-center font-head text-sm font-bold text-accent tabular-nums px-0.5">{r.points}</td>
-                              <td className="w-16 sm:w-24 py-1.5 sm:py-2 text-center px-0.5">
-                                <button
-                                  type="button"
-                                  onClick={() => toggleWithdrawn(r.entryId)}
-                                  className={`px-2 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
-                                    rowEntry?.withdrawn
-                                      ? "bg-emerald-500/15 text-emerald-600 hover:bg-emerald-500/25 ring-1 ring-emerald-500/30"
-                                      : "bg-destructive/10 text-destructive hover:bg-destructive/20 ring-1 ring-destructive/20"
-                                  }`}
-                                  title={
-                                    rowEntry?.withdrawn
-                                      ? "Khôi phục thi đấu lại cho đội này"
-                                      : "Đánh dấu đội bỏ cuộc (Hủy toàn bộ kết quả trận đấu trước đó trên BXH)"
-                                  }
-                                >
-                                  {rowEntry?.withdrawn ? "Khôi phục" : "Bỏ cuộc"}
-                                </button>
-                              </td>
+                              {!isReadOnly && (
+                                <td className="w-16 sm:w-24 py-1.5 sm:py-2 text-center px-0.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleWithdrawn(r.entryId)}
+                                    className={`px-2 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
+                                      rowEntry?.withdrawn
+                                        ? "bg-emerald-500/15 text-emerald-600 hover:bg-emerald-500/25 ring-1 ring-emerald-500/30"
+                                        : "bg-destructive/10 text-destructive hover:bg-destructive/20 ring-1 ring-destructive/20"
+                                    }`}
+                                    title={
+                                      rowEntry?.withdrawn
+                                        ? "Khôi phục thi đấu lại cho đội này"
+                                        : "Đánh dấu đội bỏ cuộc (Hủy toàn bộ kết quả trận đấu trước đó trên BXH)"
+                                    }
+                                  >
+                                    {rowEntry?.withdrawn ? "Khôi phục" : "Bỏ cuộc"}
+                                  </button>
+                                </td>
+                              )}
                             </tr>
                           );
                         })}
@@ -5666,7 +6168,7 @@ function ManagePage() {
                                   <th className="w-8 sm:w-11 py-1.5 sm:py-2 text-center px-0.5">HS</th>
                                 )}
                                 <th className="w-8 sm:w-11 py-1.5 sm:py-2 text-center px-0.5 font-bold text-accent">Đ</th>
-                                <th className="w-8 py-1.5 sm:py-2 text-center px-0.5">T/vụ</th>
+                                {!isReadOnly && <th className="w-8 py-1.5 sm:py-2 text-center px-0.5">T/vụ</th>}
                               </tr>
                             </thead>
                             <tbody>
@@ -5717,20 +6219,22 @@ function ManagePage() {
                                       <td className="w-8 sm:w-11 py-1.5 sm:py-2 text-center tabular-nums px-0.5">{r.diff}</td>
                                     )}
                                     <td className="w-8 sm:w-11 py-1.5 sm:py-2 text-center font-bold text-accent tabular-nums px-0.5">{r.points}</td>
-                                    <td className="w-8 py-1.5 sm:py-2 text-center px-0.5">
-                                      <button
-                                        type="button"
-                                        onClick={() => toggleWithdrawn(r.entryId)}
-                                        className={`text-[10px] font-bold p-1 rounded transition cursor-pointer ${
-                                          rowEntry?.withdrawn
-                                            ? "text-emerald-600 hover:bg-emerald-500/20"
-                                            : "text-line/40 hover:text-destructive hover:bg-destructive/10"
-                                        }`}
-                                        title={rowEntry?.withdrawn ? "Khôi phục đội thi đấu" : "Đánh dấu đội bỏ cuộc"}
-                                      >
-                                        {rowEntry?.withdrawn ? "♻️" : "🚫"}
-                                      </button>
-                                    </td>
+                                    {!isReadOnly && (
+                                      <td className="w-8 py-1.5 sm:py-2 text-center px-0.5">
+                                        <button
+                                          type="button"
+                                          onClick={() => toggleWithdrawn(r.entryId)}
+                                          className={`text-[10px] font-bold p-1 rounded transition cursor-pointer ${
+                                            rowEntry?.withdrawn
+                                              ? "text-emerald-600 hover:bg-emerald-500/20"
+                                              : "text-line/40 hover:text-destructive hover:bg-destructive/10"
+                                          }`}
+                                          title={rowEntry?.withdrawn ? "Khôi phục đội thi đấu" : "Đánh dấu đội bỏ cuộc"}
+                                        >
+                                          {rowEntry?.withdrawn ? "♻️" : "🚫"}
+                                        </button>
+                                      </td>
+                                    )}
                                   </tr>
                                 );
                               })}
@@ -5749,7 +6253,13 @@ function ManagePage() {
               <div className={showStandings ? "lg:col-span-8" : "lg:col-span-12"}>
                 {rounds.length === 0 ? (
                   <div className="panel p-6 text-center text-sm text-line/60">
-                    Chưa có lịch thi đấu vòng bảng. Bấm nút <strong>“Tạo lịch vòng bảng”</strong> để bắt đầu.
+                    {isReadOnly ? (
+                      "Chưa có lịch thi đấu vòng bảng."
+                    ) : (
+                      <>
+                        Chưa có lịch thi đấu vòng bảng. Bấm nút <strong>“Tạo lịch vòng bảng”</strong> để bắt đầu.
+                      </>
+                    )}
                   </div>
                 ) : (
                   <div>
@@ -5757,14 +6267,6 @@ function ManagePage() {
                       <span className="font-head text-xs font-bold uppercase tracking-wide text-line/80">
                         {ev.bracket === "rr" ? "Lịch đấu vòng tròn" : "Lịch đấu vòng bảng"} ({rounds.length} vòng)
                       </span>
-                      <button
-                        type="button"
-                        onClick={() => setIsExportGroupModalOpen(true)}
-                        className="rounded-lg bg-[#0a3320] text-white hover:bg-[#0a3320]/90 px-3 py-1.5 text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer transition"
-                        title="Xuất sơ đồ thi đấu theo từng vòng ra file ảnh PNG hoặc PDF sạch đẹp"
-                      >
-                        📸 Xuất ảnh / PDF sơ đồ
-                      </button>
                     </div>
                     <div className="flex gap-4 overflow-x-auto pb-4 pt-[2px]">
                     {rounds.map((r, idx) => {
@@ -5808,7 +6310,7 @@ function ManagePage() {
                   })}
 
                   {isRotatingDoubles(ev) && (
-                    canDrawMoreRotatingRounds ? (
+                    !isReadOnly && canDrawMoreRotatingRounds ? (
                       <div className="w-[260px] shrink-0 pt-[2px] px-[3px] flex flex-col">
                         <button
                           type="button"
@@ -6095,7 +6597,7 @@ function ManagePage() {
       {/* ---------- TIMELINE SÂN VÀ KHUNG GIỜ ---------- */}
       {tab === "timeline" && (
         <div className="space-y-4">
-          {unassignedMatches.length > 0 && (
+          {!isReadOnly && unassignedMatches.length > 0 && (
             <div className="flex items-center justify-end text-xs text-line/60">
               <span className="font-bold text-amber-600 dark:text-amber-400">
                 Còn {unassignedMatches.length} trận chưa xếp giờ
@@ -6105,12 +6607,12 @@ function ManagePage() {
 
           <div className="grid gap-4 lg:grid-cols-12 items-start">
             {/* Bảng timeline với sticky headers */}
-            <div className={`${showQueue ? "lg:col-span-9" : "lg:col-span-12"} panel overflow-hidden rounded-2xl flex flex-col`}>
+            <div className={`${!isReadOnly && showQueue ? "lg:col-span-9" : "lg:col-span-12"} panel overflow-hidden rounded-2xl flex flex-col`}>
               {renderTimelineGrid()}
             </div>
 
             {/* Cột trận chờ xếp lịch bên phải - ghim cố định chạy theo màn hình khi cuộn */}
-            {showQueue && (
+            {!isReadOnly && showQueue && (
               <div
                 className="lg:col-span-3 panel p-3 flex flex-col rounded-2xl sticky top-4 self-start max-h-[calc(100vh-2rem)] z-20 shadow-md"
               >
@@ -6208,10 +6710,16 @@ function ManagePage() {
       {/* ---------- LOẠI TRỰC TIẾP (KNOCKOUT) ---------- */}
       {tab === "ko" && (
         <div className="grid gap-6 lg:grid-cols-12 items-start">
-          <div className={`${showManualSeeding ? "lg:col-span-9" : "lg:col-span-12"} overflow-x-auto pb-4`}>
+          <div className={`${!isReadOnly && showManualSeeding ? "lg:col-span-9" : "lg:col-span-12"} overflow-x-auto pb-4`}>
             {koRounds.length === 0 ? (
               <div className="panel p-6 text-center text-sm text-line/60 rounded-2xl">
-                Chưa có nhánh loại trực tiếp. Bấm <strong>“Tạo nhánh KO”</strong> để sinh sơ đồ.
+                {isReadOnly ? (
+                  "Chưa có nhánh loại trực tiếp."
+                ) : (
+                  <>
+                    Chưa có nhánh loại trực tiếp. Bấm <strong>“Tạo nhánh KO”</strong> để sinh sơ đồ.
+                  </>
+                )}
               </div>
             ) : (
               renderKoBracketTree()
@@ -6219,7 +6727,7 @@ function ManagePage() {
           </div>
 
           {/* Cột kéo thả VĐV vào nhánh KO - GHIM CỐ ĐỊNH CHẠY THEO TRANG KHI CUỘN (Sticky Sidebar) */}
-          {showManualSeeding && (
+          {!isReadOnly && showManualSeeding && (
             <div className="lg:col-span-3 panel p-3.5 rounded-2xl sticky top-4 self-start max-h-[calc(100vh-2rem)] flex flex-col shadow-xl ring-1 ring-line/20 z-20">
               <div className="flex items-center justify-between border-b border-line/10 pb-2 shrink-0">
                 <div className="flex items-center gap-1.5">
@@ -7124,11 +7632,13 @@ function ManagePage() {
       {/* MODAL QUẢN LÝ TRẬN ĐỒNG ĐỘI (MLP FORMAT) */}
       {teamMatchToManage && (
         <TeamMatchModal
-          match={teamMatchToManage}
+          match={state.matches.find((m) => m.id === teamMatchToManage.id) || teamMatchToManage}
           entries={state.entries}
           ev={state.events.find((e) => e.id === teamMatchToManage.eventId) || state.events.find((e) => e.id === activeId)}
+          isReadOnly={isReadOnly}
           onClose={() => setTeamMatchToManage(null)}
           onSave={(updatedSubMatches, overallScoreA, overallScoreB, done) => {
+            if (isReadOnly) return;
             const currentMatch =
               state.matches.find((m) => m.id === teamMatchToManage.id) || teamMatchToManage;
             const hasSubScore = updatedSubMatches.some(
@@ -7151,7 +7661,7 @@ function ManagePage() {
       )}
 
       {/* MODAL CHỌN ĐỘI CHO Ô VÒNG LOẠI TRỰC TIẾP (TIỆN LỢI TRÊN ĐIỆN THOẠI) */}
-      {koSlotPicker && (
+      {!isReadOnly && koSlotPicker && (
         <KoSlotPickerModal
           pickerSlot={koSlotPicker}
           matches={state.matches}
@@ -7160,13 +7670,12 @@ function ManagePage() {
           groupMatches={groupMatches}
           onClose={() => setKoSlotPicker(null)}
           onAssignTeam={handleAssignTeamFromPicker}
-          onAssignPlaceholder={handleAssignPlaceholderFromPicker}
           onClearSlot={handleClearSlotFromPicker}
         />
       )}
 
       {/* MODAL CHIA SẺ & QR THEO DÕI GIẢI ĐẤU */}
-      {shareModalOpen && (
+      {!isReadOnly && shareModalOpen && (
         <ShareCollaboratorsModal
           isOpen={shareModalOpen}
           onClose={() => setShareModalOpen(false)}

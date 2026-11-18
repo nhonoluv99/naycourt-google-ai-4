@@ -68,6 +68,22 @@
         "updatedAt": {
           "type": "string",
           "description": "Last update timestamp"
+        },
+        "collaboratorEmails": {
+          "type": "array",
+          "description": "Emails of invited collaborators (editors, viewers, referees)"
+        },
+        "editorEmails": {
+          "type": "array",
+          "description": "Emails of collaborators with edit access"
+        },
+        "refereeEmails": {
+          "type": "array",
+          "description": "Emails of collaborators assigned as referees"
+        },
+        "isPublicLive": {
+          "type": "boolean",
+          "description": "Whether public QR live view is enabled"
         }
       },
       "required": ["id", "userId", "name", "stateJson"]

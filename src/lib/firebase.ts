@@ -179,11 +179,12 @@ export function subscribeToTournamentCloud(
   );
 }
 
-export type CollaboratorRole = "editor" | "viewer";
+export type CollaboratorRole = "editor" | "viewer" | "referee";
 
 export interface Collaborator {
   email: string;
   role: CollaboratorRole;
+  name?: string;
   addedAt: string;
   addedBy?: string;
 }
@@ -202,6 +203,7 @@ export interface UserTournamentArchiveItem {
   collaborators?: Collaborator[];
   collaboratorEmails?: string[];
   editorEmails?: string[];
+  refereeEmails?: string[];
   isPublicLive?: boolean;
 }
 
@@ -230,6 +232,10 @@ export async function saveTournamentToArchive(
       .filter((c: Collaborator) => c.role === "editor")
       .map((c: Collaborator) => c.email.toLowerCase().trim())
       .filter(Boolean);
+    const refereeEmails = collaborators
+      .filter((c: Collaborator) => c.role === "referee")
+      .map((c: Collaborator) => c.email.toLowerCase().trim())
+      .filter(Boolean);
 
     const payload: UserTournamentArchiveItem = {
       id: tournamentId,
@@ -245,6 +251,7 @@ export async function saveTournamentToArchive(
       collaborators,
       collaboratorEmails,
       editorEmails,
+      refereeEmails,
       isPublicLive,
     };
     await setDoc(docRef, payload, { merge: true });
@@ -279,6 +286,10 @@ export async function updateTournamentCollaborators(
       .filter((c) => c.role === "editor")
       .map((c) => c.email.toLowerCase().trim())
       .filter(Boolean);
+    const refereeEmails = collaborators
+      .filter((c) => c.role === "referee")
+      .map((c) => c.email.toLowerCase().trim())
+      .filter(Boolean);
 
     await setDoc(
       docRef,
@@ -286,6 +297,7 @@ export async function updateTournamentCollaborators(
         collaborators,
         collaboratorEmails,
         editorEmails,
+        refereeEmails,
         isPublicLive,
         updatedAt: new Date().toISOString(),
       },

@@ -6,6 +6,7 @@ import {
   entryName,
   getMatchEntryA,
   getMatchEntryB,
+  isMatchAssignedToRefereeUser,
   propagateKnockout,
   useTournament,
   type LiveState,
@@ -128,9 +129,10 @@ const Lbl = ({
 
 function LiveScoringPage() {
   const { matchId } = Route.useParams();
-  const { state, update, updateMatch } = useTournament();
+  const { state, update, updateMatch, currentRole, user } = useTournament();
   const navigate = useNavigate();
   const match = state.matches.find((m) => m.id === matchId);
+  const isRefereeUser = currentRole === "referee";
   const [started, setStarted] = useState(match?.status === "live" && !!match.live);
   const [tossing, setTossing] = useState(false);
   const [tossFlash, setTossFlash] = useState<0 | 1>(0);
@@ -149,6 +151,35 @@ function LiveScoringPage() {
   const [showHistory, setShowHistory] = useState(false);
   const [courtFlipped, setCourtFlipped] = useState(false);
   const endDismissed = useRef(false);
+
+  // Reset UI state when switching to a newly assigned matchId
+  useEffect(() => {
+    const isAlreadyLive = match?.status === "live" && Boolean(match.live);
+    setStarted(isAlreadyLive);
+    setTossed(isAlreadyLive);
+    setSelectedServerIdx(isAlreadyLive && match?.live ? match.live.serverIdx : null);
+    setSelectedReceiverIdx(isAlreadyLive && match?.live ? match.live.receiverIdx : null);
+    setTimer(null);
+    setNoteOpen(false);
+    setChangeover(false);
+    setCoDone(false);
+    setEndAsk(false);
+    setShowHistory(false);
+    setCourtFlipped(false);
+    endDismissed.current = false;
+  }, [matchId]);
+
+  // Nếu là trọng tài: chỉ vào màn hình chấm điểm khi trận đã được bắt đầu (live); nếu chưa bắt đầu, đã xong hoặc bị gỡ phân công thì về màn hình chờ
+  useEffect(() => {
+    if (!isRefereeUser) return;
+    if (
+      !match ||
+      match.status !== "live" ||
+      !isMatchAssignedToRefereeUser(match, state.collaborators, user?.email, user?.displayName)
+    ) {
+      void navigate({ to: "/quan-ly-giai", replace: true });
+    }
+  }, [isRefereeUser, match, state.collaborators, user?.email, user?.displayName, navigate]);
 
   useEffect(() => {
     if (!timer) return;
@@ -278,7 +309,7 @@ function LiveScoringPage() {
           }
         : x,
     );
-    update({ matches: propagateKnockout(patched, m.eventId) });
+    update({ matches: propagateKnockout(patched, m.eventId, ev) });
     void navigate({ to: "/quan-ly-giai" });
   };
 
@@ -286,9 +317,13 @@ function LiveScoringPage() {
   if (!started) {
     return (
       <div className="mx-auto max-w-lg p-4">
-        <div className="mb-4 flex items-center justify-center border-b border-line/10 pb-3">
-          <span className="text-xs font-semibold text-line/50">Cài đặt trận đấu</span>
-        </div>
+        {(match.court || match.referee) && (
+          <div className="mb-4 flex items-center justify-center border-b border-line/10 pb-3">
+            <span className="text-xs font-semibold text-line/50">
+              {[match.court, match.referee].filter(Boolean).join(" · ")}
+            </span>
+          </div>
+        )}
         <p className="text-xs font-semibold uppercase tracking-[0.2em] text-line/60 text-center">
           Chấm điểm trực tiếp
         </p>
@@ -371,7 +406,6 @@ function LiveScoringPage() {
         </div>
 
         <Lbl>Chọn đội giao bóng trước</Lbl>
-        <p className="text-xs text-line/60 text-center">Bấm chọn trực tiếp hoặc tung đồng xu ngẫu nhiên:</p>
         <div className="mt-2 grid grid-cols-2 gap-2">
           {[entryName(teamA), entryName(teamB)].map((n, i) => {
             const highlight = tossing ? tossFlash === i : tossed && live.serveTeam === i;
@@ -527,11 +561,7 @@ function LiveScoringPage() {
               </div>
             </>
           )
-        ) : (
-          <p className="mt-4 text-center text-xs text-line/50">
-            Tung đồng xu hoặc bấm chọn đội giao bóng để tiếp tục.
-          </p>
-        )}
+        ) : null}
 
         <button
           className="mt-6 w-full cursor-pointer rounded-lg bg-courtdeep py-3.5 font-head text-base font-bold uppercase tracking-wide text-paper hover:bg-courtdeep/90 transition shadow-md"
@@ -592,9 +622,11 @@ function LiveScoringPage() {
         >
           {live.a > 0 || live.b > 0 ? "✓ Lưu cài đặt & Chấm điểm" : "▶ Bắt đầu chấm điểm"}
         </button>
-        <Link to="/quan-ly-giai" className="btn-ghost mt-3 w-full">
-          Quay lại Quản lý giải
-        </Link>
+        {!isRefereeUser && (
+          <Link to="/quan-ly-giai" className="btn-ghost mt-3 w-full">
+            Quay lại Quản lý giải
+          </Link>
+        )}
       </div>
     );
   }
@@ -964,9 +996,19 @@ function LiveScoringPage() {
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-paper text-ink overflow-y-auto">
       <div className="flex items-center justify-between border-b border-line/10 px-4 py-2.5">
-        <Link to="/quan-ly-giai" className="btn-ghost !px-2.5 !py-1.5 text-xs">
-          ← Về Quản lý giải
-        </Link>
+        {isRefereeUser ? (
+          <button
+            type="button"
+            onClick={() => setStarted(false)}
+            className="btn-ghost !px-2.5 !py-1.5 text-xs cursor-pointer"
+          >
+            ← Cài đặt trận
+          </button>
+        ) : (
+          <Link to="/quan-ly-giai" className="btn-ghost !px-2.5 !py-1.5 text-xs">
+            ← Về Quản lý giải
+          </Link>
+        )}
         <div className="flex items-center gap-2">
           <button
             className="rounded-md bg-secondary px-2 py-1 text-xs font-semibold ring-1 ring-line/20 hover:bg-secondary/80 flex items-center gap-1"

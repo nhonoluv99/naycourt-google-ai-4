@@ -95,7 +95,12 @@ function Header({ isWide }: { isWide: boolean }) {
     discardChanges,
     hasUnsavedChanges,
     isDirty,
+    isReadOnly,
+    currentRole,
   } = useTournament();
+  const isLiveUrl = Boolean(getLiveTournamentIdFromUrl());
+  const isReferee = currentRole === "referee";
+  const isRestrictedHeader = isReadOnly || isReferee;
   const navigate = useNavigate();
   const [profileOpen, setProfileOpen] = useState(false);
   const [myTournamentsOpen, setMyTournamentsOpen] = useState(false);
@@ -204,6 +209,31 @@ function Header({ isWide }: { isWide: boolean }) {
     }
   };
 
+  const logoContent = (
+    <>
+      <div className="grid size-9 place-items-center rounded-lg bg-accent shrink-0">
+        <span className="font-head text-lg font-bold leading-none text-accent-foreground pl-[3px] h-[17px] flex items-center justify-center">
+          P
+        </span>
+      </div>
+      <div className="leading-none">
+        <p className="font-['Verdana',sans-serif] italic no-underline text-left leading-[28px] text-[18px] h-[25px] pt-0 pb-0 pl-0 pr-0 mt-0 mr-0 ml-0 w-[156.594px] text-[#0a3320] font-bold uppercase tracking-tight">
+          Nảy Court
+        </p>
+        <p className="h-[13px] pt-[1px] text-[10px] font-medium uppercase tracking-[0.18em] text-line/60">
+          Quản lý giải pickleball
+        </p>
+      </div>
+    </>
+  );
+
+  const infoParts: string[] = [];
+  if (state.date?.trim()) infoParts.push(`📅 ${state.date.trim()}`);
+  if (state.venueName?.trim()) infoParts.push(`🏟️ ${state.venueName.trim()}`);
+  if (state.venue?.trim()) infoParts.push(`📍 ${state.venue.trim()}`);
+  infoParts.push(`${(state.courts || []).length} sân`);
+  infoParts.push(`${(state.events || []).length} nội dung`);
+
   return (
     <div className="border-b-4 border-line">
       <div
@@ -211,139 +241,180 @@ function Header({ isWide }: { isWide: boolean }) {
           isWide ? "max-w-[1920px]" : "max-w-5xl"
         } flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:px-8`}
       >
-        <Link to="/" className="flex items-center gap-3">
-          <div className="grid size-9 place-items-center rounded-lg bg-accent">
-            <span className="font-head text-lg font-bold leading-none text-accent-foreground pl-[3px] h-[17px] flex items-center justify-center">
-              P
-            </span>
-          </div>
-          <div className="leading-none">
-            <p className="font-['Verdana',sans-serif] italic no-underline text-left leading-[28px] text-[18px] h-[25px] pr-0 ml-0 w-[156.594px] text-[#0a3320] font-bold uppercase tracking-tight">
-              Nảy Court
-            </p>
-            <p className="h-[13px] text-[10px] font-medium uppercase tracking-[0.18em] text-line/60">
-              Quản lý giải pickleball
-            </p>
-          </div>
-        </Link>
-        <nav className="flex items-center gap-1 text-sm font-medium">
-          {NAV.map((n) => (
-            <Link
-              key={n.to}
-              to={n.to}
+        {isLiveUrl ? (
+          <a
+            href="/"
+            onClick={(e) => {
+              e.preventDefault();
+              window.location.assign(`${window.location.origin}/`);
+            }}
+            className="flex items-center gap-3 shrink-0 cursor-pointer hover:opacity-85 transition"
+            title="Về trang chủ mặc định"
+          >
+            {logoContent}
+          </a>
+        ) : isRestrictedHeader ? (
+          <Link
+            to="/quan-ly-giai"
+            className="flex items-center gap-3 shrink-0 cursor-pointer hover:opacity-85 transition"
+          >
+            {logoContent}
+          </Link>
+        ) : (
+          <Link to="/" className="flex items-center gap-3">
+            {logoContent}
+          </Link>
+        )}
+
+        {isRestrictedHeader ? (
+          <div className="order-3 w-full md:order-2 md:w-auto md:flex-1 min-w-0 flex flex-col items-center justify-center text-center px-2">
+            <h2
+              className="font-head text-base sm:text-xl font-black uppercase tracking-tight text-[#0a3320] truncate max-w-full"
               style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-              className="rounded-lg px-3 py-2 text-line/70 hover:text-line"
-              activeOptions={{ exact: n.to === "/" }}
-              activeProps={{ className: "rounded-lg px-3 py-2 bg-line text-paper" }}
             >
-              {n.label}
-            </Link>
-          ))}
-        </nav>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2.5 mr-1">
-            {state.date ? (
-              <span className="text-xs font-semibold text-line/80">
-                {state.date}
-              </span>
-            ) : null}
-            <span className="rounded-md bg-[#0a3320] px-2.5 py-1 text-xs font-semibold text-paper">
-              {state.courts.length} sân
-            </span>
+              {state.name?.trim() || "Giải đấu Pickleball"}
+            </h2>
+            <div className="mt-0.5 flex flex-wrap items-center justify-center gap-x-3 gap-y-0.5 text-[11px] sm:text-xs font-semibold text-line/75">
+              {infoParts.map((part, idx) => (
+                <span key={idx} className="inline-flex items-center gap-1 whitespace-nowrap">
+                  {idx > 0 && <span className="text-line/30 mr-2 hidden sm:inline">•</span>}
+                  {part}
+                </span>
+              ))}
+            </div>
           </div>
-
-          {/* Nút Logo Gmail bên phải gọn gàng chuẩn Ảnh 1 */}
-          {authLoading ? (
-            <div className="size-8 animate-pulse rounded-full bg-line/10" />
-          ) : user ? (
-            <div className="relative" ref={dropdownRef}>
-              <button
-                type="button"
-                onClick={() => setProfileOpen((prev) => !prev)}
-                className="grid size-8 place-items-center rounded-full border border-line/25 bg-card hover:border-line/50 transition cursor-pointer shadow-2xs"
-                title={`Đã đăng nhập: ${user.email} (Đang tự động đồng bộ)`}
+        ) : (
+          <nav className="flex items-center gap-1 text-sm font-medium">
+            {NAV.map((n) => (
+              <Link
+                key={n.to}
+                to={n.to}
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                className="rounded-lg px-3 py-2 text-line/70 hover:text-line"
+                activeOptions={{ exact: n.to === "/" }}
+                activeProps={{ className: "rounded-lg px-3 py-2 bg-line text-paper" }}
               >
-                {user.photoURL ? (
-                  <img
-                    src={user.photoURL}
-                    alt=""
-                    className="size-7 rounded-full object-cover"
-                    referrerPolicy="no-referrer"
-                  />
-                ) : (
-                  <div className="grid size-7 place-items-center rounded-full bg-[#0a3320] text-xs font-bold text-white">
-                    {(user.displayName || user.email || "G")[0]?.toUpperCase()}
-                  </div>
-                )}
-              </button>
+                {n.label}
+              </Link>
+            ))}
+          </nav>
+        )}
 
-              {profileOpen && (
-                <div className="absolute left-0 sm:left-auto sm:right-0 top-full mt-2 w-52 max-w-[calc(100vw-24px)] rounded-2xl border border-line/15 bg-card p-2 shadow-xl z-50 animate-in fade-in slide-in-from-top-2 duration-150">
-                  <div className="flex flex-col gap-1">
-                    <button
-                      type="button"
-                      onClick={handleCreateTournamentClick}
-                      className="w-full rounded-xl px-3 py-2 text-xs font-bold text-ink hover:bg-secondary transition cursor-pointer text-left"
-                      style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                    >
-                      Tạo giải
-                    </button>
+        {isReadOnly && isLiveUrl ? (
+          <div className="hidden md:block md:w-[205px] shrink-0" aria-hidden="true" />
+        ) : (
+          <div className="order-2 md:order-3 flex items-center gap-3 shrink-0">
+            {!isRestrictedHeader && (
+              <div className="flex items-center gap-2 mr-1">
+                {state.date ? (
+                  <>
+                    <span className="text-xs font-semibold text-line/80">
+                      {state.date}
+                    </span>
+                    <span className="text-xs text-line/35">•</span>
+                  </>
+                ) : null}
+                <span className="text-xs font-semibold text-line/80">
+                  {(state.events || []).length} nội dung
+                </span>
+              </div>
+            )}
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setProfileOpen(false);
-                        setMyTournamentsOpen(true);
-                      }}
-                      className="w-full rounded-xl px-3 py-2 text-xs font-bold text-ink hover:bg-secondary transition cursor-pointer text-left border-t border-line/10"
-                      style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                    >
-                      Giải đấu của tôi
-                    </button>
+            {/* Nút Logo Gmail bên phải gọn gàng chuẩn Ảnh 1 */}
+            {authLoading ? (
+              <div className="size-8 animate-pulse rounded-full bg-line/10" />
+            ) : user ? (
+              <div className="relative" ref={dropdownRef}>
+                <button
+                  type="button"
+                  onClick={() => setProfileOpen((prev) => !prev)}
+                  className="grid size-8 place-items-center rounded-full border border-line/25 bg-card hover:border-line/50 transition cursor-pointer shadow-2xs"
+                  title={`Đã đăng nhập: ${user.email} (Đang tự động đồng bộ)`}
+                >
+                  {user.photoURL ? (
+                    <img
+                      src={user.photoURL}
+                      alt=""
+                      className="size-7 rounded-full object-cover"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <div className="grid size-7 place-items-center rounded-full bg-[#0a3320] text-xs font-bold text-white">
+                      {(user.displayName || user.email || "G")[0]?.toUpperCase()}
+                    </div>
+                  )}
+                </button>
 
-                    {isServerHost && (
+                {profileOpen && (
+                  <div className="absolute left-0 sm:left-auto sm:right-0 top-full mt-2 w-52 max-w-[calc(100vw-24px)] rounded-2xl border border-line/15 bg-card p-2 shadow-xl z-50 animate-in fade-in slide-in-from-top-2 duration-150">
+                    <div className="flex flex-col gap-1">
+                      {!isRestrictedHeader && (
+                        <button
+                          type="button"
+                          onClick={handleCreateTournamentClick}
+                          className="w-full rounded-xl px-3 py-2 text-xs font-bold text-ink hover:bg-secondary transition cursor-pointer text-left"
+                          style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                        >
+                          Tạo giải
+                        </button>
+                      )}
+
                       <button
                         type="button"
                         onClick={() => {
                           setProfileOpen(false);
-                          setHostAdminOpen(true);
+                          setMyTournamentsOpen(true);
                         }}
-                        className="w-full rounded-xl px-3 py-2 text-xs font-bold text-[#0a3320] hover:bg-[#0a3320]/10 transition cursor-pointer text-left border-t border-line/10"
+                        className="w-full rounded-xl px-3 py-2 text-xs font-bold text-ink hover:bg-secondary transition cursor-pointer text-left border-t border-line/10"
                         style={{ fontFamily: "'Space Grotesk', sans-serif" }}
                       >
-                        Quản trị máy chủ
+                        Giải đấu của tôi
                       </button>
-                    )}
 
-                    <button
-                      type="button"
-                      onClick={handleLogout}
-                      className="w-full rounded-xl px-3 py-2 text-xs font-bold text-red-600 hover:bg-red-500/10 transition cursor-pointer text-left border-t border-line/10"
-                      style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                    >
-                      Đăng xuất
-                    </button>
+                      {isServerHost && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setProfileOpen(false);
+                            setHostAdminOpen(true);
+                          }}
+                          className="w-full rounded-xl px-3 py-2 text-xs font-bold text-[#0a3320] hover:bg-[#0a3320]/10 transition cursor-pointer text-left border-t border-line/10"
+                          style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                        >
+                          Quản trị máy chủ
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={handleLogout}
+                        className="w-full rounded-xl px-3 py-2 text-xs font-bold text-red-600 hover:bg-red-500/10 transition cursor-pointer text-left border-t border-line/10"
+                        style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                      >
+                        Đăng xuất
+                      </button>
+                    </div>
                   </div>
-                </div>
-              )}
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={handleLogin}
-              className="grid size-8 place-items-center rounded-full border border-line/25 bg-card hover:border-line/50 hover:bg-secondary transition cursor-pointer shadow-2xs group"
-              title="Đăng nhập Gmail để tự động đồng bộ giải đấu giữa các thiết bị"
-            >
-              <svg className="size-5 transition-transform group-hover:scale-110" viewBox="0 0 48 48">
-                <path fill="#4caf50" d="M45,16.2l-5,2.75l-5,4.75L35,40h7c1.657,0,3-1.343,3-3V16.2z"/>
-                <path fill="#1e88e5" d="M3,16.2l3.614,1.71L13,23.7V40H6c-1.657,0-3-1.343-3-3V16.2z"/>
-                <polygon fill="#e53935" points="35,11.2 24,19.45 13,11.2 12,17 13,23.7 24,31.95 35,23.7 36,17"/>
-                <path fill="#c62828" d="M3,12.298V16.2l10,7.5V11.2L8.685,7.964C7.039,6.729,4.685,7.915,4.685,9.974L3,12.298z"/>
-                <path fill="#fbc02d" d="M45,12.298V16.2l-10,7.5V11.2l4.315-3.236c1.646-1.235,4-0.049,4,2.01L45,12.298z"/>
-              </svg>
-            </button>
-          )}
-        </div>
+                )}
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleLogin}
+                className="grid size-8 place-items-center rounded-full border border-line/25 bg-card hover:border-line/50 hover:bg-secondary transition cursor-pointer shadow-2xs group"
+                title="Đăng nhập Gmail để tự động đồng bộ giải đấu giữa các thiết bị"
+              >
+                <svg className="size-5 transition-transform group-hover:scale-110" viewBox="0 0 48 48">
+                  <path fill="#4caf50" d="M45,16.2l-5,2.75l-5,4.75L35,40h7c1.657,0,3-1.343,3-3V16.2z"/>
+                  <path fill="#1e88e5" d="M3,16.2l3.614,1.71L13,23.7V40H6c-1.657,0-3-1.343-3-3V16.2z"/>
+                  <polygon fill="#e53935" points="35,11.2 24,19.45 13,11.2 12,17 13,23.7 24,31.95 35,23.7 36,17"/>
+                  <path fill="#c62828" d="M3,12.298V16.2l10,7.5V11.2L8.685,7.964C7.039,6.729,4.685,7.915,4.685,9.974L3,12.298z"/>
+                  <path fill="#fbc02d" d="M45,12.298V16.2l-10,7.5V11.2l4.315-3.236c1.646-1.235,4-0.049,4,2.01L45,12.298z"/>
+                </svg>
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Modal Giải đấu của tôi */}
@@ -376,13 +447,20 @@ function Header({ isWide }: { isWide: boolean }) {
 function RootContent() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
+  const { isReadOnly, currentRole } = useTournament();
 
   useEffect(() => {
     const liveId = getLiveTournamentIdFromUrl();
-    if (liveId && pathname === "/") {
+    if ((isReadOnly || liveId) && pathname !== "/quan-ly-giai") {
+      void navigate({ to: "/quan-ly-giai", replace: true });
+    } else if (
+      currentRole === "referee" &&
+      pathname !== "/quan-ly-giai" &&
+      !pathname.startsWith("/cham-diem/")
+    ) {
       void navigate({ to: "/quan-ly-giai", replace: true });
     }
-  }, [pathname, navigate]);
+  }, [isReadOnly, currentRole, pathname, navigate]);
 
   const isWide = pathname.startsWith("/van-dong-vien") || pathname.startsWith("/quan-ly-giai");
   const containerClass = isWide
