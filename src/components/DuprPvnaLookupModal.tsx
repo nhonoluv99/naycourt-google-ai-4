@@ -3,11 +3,12 @@ import {
   getDuprLeaderboard,
   getPvnaLeaderboard,
   searchLivePvnaPlayers,
+  searchLiveDuprPlayers,
   normalizeVietnamese,
   type RatedPlayer,
 } from "@/lib/rating-database";
 
-export type RatingSystemTab = "durp_doi" | "durp_don" | "pvna_doi" | "pvna_don";
+export type RatingSystemTab = "dupr" | "pvna";
 
 interface DuprPvnaLookupModalProps {
   isOpen: boolean;
@@ -15,154 +16,205 @@ interface DuprPvnaLookupModalProps {
   onSelectPlayer?: (player: RatedPlayer, rating: number, type: "dupr" | "pvna") => void;
   targetSlotLabel?: string;
   initialQuery?: string;
+  eventMode?: "don" | "doi" | "dong_doi";
 }
 
-const TABS: { id: RatingSystemTab; label: string; system: "dupr" | "pvna"; mode: "doi" | "don" }[] = [
-  { id: "durp_doi", label: "DURP Đôi", system: "dupr", mode: "doi" },
-  { id: "durp_don", label: "DURP Đơn", system: "dupr", mode: "don" },
-  { id: "pvna_doi", label: "PVNA Đôi", system: "pvna", mode: "doi" },
-  { id: "pvna_don", label: "PVNA Đơn", system: "pvna", mode: "don" },
+const TABS: { id: RatingSystemTab; label: string }[] = [
+  { id: "dupr", label: "DURP" },
+  { id: "pvna", label: "PVNA" },
 ];
+
+function DoublesPeopleIcon({ className = "size-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <circle cx="9" cy="7.5" r="3" />
+      <path d="M3 18.5c0-3.1 2.7-5 6-5s6 1.9 6 5v.5H3v-.5Z" />
+      <circle cx="16.5" cy="8.2" r="2.35" />
+      <path d="M15.8 14.1c2.8.35 5.2 1.9 5.2 4.4v.5h-4.3v-.5c0-1.6-.35-3.1-.9-4.4Z" />
+    </svg>
+  );
+}
+
+function SinglesPersonIcon({ className = "size-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <circle cx="12" cy="7.5" r="3.4" />
+      <path d="M5.5 18.5c0-3.3 2.9-5.3 6.5-5.3s6.5 2 6.5 5.3v.5h-13v-.5Z" />
+    </svg>
+  );
+}
 
 export function DuprPvnaLookupModal({
   isOpen,
   onClose,
   onSelectPlayer,
   targetSlotLabel,
+  initialQuery = "",
+  eventMode = "doi",
 }: DuprPvnaLookupModalProps) {
   const [query, setQuery] = useState("");
-  const [activeTab, setActiveTab] = useState<RatingSystemTab>("durp_doi");
+  const [activeTab, setActiveTab] = useState<RatingSystemTab>("dupr");
   const [livePvnaPlayers, setLivePvnaPlayers] = useState<RatedPlayer[]>([]);
+  const [liveDuprPlayers, setLiveDuprPlayers] = useState<RatedPlayer[]>([]);
   const [isLoadingLive, setIsLoadingLive] = useState(false);
+  const [pvnaLiveOk, setPvnaLiveOk] = useState<boolean | null>(null);
+  const [duprRequiresAuth, setDuprRequiresAuth] = useState(false);
 
-  // Khi modal mở, luôn reset ô tìm kiếm về trống để hiển thị bảng xếp hạng
+  // Đồng bộ initialQuery khi mở modal từ ô VĐV cụ thể hoặc reset trống khi mở từ thanh công cụ
   useEffect(() => {
     if (isOpen) {
-      setQuery("");
+      setQuery(initialQuery || "");
     }
-  }, [isOpen]);
+  }, [isOpen, initialQuery]);
 
-  const currentTabConfig = useMemo(() => {
-    return TABS.find((t) => t.id === activeTab) || TABS[0];
-  }, [activeTab]);
-
-  // Tải dữ liệu trực tiếp từ API cho các tab PVNA hoặc khi người dùng nhập tìm kiếm ở bất kỳ tab nào
+  // Tải dữ liệu trực tiếp tách biệt 100% giữa PVNA và DUPR
   useEffect(() => {
     if (!isOpen) {
       setLivePvnaPlayers([]);
+      setLiveDuprPlayers([]);
       setIsLoadingLive(false);
-      return;
-    }
-
-    const shouldFetch = currentTabConfig.system === "pvna" || query.trim().length > 0;
-    if (!shouldFetch) {
-      setLivePvnaPlayers([]);
-      setIsLoadingLive(false);
+      setPvnaLiveOk(null);
       return;
     }
 
     let active = true;
-    setIsLoadingLive(true);
 
-    const sortBy = currentTabConfig.mode === "doi" ? "doubleScore" : "singleScore";
+    if (activeTab === "pvna") {
+      setLiveDuprPlayers([]);
+      setIsLoadingLive(true);
+      const sortBy = eventMode === "don" ? "singleScore" : "doubleScore";
+      const timer = setTimeout(async () => {
+        try {
+          const res = await searchLivePvnaPlayers(query, sortBy);
+          if (active) {
+            setLivePvnaPlayers(res.players);
+            setPvnaLiveOk(res.ok);
+          }
+        } catch (e) {
+          console.debug("Lỗi tra cứu PVNA trực tiếp:", e);
+          if (active) setPvnaLiveOk(false);
+        } finally {
+          if (active) setIsLoadingLive(false);
+        }
+      }, query.trim() ? 250 : 0);
+
+      return () => {
+        active = false;
+        clearTimeout(timer);
+      };
+    }
+
+    // Hệ thống DUPR (tách riêng hoàn toàn khỏi PVNA)
+    setLivePvnaPlayers([]);
+    setPvnaLiveOk(null);
+    if (!query.trim()) {
+      setLiveDuprPlayers([]);
+      setIsLoadingLive(false);
+      return;
+    }
+
+    setIsLoadingLive(true);
     const timer = setTimeout(async () => {
       try {
-        const live = await searchLivePvnaPlayers(query, sortBy);
+        const res = await searchLiveDuprPlayers(query);
         if (active) {
-          setLivePvnaPlayers(live);
+          setLiveDuprPlayers(res.players);
+          setDuprRequiresAuth(Boolean(res.requiresAuth));
         }
       } catch (e) {
-        console.debug("Lỗi tra cứu trực tiếp:", e);
+        console.debug("Lỗi tra cứu DUPR trực tiếp:", e);
       } finally {
         if (active) setIsLoadingLive(false);
       }
-    }, query.trim() ? 250 : 0);
+    }, 280);
 
     return () => {
       active = false;
       clearTimeout(timer);
     };
-  }, [isOpen, activeTab, query, currentTabConfig.system, currentTabConfig.mode]);
+  }, [isOpen, activeTab, query, eventMode]);
 
-  const getPlayerRatingForTab = (player: RatedPlayer, tab: RatingSystemTab): number => {
-    switch (tab) {
-      case "durp_doi":
-        return player.duprDoubles || player.pvnaDoubles || player.duprSingles || player.pvnaSingles || 3.5;
-      case "durp_don":
-        return player.duprSingles || player.duprDoubles || player.pvnaSingles || player.pvnaDoubles || 3.5;
-      case "pvna_doi":
-        return player.pvnaDoubles || player.pvnaSingles || 0;
-      case "pvna_don":
-        return player.pvnaSingles || player.pvnaDoubles || 0;
-    }
+  const getPlayerScores = (player: RatedPlayer, tab: RatingSystemTab) => {
+    const doubles = tab === "dupr" ? player.duprDoubles : player.pvnaDoubles;
+    const singles = tab === "dupr" ? player.duprSingles : player.pvnaSingles;
+    return {
+      doubles: doubles > 0 ? doubles : 0,
+      singles: singles > 0 ? singles : 0,
+    };
   };
 
-  // Danh sách kết quả hiển thị cho Tab hiện tại
+  const getPrimaryScoreForEvent = (player: RatedPlayer, tab: RatingSystemTab): number => {
+    const { doubles, singles } = getPlayerScores(player, tab);
+    if (eventMode === "don") {
+      return singles > 0 ? singles : doubles > 0 ? doubles : 3.5;
+    }
+    return doubles > 0 ? doubles : singles > 0 ? singles : 3.5;
+  };
+
+  // Danh sách kết quả hiển thị cho Tab hiện tại (không bao giờ trộn lẫn DUPR & PVNA)
   const results = useMemo(() => {
-    if (currentTabConfig.system === "dupr") {
-      // Hệ thống DURP: Bảng xếp hạng DUPR toàn cầu & Việt Nam (điểm chính xác, không tích)
-      const local = getDuprLeaderboard(currentTabConfig.mode, query);
-      if (!query.trim()) {
+    if (activeTab === "dupr") {
+      const local = getDuprLeaderboard("all", query);
+      if (!query.trim() || liveDuprPlayers.length === 0) {
         return local;
       }
 
-      // Khi người dùng tìm kiếm: kết hợp cả danh sách DUPR và kết quả tìm kiếm thời gian thực
       const map = new Map<string, RatedPlayer>();
-      for (const p of local) {
-        const key = `${normalizeVietnamese(p.name)}_${p.duprId || p.pvnaId || p.id}`;
+      for (const p of liveDuprPlayers) {
+        const key = (p.duprId || `${normalizeVietnamese(p.name)}_${p.id}`).toLowerCase();
         map.set(key, p);
       }
-      for (const p of livePvnaPlayers) {
-        const key = `${normalizeVietnamese(p.name)}_${p.duprId || p.pvnaId || p.id}`;
+      for (const p of local) {
+        const key = (p.duprId || `${normalizeVietnamese(p.name)}_${p.id}`).toLowerCase();
         if (!map.has(key)) {
-          const dDouble = p.duprDoubles > 0 ? p.duprDoubles : (p.pvnaDoubles > 0 ? p.pvnaDoubles : 3.5);
-          const dSingle = p.duprSingles > 0 ? p.duprSingles : (p.pvnaSingles > 0 ? p.pvnaSingles : 3.5);
-          map.set(key, {
-            ...p,
-            duprDoubles: dDouble,
-            duprSingles: dSingle,
-            isDuprPlayer: true,
-          });
+          map.set(key, p);
         }
       }
 
       const list = Array.from(map.values());
-      list.sort((a, b) => {
-        const scoreA = getPlayerRatingForTab(a, activeTab);
-        const scoreB = getPlayerRatingForTab(b, activeTab);
-        return scoreB - scoreA;
-      });
+      list.sort(
+        (a, b) =>
+          Math.max(b.duprDoubles, b.duprSingles) - Math.max(a.duprDoubles, a.duprSingles)
+      );
       return list;
     }
 
-    // Hệ thống PVNA: Bảng xếp hạng PVNA Việt Nam chính thức
-    // Hợp nhất dữ liệu trực tiếp từ API PVNA và dữ liệu lưu sẵn
-    const local = getPvnaLeaderboard(currentTabConfig.mode, query);
+    // Hệ thống PVNA: Hợp nhất dữ liệu trực tiếp từ API PVNA (ưu tiên) và dữ liệu lưu sẵn
+    const local = getPvnaLeaderboard("all", query);
     const map = new Map<string, RatedPlayer>();
 
-    // 1. Dữ liệu trực tiếp cập nhật từ PVNA API
     for (const p of livePvnaPlayers) {
-      const key = `${normalizeVietnamese(p.name)}_${p.pvnaId || ""}`;
+      const key = p.pvnaId
+        ? `code_${p.pvnaId.toUpperCase()}`
+        : `name_${normalizeVietnamese(p.name)}_${normalizeVietnamese(p.nickName || "")}`;
       map.set(key, p);
     }
-    // 2. Dữ liệu lưu sẵn nếu chưa có
     for (const p of local) {
-      const key = `${normalizeVietnamese(p.name)}_${p.pvnaId || ""}`;
+      const key = p.pvnaId
+        ? `code_${p.pvnaId.toUpperCase()}`
+        : `name_${normalizeVietnamese(p.name)}_${normalizeVietnamese(p.nickName || "")}`;
       if (!map.has(key)) {
         map.set(key, p);
       }
     }
 
     const list = Array.from(map.values());
-    // Sắp xếp điểm PVNA giảm dần
-    list.sort((a, b) => {
-      const scoreA = getPlayerRatingForTab(a, activeTab);
-      const scoreB = getPlayerRatingForTab(b, activeTab);
-      return scoreB - scoreA;
-    });
-
+    list.sort(
+      (a, b) =>
+        Math.max(b.pvnaDoubles, b.pvnaSingles) - Math.max(a.pvnaDoubles, a.pvnaSingles)
+    );
     return list;
-  }, [activeTab, currentTabConfig.system, currentTabConfig.mode, query, livePvnaPlayers]);
+  }, [activeTab, query, livePvnaPlayers, liveDuprPlayers]);
+
+  const handleChoosePlayer = (player: RatedPlayer, chosenScore: number) => {
+    if (!onSelectPlayer) return;
+    const preferredName =
+      activeTab === "pvna" && player.nickName?.trim()
+        ? player.nickName.trim()
+        : player.name;
+    onSelectPlayer({ ...player, name: preferredName }, chosenScore, activeTab);
+    onClose();
+  };
 
   if (!isOpen) return null;
 
@@ -172,7 +224,7 @@ export function DuprPvnaLookupModal({
       onClick={onClose}
     >
       <div
-        className="flex max-h-[85vh] w-full max-w-lg flex-col rounded-2xl border border-line/20 bg-card shadow-2xl overflow-hidden"
+        className="flex max-h-[85vh] w-full max-w-xl flex-col rounded-2xl border border-line/20 bg-card shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header Modal */}
@@ -199,9 +251,9 @@ export function DuprPvnaLookupModal({
           </button>
         </div>
 
-        {/* 4 Tabs lựa chọn: DURP Đôi, DURP Đơn, PVNA Đôi, PVNA Đơn */}
+        {/* 2 Tabs lựa chọn: DURP và PVNA */}
         <div className="border-b border-line/15 bg-paper/80 p-2">
-          <div className="grid grid-cols-4 gap-1.5">
+          <div className="grid grid-cols-2 gap-2">
             {TABS.map((t) => {
               const isActive = activeTab === t.id;
               return (
@@ -211,7 +263,7 @@ export function DuprPvnaLookupModal({
                   onClick={() => {
                     setActiveTab(t.id);
                   }}
-                  className={`rounded-xl py-2 px-1 text-center text-xs font-bold transition cursor-pointer ${
+                  className={`rounded-xl py-2.5 px-3 text-center text-xs font-bold tracking-wide transition cursor-pointer ${
                     isActive
                       ? "bg-[#0a3320] text-white shadow-xs"
                       : "bg-card text-line/70 hover:bg-secondary hover:text-ink border border-line/15"
@@ -232,7 +284,7 @@ export function DuprPvnaLookupModal({
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Nhập tên VĐV để tìm kiếm..."
+              placeholder="Nhập tên, nickname hoặc mã VĐV..."
               autoFocus
               className="w-full rounded-xl border border-line/25 bg-paper py-2.5 pl-3.5 pr-28 text-sm text-ink placeholder:text-line/45 focus:border-[#0a3320] focus:ring-1 focus:ring-[#0a3320] focus:outline-hidden"
             />
@@ -254,9 +306,14 @@ export function DuprPvnaLookupModal({
         </div>
 
         {/* Chú thích màu tích PVNA chuẩn theo hệ thống PVNA */}
-        {currentTabConfig.system === "pvna" && (
+        {activeTab === "pvna" && (
           <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-1.5 bg-secondary/35 border-b border-line/10 text-[10.5px]">
-            <span className="font-bold text-ink/80 text-[10.5px]">Chú thích màu tích:</span>
+            <span className="font-bold text-ink/80 text-[10.5px]">
+              Chú thích màu tích:
+              {pvnaLiveOk === false && (
+                <span className="ml-1.5 font-medium text-amber-700">(Đang dùng bản nội bộ)</span>
+              )}
+            </span>
             <div className="flex items-center gap-2.5 flex-wrap">
               <span className="inline-flex items-center gap-1" title="Tick Xanh – Đã xác thực điểm trình">
                 <span className="inline-flex size-3.5 items-center justify-center rounded-full bg-emerald-500 text-[8px] text-white font-black">✓</span>
@@ -275,10 +332,14 @@ export function DuprPvnaLookupModal({
         )}
 
         {/* Thanh ghi chú DUPR quốc tế */}
-        {currentTabConfig.system === "dupr" && (
-          <div className="flex items-center justify-between px-3.5 py-1.5 bg-secondary/20 border-b border-line/10 text-[10.5px] text-line/70">
-            <span>Đồng bộ từ hệ thống DUPR quốc tế (dashboard.dupr.com)</span>
-            <span className="font-semibold text-[#0a3320]">{results.length} VĐV</span>
+        {activeTab === "dupr" && (
+          <div className="flex items-center justify-between gap-2 px-3.5 py-1.5 bg-secondary/20 border-b border-line/10 text-[10.5px] text-line/70">
+            <span className="truncate">
+              {duprRequiresAuth && liveDuprPlayers.length === 0
+                ? "Kho DUPR nội bộ (Cổng DUPR quốc tế yêu cầu cấp quyền đối tác để tìm trực tuyến)"
+                : "Đồng bộ từ hệ thống DUPR quốc tế (dashboard.dupr.com)"}
+            </span>
+            <span className="font-semibold text-[#0a3320] shrink-0">{results.length} VĐV</span>
           </div>
         )}
 
@@ -286,67 +347,52 @@ export function DuprPvnaLookupModal({
         <div className="flex-1 overflow-y-auto divide-y divide-line/10 min-h-[260px]">
           {results.length === 0 ? (
             <div className="p-8 text-center text-xs text-line/60">
-              <p className="text-xl mb-1 text-line/40">✕</p>
-              <p className="font-bold text-ink text-sm">
-                {query ? `Không tìm thấy VĐV "${query}"` : "Không có dữ liệu VĐV"}
-              </p>
-              <p className="mt-1 text-line/50 text-[11px]">
-                {query
-                  ? "VĐV này chưa có trong cơ sở dữ liệu hệ thống."
-                  : "Chưa có vận động viên nào trong danh mục này."}
-              </p>
-              {query.trim() && onSelectPlayer && (
-                <div className="mt-5 pt-4 border-t border-line/15 max-w-xs mx-auto text-center">
-                  <p className="text-[11px] text-line/70 mb-2">Bạn vẫn có thể chọn tên này và gán điểm:</p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const newP: RatedPlayer = {
-                        id: `custom_${Date.now()}`,
-                        name: query.trim(),
-                        gender: "nam",
-                        duprDoubles: 3.5,
-                        duprSingles: 3.5,
-                        pvnaDoubles: 3.5,
-                        pvnaSingles: 3.5,
-                        isDuprPlayer: currentTabConfig.system === "dupr",
-                        isPvnaPlayer: currentTabConfig.system === "pvna",
-                      };
-                      onSelectPlayer(newP, 3.5, currentTabConfig.system);
-                      onClose();
-                    }}
-                    className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-[#0a3320] text-white px-4 py-2 text-xs font-bold shadow-sm hover:bg-[#0a3320]/90 cursor-pointer transition w-full"
-                    style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                  >
-                    + Sử dụng &quot;{query.trim()}&quot; (Điểm: 3.500)
-                  </button>
-                </div>
+              {isLoadingLive ? (
+                <p className="font-semibold text-[#0a3320] text-sm animate-pulse">
+                  Đang đồng bộ dữ liệu {activeTab.toUpperCase()}...
+                </p>
+              ) : (
+                <>
+                  <p className="text-xl mb-1 text-line/40">✕</p>
+                  <p className="font-bold text-ink text-sm">
+                    {query ? `Không tìm thấy VĐV "${query}"` : "Không có dữ liệu VĐV"}
+                  </p>
+                  <p className="mt-1 text-line/50 text-[11px]">
+                    {query
+                      ? activeTab === "dupr" && duprRequiresAuth
+                        ? "Không tìm thấy trong danh sách DUPR nội bộ. Hệ thống DUPR (dupr.com) hiện khóa tìm kiếm công khai cho ứng dụng bên thứ 3 nếu chưa cấp quyền đối tác."
+                        : "VĐV này chưa có trong cơ sở dữ liệu hệ thống."
+                      : "Chưa có vận động viên nào trong danh mục này."}
+                  </p>
+                </>
               )}
             </div>
           ) : (
             results.map((player, idx) => {
-              const score = getPlayerRatingForTab(player, activeTab);
+              const { doubles, singles } = getPlayerScores(player, activeTab);
+              const primaryScore = getPrimaryScoreForEvent(player, activeTab);
               const rank = idx + 1;
 
-              // Xác định màu tích cho PVNA: Vàng, Xanh, hoặc Xám
               const tick =
-                activeTab === "pvna_don"
-                  ? player.tickColorSingle || player.tickColor || "gray"
-                  : player.tickColor || "gray";
+                player.tickColor && player.tickColor !== "gray"
+                  ? player.tickColor
+                  : player.tickColorSingle || "gray";
+
+              const hasDistinctNick =
+                Boolean(player.nickName?.trim()) &&
+                normalizeVietnamese(player.nickName!) !== normalizeVietnamese(player.name);
+              const primaryLabel = hasDistinctNick ? player.nickName!.trim() : player.name;
+              const secondaryFullName = hasDistinctNick ? player.name : "";
+              const codeId = activeTab === "pvna" ? player.pvnaId : player.duprId;
 
               return (
                 <div
                   key={player.id || `${player.name}_${idx}`}
-                  onClick={() => {
-                    if (onSelectPlayer) {
-                      onSelectPlayer(player, score, currentTabConfig.system);
-                      onClose();
-                    }
-                  }}
-                  className="flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-secondary/50 cursor-pointer transition group"
+                  onClick={() => handleChoosePlayer(player, primaryScore)}
+                  className="flex items-center justify-between gap-2.5 px-3.5 sm:px-4 py-2.5 hover:bg-secondary/50 cursor-pointer transition group"
                 >
                   {/* Thứ hạng */}
-                  <div className="w-7 text-center shrink-0">
+                  <div className="w-6 sm:w-7 text-center shrink-0">
                     {rank === 1 ? (
                       <span className="inline-grid size-5.5 place-items-center rounded-full bg-amber-500/20 text-amber-700 font-black text-xs">
                         1
@@ -366,15 +412,20 @@ export function DuprPvnaLookupModal({
                     )}
                   </div>
 
-                  {/* Tên VĐV & Tích PVNA (DUPR không hiển thị tích theo yêu cầu) */}
+                  {/* Tên VĐV / Nickname & Tích PVNA */}
                   <div className="flex flex-col min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 min-w-0">
                       <span className="font-bold text-sm text-ink truncate group-hover:text-[#0a3320]">
-                        {player.name}
+                        {primaryLabel}
                       </span>
 
-                      {/* Ở bảng PVNA: hiển thị tích vàng, xanh, hoặc xám theo dữ liệu pvna. Còn DURP không cần tích */}
-                      {currentTabConfig.system === "pvna" && (
+                      {secondaryFullName && (
+                        <span className="hidden sm:inline text-[11px] text-line/55 truncate">
+                          ({secondaryFullName})
+                        </span>
+                      )}
+
+                      {activeTab === "pvna" && (
                         <span
                           className={`inline-flex size-3.5 items-center justify-center rounded-full text-[8px] font-black shrink-0 shadow-2xs ${
                             tick === "yellow"
@@ -395,34 +446,79 @@ export function DuprPvnaLookupModal({
                         </span>
                       )}
                     </div>
-                    {(player.pvnaId || player.province) && (
+                    {secondaryFullName && (
+                      <span className="sm:hidden text-[10.5px] text-line/60 truncate">
+                        {secondaryFullName}
+                      </span>
+                    )}
+                    {(codeId || player.province) && (
                       <span className="text-[11px] text-line/55 mt-0.5 truncate">
-                        {player.pvnaId && <strong className="font-mono text-line/75 mr-1.5">{player.pvnaId}</strong>}
+                        {codeId && <strong className="font-mono text-line/75 mr-1.5">{codeId}</strong>}
                         {player.province && <span>{player.province}</span>}
                       </span>
                     )}
                   </div>
 
-                  {/* Điểm tương đương theo Tab đã chọn & Nút chọn */}
-                  <div className="flex items-center gap-3 shrink-0">
-                    <div className="text-right">
+                  {/* Điểm Đôi (2 người) và Điểm Đơn (1 người) cạnh nhau */}
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {/* Ô điểm Đôi */}
+                    <button
+                      type="button"
+                      disabled={!onSelectPlayer || doubles <= 0}
+                      onClick={(e) => {
+                        if (!onSelectPlayer || doubles <= 0) return;
+                        e.stopPropagation();
+                        handleChoosePlayer(player, doubles);
+                      }}
+                      title={doubles > 0 ? `Chọn điểm Đôi: ${doubles.toFixed(3)}` : "Chưa có điểm Đôi (NR)"}
+                      className={`min-w-[54px] sm:min-w-[58px] rounded-xl px-2 py-1.5 flex flex-col items-center justify-center gap-0.5 transition ${
+                        onSelectPlayer && doubles > 0
+                          ? "bg-[#eaecf3] hover:bg-[#dce1ee] text-[#0f1f4b] cursor-pointer"
+                          : "bg-[#eaecf3]/85 text-[#0f1f4b]/75 cursor-default"
+                      }`}
+                    >
+                      <DoublesPeopleIcon className="size-4 shrink-0" />
                       <span
-                        className="text-base font-black text-[#0a3320] tabular-nums"
+                        className="text-[12.5px] font-bold tabular-nums leading-tight"
                         style={{ fontFamily: "'Space Grotesk', sans-serif" }}
                       >
-                        {score.toFixed(3)}
+                        {doubles > 0 ? doubles.toFixed(3) : "NR"}
                       </span>
-                    </div>
+                    </button>
+
+                    {/* Ô điểm Đơn */}
+                    <button
+                      type="button"
+                      disabled={!onSelectPlayer || singles <= 0}
+                      onClick={(e) => {
+                        if (!onSelectPlayer || singles <= 0) return;
+                        e.stopPropagation();
+                        handleChoosePlayer(player, singles);
+                      }}
+                      title={singles > 0 ? `Chọn điểm Đơn: ${singles.toFixed(3)}` : "Chưa có điểm Đơn (NR)"}
+                      className={`min-w-[54px] sm:min-w-[58px] rounded-xl px-2 py-1.5 flex flex-col items-center justify-center gap-0.5 transition ${
+                        onSelectPlayer && singles > 0
+                          ? "bg-[#eaecf3] hover:bg-[#dce1ee] text-[#0f1f4b] cursor-pointer"
+                          : "bg-[#eaecf3]/85 text-[#0f1f4b]/75 cursor-default"
+                      }`}
+                    >
+                      <SinglesPersonIcon className="size-4 shrink-0" />
+                      <span
+                        className="text-[12.5px] font-bold tabular-nums leading-tight"
+                        style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                      >
+                        {singles > 0 ? singles.toFixed(3) : "NR"}
+                      </span>
+                    </button>
 
                     {onSelectPlayer && (
                       <button
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          onSelectPlayer(player, score, currentTabConfig.system);
-                          onClose();
+                          handleChoosePlayer(player, primaryScore);
                         }}
-                        className="rounded-lg bg-[#0a3320] group-hover:bg-[#0a3320]/90 text-white px-3 py-1.5 text-xs font-bold shadow-2xs transition cursor-pointer"
+                        className="hidden sm:inline-flex rounded-lg bg-[#0a3320] group-hover:bg-[#0a3320]/90 text-white px-2.5 py-1.5 text-xs font-bold shadow-2xs transition cursor-pointer ml-0.5"
                         style={{ fontFamily: "'Space Grotesk', sans-serif" }}
                       >
                         Chọn

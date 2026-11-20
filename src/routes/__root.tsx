@@ -11,7 +11,12 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { reportLovableError } from "../lib/lovable-error-reporting";
-import { getLiveTournamentIdFromUrl, TournamentProvider, useTournament } from "../lib/tournament-store";
+import {
+  getActiveRefereeSession,
+  getLiveTournamentIdFromUrl,
+  TournamentProvider,
+  useTournament,
+} from "../lib/tournament-store";
 import { MyTournamentsModal } from "../components/MyTournamentsModal";
 import { HostAdminMonitorModal } from "../components/HostAdminMonitorModal";
 import { UnsavedConfirmDialog } from "../components/UnsavedConfirmDialog";
@@ -93,6 +98,7 @@ function Header({ isWide }: { isWide: boolean }) {
     createNewTournament,
     saveCurrentToArchive,
     discardChanges,
+    exitSharedToOwnWorkspace,
     hasUnsavedChanges,
     isDirty,
     isReadOnly,
@@ -100,6 +106,7 @@ function Header({ isWide }: { isWide: boolean }) {
   } = useTournament();
   const isLiveUrl = Boolean(getLiveTournamentIdFromUrl());
   const isReferee = currentRole === "referee";
+  const isRefereeSessionLock = isReferee && Boolean(getActiveRefereeSession());
   const isRestrictedHeader = isReadOnly || isReferee;
   const navigate = useNavigate();
   const [profileOpen, setProfileOpen] = useState(false);
@@ -235,10 +242,10 @@ function Header({ isWide }: { isWide: boolean }) {
   infoParts.push(`${(state.events || []).length} nội dung`);
 
   return (
-    <div className="border-b-4 border-line">
+    <div className="relative z-40 border-b-4 border-line">
       <div
         className={`mx-auto flex w-full ${
-          isWide ? "max-w-[1920px]" : "max-w-5xl"
+          isWide ? "sticky left-0 max-w-[100vw]" : "max-w-5xl"
         } flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:px-8`}
       >
         {isLiveUrl ? (
@@ -253,7 +260,7 @@ function Header({ isWide }: { isWide: boolean }) {
           >
             {logoContent}
           </a>
-        ) : isRestrictedHeader ? (
+        ) : isRefereeSessionLock || isReadOnly ? (
           <Link
             to="/quan-ly-giai"
             className="flex items-center gap-3 shrink-0 cursor-pointer hover:opacity-85 transition"
@@ -261,7 +268,16 @@ function Header({ isWide }: { isWide: boolean }) {
             {logoContent}
           </Link>
         ) : (
-          <Link to="/" className="flex items-center gap-3">
+          <Link
+            to="/"
+            onClick={() => {
+              if (isReferee) {
+                void exitSharedToOwnWorkspace();
+              }
+            }}
+            className="flex items-center gap-3 shrink-0 cursor-pointer hover:opacity-85 transition"
+            title="Về trang chủ Nảy Court"
+          >
             {logoContent}
           </Link>
         )}
@@ -348,7 +364,7 @@ function Header({ isWide }: { isWide: boolean }) {
                 {profileOpen && (
                   <div className="absolute left-0 sm:left-auto sm:right-0 top-full mt-2 w-52 max-w-[calc(100vw-24px)] rounded-2xl border border-line/15 bg-card p-2 shadow-xl z-50 animate-in fade-in slide-in-from-top-2 duration-150">
                     <div className="flex flex-col gap-1">
-                      {!isRestrictedHeader && (
+                      {(!isReadOnly && !isLiveUrl && !isRefereeSessionLock) && (
                         <button
                           type="button"
                           onClick={handleCreateTournamentClick}
@@ -397,6 +413,13 @@ function Header({ isWide }: { isWide: boolean }) {
                   </div>
                 )}
               </div>
+            ) : isReferee && getActiveRefereeSession() ? (
+              <span
+                className="rounded-lg border border-[#0a3320]/25 bg-[#0a3320]/10 px-2.5 py-1 text-[11px] font-bold text-[#0a3320]"
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+              >
+                ⚖️ Trọng tài
+              </span>
             ) : (
               <button
                 type="button"
@@ -447,28 +470,38 @@ function Header({ isWide }: { isWide: boolean }) {
 function RootContent() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
-  const { isReadOnly, currentRole } = useTournament();
+  const { isReadOnly, currentRole, exitSharedToOwnWorkspace } = useTournament();
 
   useEffect(() => {
     const liveId = getLiveTournamentIdFromUrl();
+    const isRefLinkSession = Boolean(getActiveRefereeSession());
     if ((isReadOnly || liveId) && pathname !== "/quan-ly-giai") {
       void navigate({ to: "/quan-ly-giai", replace: true });
     } else if (
       currentRole === "referee" &&
+      isRefLinkSession &&
       pathname !== "/quan-ly-giai" &&
       !pathname.startsWith("/cham-diem/")
     ) {
       void navigate({ to: "/quan-ly-giai", replace: true });
+    } else if (
+      currentRole === "referee" &&
+      !isRefLinkSession &&
+      !liveId &&
+      pathname !== "/quan-ly-giai" &&
+      !pathname.startsWith("/cham-diem/")
+    ) {
+      void exitSharedToOwnWorkspace();
     }
-  }, [isReadOnly, currentRole, pathname, navigate]);
+  }, [isReadOnly, currentRole, pathname, navigate, exitSharedToOwnWorkspace]);
 
   const isWide = pathname.startsWith("/van-dong-vien") || pathname.startsWith("/quan-ly-giai");
   const containerClass = isWide
-    ? "mx-auto w-full max-w-[1920px] px-4 py-8 sm:px-6 lg:px-8 lg:py-10"
+    ? "mx-auto w-full px-4 py-8 sm:px-6 lg:px-8 lg:py-10"
     : "mx-auto w-full max-w-5xl px-4 py-8 sm:px-6 lg:px-8 lg:py-10";
 
   return (
-    <div className="min-h-screen bg-paper font-body text-ink">
+    <div className={`min-h-screen ${isWide ? "min-w-fit w-full" : ""} bg-paper font-body text-ink`}>
       <Header isWide={isWide} />
       <div className="courtlines">
         <div className={containerClass}>
@@ -477,7 +510,7 @@ function RootContent() {
         </div>
         <div
           className={`mx-auto flex w-full items-center gap-2 px-4 pb-8 text-xs font-medium text-line/50 sm:px-6 lg:px-8 ${
-            isWide ? "max-w-[1920px]" : "max-w-5xl"
+            isWide ? "max-w-none" : "max-w-5xl"
           }`}
         >
           <span className="size-2 shrink-0 rounded-full bg-accent" />

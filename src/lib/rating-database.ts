@@ -18,6 +18,8 @@
 export interface RatedPlayer {
   id: string;
   name: string;
+  nickName?: string;
+  avatarUrl?: string;
   gender: "nam" | "nu";
   club?: string;
   province?: string;
@@ -67,6 +69,50 @@ export const CITY_NAMES: Record<string, string> = {
   AG: "An Giang",
   LD: "Lâm Đồng",
   NA: "Nghệ An",
+  HUE: "Huế",
+  TTH: "Thừa Thiên Huế",
+  VT: "Vũng Tàu",
+  BRVT: "Bà Rịa - Vũng Tàu",
+  BN: "Bắc Ninh",
+  BG: "Bắc Giang",
+  HD: "Hải Dương",
+  NB: "Ninh Bình",
+  TH: "Thanh Hóa",
+  HT: "Hà Tĩnh",
+  QB: "Quảng Bình",
+  PY: "Phú Yên",
+  BĐ: "Bình Định",
+  QNg: "Quảng Ngãi",
+  LA: "Long An",
+  TG: "Tiền Giang",
+  BT: "Bến Tre",
+  VL: "Vĩnh Long",
+  DT: "Đồng Tháp",
+  KG: "Kiên Giang",
+  CM: "Cà Mau",
+  BL: "Bạc Liêu",
+  ST: "Sóc Trăng",
+  TV: "Trà Vinh",
+  HG: "Hậu Giang",
+  TN: "Tây Ninh",
+  BP: "Bình Phước",
+  LC: "Lào Cai",
+  YB: "Yên Bái",
+  SL: "Sơn La",
+  CB: "Cao Bằng",
+  LS: "Lạng Sơn",
+  QNinh: "Quảng Ninh",
+  VP: "Vĩnh Phúc",
+  PT: "Phú Thọ",
+  TNg: "Thái Nguyên",
+  TB: "Thái Bình",
+  ND: "Nam Định",
+  HNam: "Hà Nam",
+  HY: "Hưng Yên",
+  NT: "Ninh Thuận",
+  BTh: "Bình Thuận",
+  KT: "Kon Tum",
+  DNo: "Đắk Nông",
 };
 
 /**
@@ -1359,28 +1405,65 @@ export const OFFICIAL_PVNA_PLAYERS: RatedPlayer[] = [
     isDuprPlayer: false,
     isPvnaPlayer: true,
   },
+  {
+    id: "pvna_nu7725uf",
+    name: "Nguyễn Thị Ngọc Huyền",
+    nickName: "Huỳnn",
+    gender: "nu",
+    club: "Lâm Đồng Pickleball",
+    province: "Lâm Đồng",
+    duprDoubles: 0,
+    duprSingles: 0,
+    pvnaDoubles: 2.160,
+    pvnaSingles: 2.100,
+    pvnaId: "NU7725UF",
+    tickColor: "yellow",
+    tickColorSingle: "gray",
+    isDuprPlayer: false,
+    isPvnaPlayer: true,
+  },
 ];
+
+function matchesQuery(player: RatedPlayer, normQuery: string): boolean {
+  if (!normQuery) return true;
+  const tokens = normQuery.split(/\s+/).filter(Boolean);
+  const haystack = [
+    normalizeVietnamese(player.name),
+    player.nickName ? normalizeVietnamese(player.nickName) : "",
+    player.pvnaId ? normalizeVietnamese(player.pvnaId) : "",
+    player.duprId ? normalizeVietnamese(player.duprId) : "",
+  ].join(" ");
+  return tokens.every((tok) => haystack.includes(tok));
+}
 
 /**
  * Tra cứu bảng xếp hạng DUPR lưu sẵn
  */
-export function getDuprLeaderboard(mode: "doi" | "don", query = ""): RatedPlayer[] {
+export function getDuprLeaderboard(mode: "all" | "doi" | "don" = "all", query = ""): RatedPlayer[] {
   const norm = normalizeVietnamese(query);
   const filtered = OFFICIAL_DUPR_PLAYERS.filter((p) => {
     if (!p.isDuprPlayer) return false;
     if (norm) {
-      const matchName = normalizeVietnamese(p.name).includes(norm);
-      const matchId = p.duprId ? normalizeVietnamese(p.duprId).includes(norm) : false;
-      return matchName || matchId;
+      return matchesQuery(p, norm);
     }
     if (mode === "doi" && p.duprDoubles <= 0) return false;
     if (mode === "don" && p.duprSingles <= 0) return false;
-    return true;
+    return p.duprDoubles > 0 || p.duprSingles > 0;
   });
 
   return filtered.sort((a, b) => {
-    const scoreA = mode === "doi" ? (a.duprDoubles || a.duprSingles) : (a.duprSingles || a.duprDoubles);
-    const scoreB = mode === "doi" ? (b.duprDoubles || b.duprSingles) : (b.duprSingles || b.duprDoubles);
+    const scoreA =
+      mode === "all"
+        ? Math.max(a.duprDoubles, a.duprSingles)
+        : mode === "doi"
+        ? a.duprDoubles || a.duprSingles
+        : a.duprSingles || a.duprDoubles;
+    const scoreB =
+      mode === "all"
+        ? Math.max(b.duprDoubles, b.duprSingles)
+        : mode === "doi"
+        ? b.duprDoubles || b.duprSingles
+        : b.duprSingles || b.duprDoubles;
     return scoreB - scoreA;
   });
 }
@@ -1388,54 +1471,77 @@ export function getDuprLeaderboard(mode: "doi" | "don", query = ""): RatedPlayer
 /**
  * Tra cứu bảng xếp hạng PVNA lưu sẵn (không bao giờ có VĐV quốc tế như Ben Johns)
  */
-export function getPvnaLeaderboard(mode: "doi" | "don", query = ""): RatedPlayer[] {
+export function getPvnaLeaderboard(mode: "all" | "doi" | "don" = "all", query = ""): RatedPlayer[] {
   const norm = normalizeVietnamese(query);
   const filtered = OFFICIAL_PVNA_PLAYERS.filter((p) => {
     if (!p.isPvnaPlayer) return false;
     if (norm) {
-      const matchName = normalizeVietnamese(p.name).includes(norm);
-      const matchId = p.pvnaId ? normalizeVietnamese(p.pvnaId).includes(norm) : false;
-      return matchName || matchId;
+      return matchesQuery(p, norm);
     }
     if (mode === "doi" && p.pvnaDoubles <= 0) return false;
     if (mode === "don" && p.pvnaSingles <= 0) return false;
-    return true;
+    return p.pvnaDoubles > 0 || p.pvnaSingles > 0;
   });
 
   return filtered.sort((a, b) => {
-    const scoreA = mode === "doi" ? (a.pvnaDoubles || a.pvnaSingles) : (a.pvnaSingles || a.pvnaDoubles);
-    const scoreB = mode === "doi" ? (b.pvnaDoubles || b.pvnaSingles) : (b.pvnaSingles || b.pvnaDoubles);
+    const scoreA =
+      mode === "all"
+        ? Math.max(a.pvnaDoubles, a.pvnaSingles)
+        : mode === "doi"
+        ? a.pvnaDoubles || a.pvnaSingles
+        : a.pvnaSingles || a.pvnaDoubles;
+    const scoreB =
+      mode === "all"
+        ? Math.max(b.pvnaDoubles, b.pvnaSingles)
+        : mode === "doi"
+        ? b.pvnaDoubles || b.pvnaSingles
+        : b.pvnaSingles || b.pvnaDoubles;
     return scoreB - scoreA;
   });
 }
 
+export interface LivePvnaSearchResult {
+  players: RatedPlayer[];
+  ok: boolean;
+}
+
 /**
- * Tra cứu trực tiếp thời gian thực từ cơ sở dữ liệu PVNA (pvna.vn)
- * Đồng bộ chính xác 100% dữ liệu điểm số và màu tích (vàng, xanh, xám)
+ * Tra cứu trực tiếp thời gian thực từ cơ sở dữ liệu PVNA (pvna.vn) qua proxy server
+ * Đồng bộ chính xác 100% dữ liệu điểm số, nickName và màu tích (vàng, xanh, xám)
  */
 export async function searchLivePvnaPlayers(
   queryText: string,
   sortBy: "doubleScore" | "singleScore" = "doubleScore"
-): Promise<RatedPlayer[]> {
+): Promise<LivePvnaSearchResult> {
   try {
-    const q = queryText.trim();
+    const q = queryText.normalize("NFC").trim();
     const url = q
       ? `/api/pvna-proxy?search=${encodeURIComponent(q)}&page=0&limit=50`
       : `/api/pvna-proxy?page=0&limit=60&sortBy=${sortBy}&order=desc`;
 
     const res = await fetch(url);
-    if (!res.ok) return [];
-    const data = await res.json();
-    if (!data.success || !Array.isArray(data.data?.players)) return [];
+    const contentType = res.headers.get("content-type") || "";
+    if (!res.ok || !contentType.includes("application/json")) {
+      return { players: [], ok: false };
+    }
 
-    return data.data.players.map((item: any): RatedPlayer => {
+    const data = await res.json();
+    if (!data.success || !Array.isArray(data.data?.players)) {
+      return { players: [], ok: false };
+    }
+
+    const players = data.data.players.map((item: any): RatedPlayer => {
       const pDoubles = Number(item.doubleScore ?? item.hardScoreDouble ?? 0);
       const pSingles = Number(item.singleScore ?? item.hardScoreSingle ?? 0);
       const cityName = item.city ? (CITY_NAMES[item.city] || item.city) : "Việt Nam";
+      const fullName = String(item.name || "").trim();
+      const nick = String(item.nickName || "").trim();
 
       return {
         id: `pvna_live_${item.playerCode || item.id}`,
-        name: item.name || item.nickName || "VĐV",
+        name: fullName || nick || "VĐV",
+        nickName: nick || undefined,
+        avatarUrl: item.avatarUrl || undefined,
         gender: item.gender === "female" ? "nu" : "nam",
         club: `${cityName} Pickleball`,
         province: cityName,
@@ -1450,9 +1556,48 @@ export async function searchLivePvnaPlayers(
         isPvnaPlayer: true,
       };
     });
+
+    return { players, ok: true };
   } catch (e) {
     console.debug("Lỗi tra cứu PVNA trực tiếp:", e);
-    return [];
+    return { players: [], ok: false };
+  }
+}
+
+export interface LiveDuprSearchResult {
+  players: RatedPlayer[];
+  ok: boolean;
+  requiresAuth: boolean;
+}
+
+/**
+ * Tra cứu trực tiếp từ API DUPR qua proxy server (khi đã cấu hình Partner API Key)
+ */
+export async function searchLiveDuprPlayers(queryText: string): Promise<LiveDuprSearchResult> {
+  const q = queryText.trim();
+  if (!q) {
+    return { players: [], ok: true, requiresAuth: false };
+  }
+
+  try {
+    const res = await fetch("/api/dupr-proxy/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: q }),
+    });
+    const contentType = res.headers.get("content-type") || "";
+    if (!res.ok || !contentType.includes("application/json")) {
+      return { players: [], ok: false, requiresAuth: true };
+    }
+    const data = await res.json();
+    return {
+      players: Array.isArray(data?.players) ? data.players : [],
+      ok: Boolean(data?.success),
+      requiresAuth: Boolean(data?.requiresAuth),
+    };
+  } catch (e) {
+    console.debug("Lỗi tra cứu DUPR trực tiếp:", e);
+    return { players: [], ok: false, requiresAuth: true };
   }
 }
 
@@ -1460,13 +1605,6 @@ export async function searchLivePvnaPlayers(
 export function searchRatedPlayers(query: string, options?: { limit?: number }): RatedPlayer[] {
   const norm = normalizeVietnamese(query);
   const combined = [...OFFICIAL_DUPR_PLAYERS, ...OFFICIAL_PVNA_PLAYERS];
-  const list = combined.filter((p) => {
-    if (!norm) return true;
-    return (
-      normalizeVietnamese(p.name).includes(norm) ||
-      (p.pvnaId && normalizeVietnamese(p.pvnaId).includes(norm)) ||
-      (p.duprId && normalizeVietnamese(p.duprId).includes(norm))
-    );
-  });
+  const list = combined.filter((p) => matchesQuery(p, norm));
   return list.slice(0, options?.limit ?? 50);
 }

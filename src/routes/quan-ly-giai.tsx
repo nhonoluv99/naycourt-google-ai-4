@@ -23,6 +23,7 @@ import {
   generateTotalKoKnockout,
   getActiveEntryIds,
   getActivePlayerNames,
+  getActiveRefereeSession,
   getLiveTournamentIdFromUrl,
   getMatchEntryA,
   getMatchEntryB,
@@ -44,7 +45,11 @@ import {
   type TEvent,
 } from "@/lib/tournament-store";
 import { ShareCollaboratorsModal } from "@/components/ShareCollaboratorsModal";
-import { listSharedTournaments, type UserTournamentArchiveItem } from "@/lib/firebase";
+import {
+  listSharedTournaments,
+  deduplicateTournamentArchives,
+  type UserTournamentArchiveItem,
+} from "@/lib/firebase";
 
 export const Route = createFileRoute("/quan-ly-giai")({
   head: () => ({
@@ -1482,6 +1487,7 @@ type CardProps = {
   onClearReferees?: () => void;
   onRemoveFromTimeline?: () => void;
   onViewNote?: (note: string) => void;
+  onViewReview?: (match: Match) => void;
   onDurationChange?: (mins: number, recordHistory?: boolean) => void;
   onOffsetChange?: (offset: number, recordHistory?: boolean) => void;
   onMoveHorizontal?: (newSlot: number, newOffset: number, recordHistory?: boolean) => void;
@@ -1517,6 +1523,7 @@ function MatchCard({
   onClearReferees,
   onRemoveFromTimeline,
   onViewNote,
+  onViewReview,
   onDurationChange,
   onOffsetChange,
   onMoveHorizontal,
@@ -1600,11 +1607,20 @@ function MatchCard({
               Trùng giờ
             </span>
           )}
-          {m.court && (
+          {compact ? (
+            m.referee ? (
+              <span
+                className="text-[10px] font-medium text-line/60 truncate"
+                title={`Trọng tài: ${m.referee}`}
+              >
+                {m.referee}
+              </span>
+            ) : null
+          ) : (m.court || (isReadOnly && m.referee)) ? (
             <span className="text-[10px] font-medium text-line/60 truncate">
-              {m.court}
+              {[m.court, isReadOnly ? m.referee : ""].filter(Boolean).join(" · ")}
             </span>
-          )}
+          ) : null}
         </div>
 
         <div className="flex items-center gap-1 shrink-0">
@@ -1651,7 +1667,13 @@ function MatchCard({
               isMatchDone={isDone}
             />
           </div>
-          <ScoreBox value={m.scoreA} onCommit={(v) => onScore("scoreA", v)} isWinning={aWin} compact={compact} readOnly={isReadOnly} />
+          <ScoreBox
+            value={m.status === "live" && m.live ? (m.live.a ?? 0) : m.scoreA}
+            onCommit={(v) => onScore("scoreA", v)}
+            isWinning={aWin}
+            compact={compact}
+            readOnly={isReadOnly}
+          />
         </div>
 
         <div className="flex items-center justify-between gap-2">
@@ -1665,43 +1687,40 @@ function MatchCard({
               isMatchDone={isDone}
             />
           </div>
-          <ScoreBox value={m.scoreB} onCommit={(v) => onScore("scoreB", v)} isWinning={bWin} compact={compact} readOnly={isReadOnly} />
+          <ScoreBox
+            value={m.status === "live" && m.live ? (m.live.b ?? 0) : m.scoreB}
+            onCommit={(v) => onScore("scoreB", v)}
+            isWinning={bWin}
+            compact={compact}
+            readOnly={isReadOnly}
+          />
         </div>
       </div>
 
       {/* Hành động dưới thẻ */}
       {isReadOnly ? (
-        isTeamMode || (!compact && (m.referee || hasNote)) ? (
-          <div className="mt-2 flex flex-wrap items-center justify-between gap-1.5 border-t border-line/10 pt-1.5 text-[10px]">
-            {!compact && m.referee ? (
-              <span className="text-[11px] font-medium text-line/65 truncate">
-                TT: {m.referee}
-              </span>
-            ) : (
-              <span />
+        isTeamMode || (!compact && hasNote) ? (
+          <div className="mt-2 flex flex-wrap items-center justify-end gap-1.5 border-t border-line/10 pt-1.5 text-[10px]">
+            {!compact && hasNote && onViewNote && (
+              <button
+                type="button"
+                className="rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-700 ring-1 ring-amber-300 dark:bg-amber-950/30 dark:text-amber-400 cursor-pointer"
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                onClick={() => onViewNote(m.note || m.live?.note || "")}
+              >
+                📝 Ghi chú
+              </button>
             )}
-            <div className="flex items-center gap-1.5">
-              {!compact && hasNote && onViewNote && (
-                <button
-                  type="button"
-                  className="rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-700 ring-1 ring-amber-300 dark:bg-amber-950/30 dark:text-amber-400 cursor-pointer"
-                  style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                  onClick={() => onViewNote(m.note || m.live?.note || "")}
-                >
-                  📝 Ghi chú
-                </button>
-              )}
-              {isTeamMode && (
-                <button
-                  type="button"
-                  onClick={() => onManageTeamMatch?.(m)}
-                  style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                  className="btn-accent !px-2.5 !py-0.5 text-[10px] flex items-center justify-center whitespace-nowrap font-bold cursor-pointer shrink-0 shadow-2xs"
-                >
-                  Các Trận Con
-                </button>
-              )}
-            </div>
+            {isTeamMode && (
+              <button
+                type="button"
+                onClick={() => onManageTeamMatch?.(m)}
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                className="btn-accent !px-2.5 !py-0.5 text-[10px] flex items-center justify-center whitespace-nowrap font-bold cursor-pointer shrink-0 shadow-2xs"
+              >
+                Các Trận Con
+              </button>
+            )}
           </div>
         ) : null
       ) : compact ? (
@@ -1740,14 +1759,43 @@ function MatchCard({
                 Các Trận Con
               </button>
             ) : (
-              <Link
-                to="/cham-diem/$matchId"
-                params={{ matchId: m.id } as any}
-                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                className="btn-ghost !px-1.5 !py-0.5 text-[10px] flex items-center gap-0.5 whitespace-nowrap font-medium cursor-pointer shrink-0"
-              >
-                ⚡ Chấm điểm
-              </Link>
+              <div className="flex items-center gap-1 shrink-0">
+                <Link
+                  to="/cham-diem/$matchId"
+                  params={{ matchId: m.id } as any}
+                  style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                  className="btn-ghost !px-1.5 !py-0.5 text-[10px] flex items-center gap-0.5 whitespace-nowrap font-medium cursor-pointer shrink-0"
+                >
+                  ⚡ Chấm điểm
+                </Link>
+                {m.status === "done" && onViewReview && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onViewReview(m);
+                    }}
+                    title="Xem lịch sử chấm điểm & chữ ký VĐV"
+                    aria-label="Xem lịch sử chấm điểm và chữ ký VĐV"
+                    className="btn-ghost !px-1.5 !py-0.5 text-[10px] flex items-center justify-center text-[#0a3320] cursor-pointer shrink-0"
+                  >
+                    <svg
+                      className="size-3.5"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                      <polyline points="14 2 14 8 20 8" />
+                      <path d="M8 13h8" />
+                      <path d="M8 17h5" />
+                    </svg>
+                  </button>
+                )}
+              </div>
             )}
           </div>
         ) : null
@@ -1820,14 +1868,40 @@ function MatchCard({
                 Các Trận Con
               </button>
             ) : (
-              <Link
-                to="/cham-diem/$matchId"
-                params={{ matchId: m.id } as any}
-                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                className="btn-ghost !px-2 !py-1 text-[11px] flex items-center gap-1"
-              >
-                ⚡ Chấm điểm
-              </Link>
+              <div className="flex items-center gap-1 shrink-0">
+                <Link
+                  to="/cham-diem/$matchId"
+                  params={{ matchId: m.id } as any}
+                  style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                  className="btn-ghost !px-2 !py-1 text-[11px] flex items-center gap-1"
+                >
+                  ⚡ Chấm điểm
+                </Link>
+                {m.status === "done" && onViewReview && (
+                  <button
+                    type="button"
+                    onClick={() => onViewReview(m)}
+                    title="Xem lại lịch sử chấm điểm & chữ ký VĐV"
+                    aria-label="Xem lại lịch sử chấm điểm và chữ ký VĐV"
+                    className="btn-ghost !px-2 !py-1 text-[11px] flex items-center justify-center text-[#0a3320] cursor-pointer"
+                  >
+                    <svg
+                      className="size-3.5"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                      <polyline points="14 2 14 8 20 8" />
+                      <path d="M8 13h8" />
+                      <path d="M8 17h5" />
+                    </svg>
+                  </button>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -1911,6 +1985,7 @@ function KoCard({
   onClearTeam,
   onStartDragTeam,
   onViewNote,
+  onViewReview,
   referees = [],
   onReferee,
   onAddReferee,
@@ -1940,6 +2015,7 @@ function KoCard({
   onClearTeam?: (side: "aId" | "bId") => void;
   onStartDragTeam?: (side: "aId" | "bId") => void;
   onViewNote?: (note: string) => void;
+  onViewReview?: (match: Match) => void;
   referees?: string[];
   onReferee?: (r: string) => void;
   onAddReferee?: (r: string) => void;
@@ -2066,9 +2142,16 @@ function KoCard({
             : !isFinal ? "border-line/15 bg-secondary/40 text-line/70" : ""
         }`}
       >
-        <span className="font-bold flex items-center gap-1.5" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
-          {isFinal ? "🏆 CHUNG KẾT" : m.koRound || `Vòng ${m.round}`}
-        </span>
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="font-bold flex items-center gap-1.5 shrink-0" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+            {isFinal ? "🏆 CHUNG KẾT" : m.koRound || `Vòng ${m.round}`}
+          </span>
+          {isReadOnly && (m.court || m.referee) && (
+            <span className="text-[10px] font-medium text-line/60 truncate">
+              {[m.court, m.referee].filter(Boolean).join(" · ")}
+            </span>
+          )}
+        </div>
         <div className="flex items-center gap-1">
           {hasRoundConflict && (
             <span className="flex items-center gap-1 rounded bg-red-600 px-1.5 py-0.5 text-[9px] font-bold text-white shadow-xs animate-pulse">
@@ -2175,7 +2258,13 @@ function KoCard({
             {isByeA ? (
               <span className="text-line/40 font-mono text-xs px-2 select-none">-</span>
             ) : (
-              <ScoreBox value={m.scoreA} onCommit={(v) => onScore("scoreA", v)} isWinning={aWin} large={isFinal} readOnly={isReadOnly} />
+              <ScoreBox
+                value={m.status === "live" && m.live ? (m.live.a ?? 0) : m.scoreA}
+                onCommit={(v) => onScore("scoreA", v)}
+                isWinning={aWin}
+                large={isFinal}
+                readOnly={isReadOnly}
+              />
             )}
           </div>
         </div>
@@ -2263,26 +2352,27 @@ function KoCard({
             {isByeB ? (
               <span className="text-line/40 font-mono text-xs px-2 select-none">-</span>
             ) : (
-              <ScoreBox value={m.scoreB} onCommit={(v) => onScore("scoreB", v)} isWinning={bWin} large={isFinal} readOnly={isReadOnly} />
+              <ScoreBox
+                value={m.status === "live" && m.live ? (m.live.b ?? 0) : m.scoreB}
+                onCommit={(v) => onScore("scoreB", v)}
+                isWinning={bWin}
+                large={isFinal}
+                readOnly={isReadOnly}
+              />
             )}
           </div>
         </div>
       </div>
 
       {isReadOnly ? (
-        (m.referee || isByeA || isByeB) ? (
-          <div className="flex items-center justify-between gap-1 bg-secondary/50 px-2 py-1 border-t border-line/10 rounded-b-xl text-[10px]">
-            <span className="text-line/65 font-medium truncate">
-              {m.referee ? `TT: ${m.referee}` : ""}
+        (isByeA || isByeB) ? (
+          <div className="flex items-center justify-end gap-1 bg-secondary/50 px-2 py-1 border-t border-line/10 rounded-b-xl text-[10px]">
+            <span
+              className="text-[10px] font-bold text-accent px-1.5 py-0.5 rounded bg-accent/10 whitespace-nowrap shrink-0"
+              style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+            >
+              Vào thẳng
             </span>
-            {(isByeA || isByeB) && (
-              <span
-                className="text-[10px] font-bold text-accent px-1.5 py-0.5 rounded bg-accent/10 whitespace-nowrap shrink-0"
-                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-              >
-                Vào thẳng
-              </span>
-            )}
           </div>
         ) : null
       ) : (
@@ -2332,14 +2422,40 @@ function KoCard({
               Vào thẳng
             </span>
           ) : (
-            <Link
-              to="/cham-diem/$matchId"
-              params={{ matchId: m.id } as any}
-              className="btn-ghost !px-1.5 !py-0.5 text-[10px] flex items-center gap-0.5 whitespace-nowrap shrink-0"
-              style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-            >
-              ⚡ Chấm điểm
-            </Link>
+            <div className="flex items-center gap-1 shrink-0">
+              <Link
+                to="/cham-diem/$matchId"
+                params={{ matchId: m.id } as any}
+                className="btn-ghost !px-1.5 !py-0.5 text-[10px] flex items-center gap-0.5 whitespace-nowrap shrink-0"
+                style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+              >
+                ⚡ Chấm điểm
+              </Link>
+              {m.status === "done" && onViewReview && (
+                <button
+                  type="button"
+                  onClick={() => onViewReview(m)}
+                  title="Xem lại lịch sử chấm điểm & chữ ký VĐV"
+                  aria-label="Xem lại lịch sử chấm điểm và chữ ký VĐV"
+                  className="btn-ghost !px-1.5 !py-0.5 text-[10px] flex items-center justify-center text-[#0a3320] cursor-pointer shrink-0"
+                >
+                  <svg
+                    className="size-3.5"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <polyline points="14 2 14 8 20 8" />
+                    <path d="M8 13h8" />
+                    <path d="M8 17h5" />
+                  </svg>
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -2645,7 +2761,9 @@ function ManagePage() {
     setLoadingShared(true);
     listSharedTournaments(user.email)
       .then((list) => {
-        if (active) setSharedTournaments(list);
+        if (active) {
+          setSharedTournaments(deduplicateTournamentArchives(list, user.uid, user.email));
+        }
       })
       .catch((err) => {
         console.error("Lỗi tải danh sách giải được mời:", err);
@@ -2677,9 +2795,11 @@ function ManagePage() {
     return result;
   }, [state.referees, state.collaborators]);
 
+  const activeRefSession = getActiveRefereeSession();
+
   const myRefereeCollab = useMemo(
-    () => getRefereeCollaboratorForUser(state.collaborators, user?.email),
-    [state.collaborators, user?.email],
+    () => getRefereeCollaboratorForUser(state.collaborators, user?.email, activeRefSession?.token),
+    [state.collaborators, user?.email, activeRefSession?.token],
   );
 
   const assignedMatches = useMemo(() => {
@@ -2687,14 +2807,20 @@ function ManagePage() {
     const matching = (state.matches || []).filter(
       (m) =>
         m.status !== "done" &&
-        isMatchAssignedToRefereeUser(m, state.collaborators, user?.email, user?.displayName),
+        isMatchAssignedToRefereeUser(
+          m,
+          state.collaborators,
+          user?.email,
+          user?.displayName,
+          activeRefSession?.token,
+        ),
     );
     return matching.sort((a, b) => {
       if (a.status === "live" && b.status !== "live") return -1;
       if (b.status === "live" && a.status !== "live") return 1;
       return (a.round ?? 0) - (b.round ?? 0);
     });
-  }, [currentRole, state.matches, state.collaborators, user?.email, user?.displayName]);
+  }, [currentRole, state.matches, state.collaborators, user?.email, user?.displayName, activeRefSession?.token]);
 
   const assignedMatch = useMemo(() => {
     return assignedMatches.find((m) => m.status === "live");
@@ -2735,13 +2861,15 @@ function ManagePage() {
   const [newCourtName, setNewCourtName] = useState("");
   const [newRefName, setNewRefName] = useState("");
 
-  // Modal xem ghi chú
+  // Modal xem ghi chú & lịch sử/chữ ký trận đấu
   const [viewNoteText, setViewNoteText] = useState<string | null>(null);
+  const [reviewMatch, setReviewMatch] = useState<Match | null>(null);
 
-  // Zoom timeline (infinite range slider)
+  // Zoom timeline (infinite range slider + thu phóng toàn màn hình)
   const [colWidth, setColWidth] = useState(210);
   const [rowHeight, setRowHeight] = useState(145);
-  const [timelineEndHour, setTimelineEndHour] = useState<number | null>(null);
+  const [timelineScale, setTimelineScale] = useState(1);
+  const fullscreenPinchRef = useRef<{ dist: number; scale: number } | null>(null);
 
   // Xác nhận chỉnh sửa vòng bảng khi vòng KO đã bắt đầu
   const [confirmedGroupEdit, setConfirmedGroupEdit] = useState(false);
@@ -2795,10 +2923,6 @@ function ManagePage() {
   const [totalKoTeams, setTotalKoTeams] = useState<number>(8);
   // Dạng hiển thị nhánh KO (Ảnh 4): 2 nhánh 2 bên hoặc 1 nhánh thẳng
   const [koLayout, setKoLayout] = useState<"two_sided" | "single">("two_sided");
-  // Chế độ xem toàn màn hình nhánh KO
-  const [isFullscreenKo, setIsFullscreenKo] = useState(false);
-  const [koZoom, setKoZoom] = useState(1);
-  const [koRotate, setKoRotate] = useState(false);
 
   // Chế độ xem toàn màn hình Timeline
   const [isFullscreenTimeline, setIsFullscreenTimeline] = useState(false);
@@ -2814,19 +2938,19 @@ function ManagePage() {
   const [teamMatchToManage, setTeamMatchToManage] = useState<Match | null>(null);
 
   useEffect(() => {
-    if (!isFullscreenKo && !isFullscreenTimeline && !isExportGroupModalOpen && !teamMatchToManage && !koSlotPicker) return;
+    if (!isFullscreenTimeline && !isExportGroupModalOpen && !teamMatchToManage && !koSlotPicker && !reviewMatch) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        setIsFullscreenKo(false);
         setIsFullscreenTimeline(false);
         setIsExportGroupModalOpen(false);
         setTeamMatchToManage(null);
         setKoSlotPicker(null);
+        setReviewMatch(null);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isFullscreenKo, isFullscreenTimeline, isExportGroupModalOpen, teamMatchToManage, koSlotPicker]);
+  }, [isFullscreenTimeline, isExportGroupModalOpen, teamMatchToManage, koSlotPicker, reviewMatch]);
 
   const recordTimelineState = () => {
     setTimelineHistory((prev) => [...prev.slice(-30), state.matches]);
@@ -3059,19 +3183,11 @@ function ManagePage() {
   const minutesUntilMidnight = Math.max(60, 24 * 60 - startTotalMinutes);
   const fullDaySlots = Math.ceil(minutesUntilMidnight / Math.max(5, state.slotMinutes || 30));
 
-  const selectedEndMinutes = (timelineEndHour ?? 24) * 60;
-  const minutesFromStart = Math.max(60, selectedEndMinutes - startTotalMinutes);
-  const targetSlots = Math.ceil(minutesFromStart / Math.max(5, state.slotMinutes || 30));
-
   const maxSlot = Math.max(
     1,
-    timelineEndHour !== null
-      ? targetSlots - 1
-      : Math.max(
-          fullDaySlots,
-          3,
-          ...[...grid.values()].flatMap((list) => list.map((s) => s.slot + 1)),
-        ),
+    fullDaySlots,
+    3,
+    ...[...grid.values()].flatMap((list) => list.map((s) => s.slot + 1)),
   );
   const slotIdxs = Array.from({ length: maxSlot + 1 }, (_, i) => i);
 
@@ -3173,7 +3289,7 @@ function ManagePage() {
   const isNowInGrid =
     diffMinutes >= 0 && diffMinutes <= slotIdxs.length * (state.slotMinutes || 30);
   const redLineOffsetPx = isNowInGrid
-    ? 130 + (diffMinutes / (state.slotMinutes || 30)) * colWidth
+    ? 80 + (diffMinutes / (state.slotMinutes || 30)) * colWidth
     : null;
 
   /* -------- Nhánh loại trực tiếp -------- */
@@ -3199,63 +3315,6 @@ function ManagePage() {
     });
     return counts;
   }, [koMatches]);
-
-  const calculateOptimalKoScale = useCallback((isRotated: boolean) => {
-    if (typeof window === "undefined") return 0.6;
-    const isMobile = window.innerWidth < 768;
-    const screenW = window.innerWidth;
-    const screenH = window.innerHeight;
-
-    const maxR = koRounds.length > 0 ? Math.max(...koRounds) : 3;
-    const isTwoSided = koLayout === "two_sided" && koRounds.length > 1;
-    const preCount = Math.max(1, maxR - 1);
-    const treeW = isTwoSided
-      ? preCount * 2 * (275 + 50) + 360
-      : maxR * (275 + 50) + 120;
-    const maxMatchesInRound = Math.max(
-      1,
-      ...koRounds.map((r) => koMatches.filter((m) => m.round === r && m.slot !== 99).length)
-    );
-    const treeH = Math.max(480, maxMatchesInRound * 115 + 60);
-
-    const availW = isRotated ? (screenH - 50) : (screenW - 24);
-    const availH = isRotated ? (screenW - 24) : (screenH - (isMobile ? 70 : 100));
-
-    const scaleW = availW / treeW;
-    const scaleH = availH / treeH;
-    const optimal = Math.min(scaleW, scaleH);
-    return Math.max(0.18, Math.min(1.2, Number((optimal * 0.95).toFixed(2))));
-  }, [koRounds, koLayout, koMatches]);
-
-  const handleOpenFullscreenKo = useCallback(() => {
-    setIsFullscreenKo(true);
-    const isMobile = typeof window !== "undefined" && window.innerWidth < 768;
-    const shouldRotate = isMobile && window.innerHeight > window.innerWidth;
-    setKoRotate(shouldRotate);
-    const optimal = calculateOptimalKoScale(shouldRotate);
-    setKoZoom(optimal);
-  }, [calculateOptimalKoScale]);
-
-  const handleFitTimelineScreen = useCallback(() => {
-    const isMobile = typeof window !== "undefined" && window.innerWidth < 768;
-    const screenW = typeof window !== "undefined" ? window.innerWidth : 1200;
-    const screenH = typeof window !== "undefined" ? window.innerHeight : 800;
-
-    const courtColW = isMobile ? 75 : 85;
-    const availW = Math.max(120, screenW - courtColW - (isMobile ? 16 : 40));
-    const countSlots = Math.max(1, slotIdxs.length);
-    // Tính toán độ rộng để toàn bộ các khung giờ được chọn co vừa khít vào màn hình (hỗ trợ zoom nhỏ xuống từ 20px)
-    const idealW = Math.max(20, Math.floor(availW / countSlots));
-
-    const headerH = isMobile ? 180 : 160;
-    const availH = Math.max(150, screenH - headerH);
-    const countCourts = Math.max(1, safeCourts.length);
-    const idealH = Math.max(isMobile ? 50 : 65, Math.floor(availH / countCourts));
-
-    setColWidth(idealW);
-    setRowHeight(idealH);
-    toast.success(`Đã căn vừa khít màn hình (${idealW}px/cột)!`);
-  }, [slotIdxs.length, safeCourts.length]);
 
   if (!ev) {
     return (
@@ -3409,10 +3468,10 @@ function ManagePage() {
                 </div>
                 <div className="rounded-xl border border-line/12 bg-paper/70 px-4 py-3">
                   <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-line/50">
-                    Email đăng nhập
+                    {user?.email ? "Email đăng nhập" : "Hình thức truy cập"}
                   </p>
                   <p className="mt-1 text-sm font-semibold text-ink truncate">
-                    {user?.email || "—"}
+                    {user?.email || "Link / Mã QR Trọng tài"}
                   </p>
                 </div>
               </div>
@@ -3987,6 +4046,7 @@ function ManagePage() {
           updateMatch(m.id, { timeSlot: undefined });
         },
     onViewNote: (n) => setViewNoteText(n),
+    onViewReview: (target) => setReviewMatch(target),
     onDurationChange: isReadOnly
       ? undefined
       : (mins, recordHistory = true) => {
@@ -4755,6 +4815,7 @@ function ManagePage() {
           });
         }}
         onViewNote={(n) => setViewNoteText(n)}
+        onViewReview={(target) => setReviewMatch(target)}
         referees={mergedReferees}
         onReferee={(r) => {
           if (isReadOnly) return;
@@ -4780,7 +4841,7 @@ function ManagePage() {
     if (!isTwoSided) {
       // Sơ đồ dạng 1 nhánh thẳng từ trái sang phải
       return (
-        <div className="flex min-w-max items-stretch pt-2">
+        <div className="flex w-max min-w-full items-stretch justify-center pt-2">
           {koRounds.map((r, colIdx) => {
             const list = koMatches
               .filter((m) => m.round === r && m.slot !== 99)
@@ -4852,7 +4913,7 @@ function ManagePage() {
     const finalMatches = koMatches.filter((m) => m.round === maxRound && m.slot !== 99);
 
     return (
-      <div className="flex min-w-max items-stretch justify-center pt-2">
+      <div className="flex w-max min-w-full items-stretch justify-center pt-2">
         {/* Nhánh bên TRÁI: các vòng trước Chung kết đi từ ngoài vào trong */}
         {preRounds.map((r, colIdx) => {
           const list = koMatches
@@ -4964,9 +5025,14 @@ function ManagePage() {
     );
   };
 
-  const renderTimelineGrid = () => (
+  const renderTimelineGrid = (isFullscreen = false) => (
     <div
-      className="relative overflow-x-auto overflow-y-visible flex-1"
+      className={
+        isFullscreen
+          ? "relative w-max min-w-full flex-1"
+          : "relative min-w-0 overflow-x-auto overflow-y-visible flex-1"
+      }
+      style={isFullscreen ? { zoom: timelineScale } : undefined}
       ref={timelinePrintRef}
     >
       {/* Đường chỉ đỏ thời gian thực */}
@@ -5261,7 +5327,7 @@ function ManagePage() {
       }}
     >
       {/* Tiêu đề & Chọn nội dung */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="sticky left-4 sm:left-6 lg:left-8 max-w-[calc(100vw-2rem)] sm:max-w-[calc(100vw-3rem)] lg:max-w-[calc(100vw-4rem)] flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1
             className="font-head text-3xl font-extrabold uppercase tracking-tight text-[#0a3320] sm:text-4xl"
@@ -5286,7 +5352,7 @@ function ManagePage() {
 
       {/* Thanh thông báo các trận ĐANG DIỄN RA (Active Matches Bar - Ảnh 4) */}
       {allLiveMatches.length > 0 && (
-        <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-3.5 shadow-sm">
+        <div className="sticky left-4 sm:left-6 lg:left-8 max-w-[calc(100vw-2rem)] sm:max-w-[calc(100vw-3rem)] lg:max-w-[calc(100vw-4rem)] rounded-2xl border border-red-500/30 bg-red-500/10 p-3.5 shadow-sm">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <span className="relative flex h-3 w-3">
@@ -5340,7 +5406,8 @@ function ManagePage() {
                         {entryName(tA)}
                       </span>
                       <span className="rounded bg-red-600 px-2 py-0.5 text-white font-head text-xs tabular-nums shrink-0">
-                        {m.scoreA ?? 0} - {m.scoreB ?? 0}
+                        {m.status === "live" && m.live ? (m.live.a ?? 0) : (m.scoreA ?? 0)} -{" "}
+                        {m.status === "live" && m.live ? (m.live.b ?? 0) : (m.scoreB ?? 0)}
                       </span>
                       <span
                         className="truncate text-red-600 font-extrabold"
@@ -5397,7 +5464,7 @@ function ManagePage() {
       )}
 
       {/* Tabs chọn nội dung thi đấu */}
-      <div className="flex flex-wrap gap-2">
+      <div className="sticky left-4 sm:left-6 lg:left-8 max-w-[calc(100vw-2rem)] sm:max-w-[calc(100vw-3rem)] lg:max-w-[calc(100vw-4rem)] flex flex-wrap gap-2">
         {state.events.map((e) => (
           <button
             key={e.id}
@@ -5415,7 +5482,7 @@ function ManagePage() {
       </div>
 
       {/* Thanh điều khiển & Sub-tabs */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-y border-line/10 py-3">
+      <div className="sticky left-4 sm:left-6 lg:left-8 max-w-[calc(100vw-2rem)] sm:max-w-[calc(100vw-3rem)] lg:max-w-[calc(100vw-4rem)] flex flex-wrap items-center justify-between gap-3 border-y border-line/10 py-3">
         <div className="flex flex-wrap items-center gap-2">
           <TabBtn id="group" label={ev.bracket === "rr" ? "Vòng tròn" : "Vòng bảng"} />
           <TabBtn id="timeline" label="Timeline sân" />
@@ -5606,15 +5673,6 @@ function ManagePage() {
                   🎯 Xếp thủ công {showManualSeeding ? "▼ (Hiện)" : "▶ (Ẩn)"}
                 </button>
               )}
-
-              <button
-                type="button"
-                className="btn-ghost text-xs font-bold flex items-center gap-1.5 px-2.5 py-1 rounded-lg ring-1 ring-line/20 hover:bg-card shadow-2xs cursor-pointer text-accent hover:text-accent font-semibold"
-                onClick={handleOpenFullscreenKo}
-                title="Xem toàn bộ sơ đồ nhánh trực tiếp ở chế độ toàn màn hình"
-              >
-                ⛶ Toàn màn hình
-              </button>
             </div>
           ) : tab === "timeline" ? (
             !isReadOnly ? (
@@ -5718,56 +5776,14 @@ function ManagePage() {
 
         {tab === "timeline" && (
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            {/* Lựa chọn khung giờ và Fit màn hình chỉ dành cho điện thoại theo yêu cầu */}
-            <div className="flex sm:hidden items-center gap-1.5 w-full bg-card p-1.5 rounded-xl border border-line/15 shadow-2xs">
-              <span className="text-[11px] font-bold text-line/70 shrink-0">
-                Xem: {state.startTime || "08:00"} →
-              </span>
-              <select
-                value={timelineEndHour ?? "all"}
-                onChange={(e) => {
-                  const val = e.target.value === "all" ? null : Number(e.target.value);
-                  setTimelineEndHour(val);
-                }}
-                className="rounded-lg bg-paper px-2 py-1 text-xs font-bold text-ink border border-line/20 outline-hidden flex-1"
-              >
-                <option value="all">Toàn bộ ngày (đến 24:00)</option>
-                <option value={10}>Đến 10:00</option>
-                <option value={12}>Đến 12:00 (Trưa)</option>
-                <option value={14}>Đến 14:00</option>
-                <option value={16}>Đến 16:00</option>
-                <option value={18}>Đến 18:00 (Chiều)</option>
-                <option value={20}>Đến 20:00 (Tối)</option>
-                <option value={22}>Đến 22:00</option>
-              </select>
-              <button
-                type="button"
-                onClick={handleFitTimelineScreen}
-                className="rounded-lg bg-[#0a3320] text-white px-2.5 py-1.5 text-xs font-bold shrink-0 cursor-pointer shadow-2xs hover:bg-[#0a3320]/90 flex items-center gap-1"
-                title="Tự động co vừa khít toàn bộ khung giờ đã chọn vào màn hình"
-              >
-                📐 Fit vừa màn
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setColWidth(140);
-                  setRowHeight(90);
-                  toast.success("Đã dãn rộng timeline để đọc rõ chữ!");
-                }}
-                className="rounded-lg bg-card text-ink border border-line/20 px-2 py-1.5 text-xs font-semibold shrink-0 cursor-pointer shadow-2xs hover:bg-paper flex items-center gap-1"
-                title="Kéo dài bảng timeline thoải mái để đọc rõ tên VĐV"
-              >
-                ↔️ Dãn rộng
-              </button>
-            </div>
-
             {/* Nút Toàn màn hình Timeline */}
             <button
               type="button"
               onClick={() => {
+                setColWidth(168);
+                setRowHeight(122);
+                setTimelineScale(1);
                 setIsFullscreenTimeline(true);
-                handleFitTimelineScreen();
               }}
               className="btn-ghost text-xs !py-1.5 font-bold flex items-center gap-1.5 px-2.5 rounded-lg ring-1 ring-line/20 hover:bg-card shadow-2xs cursor-pointer text-accent hover:text-accent font-semibold"
               title="Xem toàn bộ timeline ở chế độ toàn màn hình"
@@ -6605,9 +6621,9 @@ function ManagePage() {
             </div>
           )}
 
-          <div className="grid gap-4 lg:grid-cols-12 items-start">
+          <div className="grid gap-4 lg:grid-cols-12 items-start min-w-0">
             {/* Bảng timeline với sticky headers */}
-            <div className={`${!isReadOnly && showQueue ? "lg:col-span-9" : "lg:col-span-12"} panel overflow-hidden rounded-2xl flex flex-col`}>
+            <div className={`${!isReadOnly && showQueue ? "lg:col-span-9" : "lg:col-span-12"} panel overflow-hidden rounded-2xl flex flex-col min-w-0`}>
               {renderTimelineGrid()}
             </div>
 
@@ -6709,26 +6725,10 @@ function ManagePage() {
 
       {/* ---------- LOẠI TRỰC TIẾP (KNOCKOUT) ---------- */}
       {tab === "ko" && (
-        <div className="grid gap-6 lg:grid-cols-12 items-start">
-          <div className={`${!isReadOnly && showManualSeeding ? "lg:col-span-9" : "lg:col-span-12"} overflow-x-auto pb-4`}>
-            {koRounds.length === 0 ? (
-              <div className="panel p-6 text-center text-sm text-line/60 rounded-2xl">
-                {isReadOnly ? (
-                  "Chưa có nhánh loại trực tiếp."
-                ) : (
-                  <>
-                    Chưa có nhánh loại trực tiếp. Bấm <strong>“Tạo nhánh KO”</strong> để sinh sơ đồ.
-                  </>
-                )}
-              </div>
-            ) : (
-              renderKoBracketTree()
-            )}
-          </div>
-
-          {/* Cột kéo thả VĐV vào nhánh KO - GHIM CỐ ĐỊNH CHẠY THEO TRANG KHI CUỘN (Sticky Sidebar) */}
+        <div className="flex flex-col lg:flex-row items-start gap-6">
+          {/* Cột kéo thả VĐV vào nhánh KO - GHIM CỐ ĐỊNH CHẠY THEO TRANG KHI CUỘN */}
           {!isReadOnly && showManualSeeding && (
-            <div className="lg:col-span-3 panel p-3.5 rounded-2xl sticky top-4 self-start max-h-[calc(100vh-2rem)] flex flex-col shadow-xl ring-1 ring-line/20 z-20">
+            <div className="w-full lg:w-[310px] shrink-0 panel p-3.5 rounded-2xl lg:sticky lg:top-4 lg:left-4 self-start max-h-[calc(100vh-2rem)] flex flex-col shadow-xl ring-1 ring-line/20 z-20">
               <div className="flex items-center justify-between border-b border-line/10 pb-2 shrink-0">
                 <div className="flex items-center gap-1.5">
                   <span className="text-sm">📌</span>
@@ -6840,212 +6840,24 @@ function ManagePage() {
               </div>
             </div>
           )}
-        </div>
-      )}
-
-      {/* MODAL TOÀN MÀN HÌNH XEM SƠ ĐỒ NHÁNH LOẠI TRỰC TIẾP */}
-      {isFullscreenKo && (
-        <div className="fixed inset-0 z-50 bg-background/95 backdrop-blur-md flex flex-col p-1 sm:p-4 overflow-hidden">
-          {/* Thanh điều khiển nổi trên điện thoại (tự tính toán fit 100%, xoay ngang, zoom, đóng) */}
-          <div className="sm:hidden fixed top-2 left-2 right-2 z-50 flex items-center justify-between gap-1.5 bg-card/95 backdrop-blur-md p-1.5 rounded-2xl border border-line/20 shadow-xl">
-            <div className="flex items-center gap-1 overflow-x-auto">
-              {/* Nút Xoay ngang / Đứng */}
-              <button
-                type="button"
-                onClick={() => {
-                  const nextRotate = !koRotate;
-                  setKoRotate(nextRotate);
-                  setKoZoom(calculateOptimalKoScale(nextRotate));
-                }}
-                className={`px-2 py-1 rounded-xl text-[11px] font-bold border transition shrink-0 cursor-pointer ${
-                  koRotate ? "bg-[#0a3320] text-white border-[#0a3320]" : "bg-paper text-ink border-line/25"
-                }`}
-                title="Xoay ngang màn hình để xem trọn nhánh đấu"
-              >
-                {koRotate ? "🔄 Đứng" : "🔄 Xoay ngang"}
-              </button>
-
-              {/* Nút Fit tự động */}
-              <button
-                type="button"
-                onClick={() => {
-                  setKoZoom(calculateOptimalKoScale(koRotate));
-                  toast.success("Đã căn vừa toàn bộ nhánh đấu!");
-                }}
-                className="px-2 py-1 rounded-xl text-[11px] font-bold bg-[#0a3320] text-white border border-[#0a3320] shadow-2xs shrink-0 cursor-pointer"
-                title="Tự động tính toán để thấy toàn bộ nhánh đấu trong 1 màn hình"
-              >
-                📐 Fit 100%
-              </button>
-
-              {/* Thu phóng */}
-              <div className="flex items-center gap-0.5 bg-paper px-1.5 py-0.5 rounded-lg border border-line/20 text-xs shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setKoZoom((z) => Math.max(0.15, Number((z - 0.08).toFixed(2))))}
-                  className="size-5 rounded bg-line/10 flex items-center justify-center font-bold text-xs cursor-pointer"
-                >
-                  -
-                </button>
-                <span className="w-8 text-center font-mono font-bold text-[10px] text-accent">
-                  {Math.round(koZoom * 100)}%
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setKoZoom((z) => Math.min(2.0, Number((z + 0.08).toFixed(2))))}
-                  className="size-5 rounded bg-line/10 flex items-center justify-center font-bold text-xs cursor-pointer"
-                >
-                  +
-                </button>
+          <div
+            className={`w-max ${
+              !isReadOnly && showManualSeeding ? "min-w-full lg:min-w-[calc(100%-334px)]" : "min-w-full"
+            } flex-1 pb-6`}
+          >
+            {koRounds.length === 0 ? (
+              <div className="panel p-6 text-center text-sm text-line/60 rounded-2xl w-full max-w-[calc(100vw-4rem)]">
+                {isReadOnly ? (
+                  "Chưa có nhánh loại trực tiếp."
+                ) : (
+                  <>
+                    Chưa có nhánh loại trực tiếp. Bấm <strong>“Tạo nhánh KO”</strong> để sinh sơ đồ.
+                  </>
+                )}
               </div>
-
-              {/* Lựa chọn 2 nhánh / 1 nhánh */}
-              <button
-                type="button"
-                onClick={() => {
-                  setKoLayout((prev) => (prev === "two_sided" ? "single" : "two_sided"));
-                  setTimeout(() => setKoZoom(calculateOptimalKoScale(koRotate)), 50);
-                }}
-                className="px-1.5 py-1 rounded-lg text-[10px] font-bold bg-secondary text-ink border border-line/20 shrink-0 cursor-pointer"
-              >
-                {koLayout === "two_sided" ? "↔️ 2 bên" : "➡️ 1 nhánh"}
-              </button>
-            </div>
-
-            {/* Nút Đóng */}
-            <button
-              type="button"
-              onClick={() => setIsFullscreenKo(false)}
-              className="size-7 rounded-full bg-black/80 hover:bg-black text-white flex items-center justify-center font-bold text-xs shadow-md shrink-0 cursor-pointer ml-1"
-              title="Đóng toàn màn hình"
-            >
-              ✕
-            </button>
-          </div>
-
-          {/* Thanh công cụ điều khiển: chỉ hiển thị trên máy tính/tablet */}
-          <div className="hidden sm:flex flex-wrap items-center justify-between gap-3 border-b border-line/15 pb-3 px-2">
-            <div className="flex items-center gap-3">
-              <h2 className="font-head text-base md:text-lg font-bold tracking-tight text-ink flex items-center gap-2">
-                🏆 Sơ đồ Nhánh trực tiếp ({ev.name})
-              </h2>
-              {/* Lựa chọn dạng hiển thị 2 nhánh 2 bên hoặc 1 nhánh thẳng */}
-              <div className="flex items-center gap-1 rounded-lg bg-card p-0.5 ring-1 ring-line/20 text-xs">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setKoLayout("two_sided");
-                    setTimeout(() => setKoZoom(calculateOptimalKoScale(koRotate)), 50);
-                  }}
-                  className={`px-2.5 py-1 rounded-md font-bold transition cursor-pointer ${
-                    koLayout === "two_sided"
-                      ? "bg-accent text-accent-foreground shadow-2xs"
-                      : "text-line/60 hover:text-ink"
-                  }`}
-                  title="Hiển thị sơ đồ dạng 2 nhánh 2 bên hội tụ về chung kết ở giữa"
-                >
-                  ↔️ 2 nhánh 2 bên
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setKoLayout("single");
-                    setTimeout(() => setKoZoom(calculateOptimalKoScale(koRotate)), 50);
-                  }}
-                  className={`px-2.5 py-1 rounded-md font-bold transition cursor-pointer ${
-                    koLayout === "single"
-                      ? "bg-accent text-accent-foreground shadow-2xs"
-                      : "text-line/60 hover:text-ink"
-                  }`}
-                  title="Hiển thị sơ đồ dạng 1 nhánh thẳng từ trái sang phải"
-                >
-                  ➡️ 1 nhánh thẳng
-                </button>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              {/* Nút Fit tự động */}
-              <button
-                type="button"
-                onClick={() => {
-                  setKoZoom(calculateOptimalKoScale(koRotate));
-                  toast.success("Đã căn vừa sơ đồ nhánh đấu!");
-                }}
-                className="btn-accent text-xs !py-1 px-2.5 font-bold cursor-pointer"
-                title="Tự động tính toán để thấy toàn bộ nhánh đấu trong 1 màn hình"
-              >
-                📐 Fit vừa màn hình
-              </button>
-
-              {/* Thu phóng */}
-              <div className="flex items-center gap-1 bg-card px-2.5 py-1 rounded-lg ring-1 ring-line/20 text-xs font-medium">
-                <span className="text-line/60">Thu phóng:</span>
-                <button
-                  type="button"
-                  onClick={() => setKoZoom((z) => Math.max(0.15, Number((z - 0.1).toFixed(2))))}
-                  className="size-6 flex items-center justify-center rounded bg-line/10 hover:bg-line/20 font-bold cursor-pointer"
-                  title="Thu nhỏ"
-                >
-                  -
-                </button>
-                <span className="w-12 text-center font-mono font-bold text-accent">{Math.round(koZoom * 100)}%</span>
-                <button
-                  type="button"
-                  onClick={() => setKoZoom((z) => Math.min(2.0, Number((z + 0.1).toFixed(2))))}
-                  className="size-6 flex items-center justify-center rounded bg-line/10 hover:bg-line/20 font-bold cursor-pointer"
-                  title="Phóng to"
-                >
-                  +
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setKoZoom(1)}
-                  className="ml-1 text-[11px] text-line/60 hover:text-ink underline cursor-pointer"
-                >
-                  100%
-                </button>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => {
-                  if (!document.fullscreenElement) {
-                    document.documentElement.requestFullscreen?.().catch(() => {});
-                  } else {
-                    document.exitFullscreen?.().catch(() => {});
-                  }
-                }}
-                className="btn-ghost text-xs !py-1.5 flex items-center gap-1 cursor-pointer"
-                title="Toàn màn hình trình duyệt (F11)"
-              >
-                🖥️ Màn hình rộng
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setIsFullscreenKo(false)}
-                className="btn-accent text-xs font-bold flex items-center gap-1 px-3 py-1.5 cursor-pointer"
-              >
-                ✕ Đóng (Esc)
-              </button>
-            </div>
-          </div>
-
-          {/* Vùng hiển thị toàn màn hình: trên mobile tràn viền và tự động thích ứng với xoay ngang */}
-          <div className="flex-1 overflow-auto p-1 sm:p-6 flex items-center justify-center touch-pan-x touch-pan-y relative select-none">
-            <div
-              style={{
-                transform: koRotate
-                  ? `rotate(90deg) scale(${koZoom})`
-                  : `scale(${koZoom})`,
-                transformOrigin: "center center",
-                transition: "transform 0.15s ease-out",
-              }}
-              className="shrink-0"
-            >
-              {renderKoBracketTree()}
-            </div>
+            ) : (
+              renderKoBracketTree()
+            )}
           </div>
         </div>
       )}
@@ -7053,115 +6865,159 @@ function ManagePage() {
       {/* MODAL TOÀN MÀN HÌNH TIMELINE SÂN */}
       {isFullscreenTimeline && (
         <div className="fixed inset-0 z-50 bg-paper flex flex-col overflow-hidden">
-          {/* Header điều khiển nổi / thanh công cụ */}
-          <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-card border-b border-line/15 z-30 shadow-xs shrink-0">
-            <div className="flex items-center gap-2">
-              <span className="font-head text-xs sm:text-sm font-bold text-ink flex items-center gap-1.5">
-                📅 Toàn màn hình Timeline ({ev.name})
-              </span>
-              <span className="text-[11px] text-line/60 hidden sm:inline">
-                {state.courts.length} sân · {slotIdxs.length} khung giờ
-              </span>
-            </div>
-
-            <div className="flex items-center gap-1.5 flex-wrap">
+          {/* Thanh công cụ gọn trên cùng */}
+          <div className="flex flex-wrap items-center justify-between sm:justify-end gap-1.5 px-2.5 sm:px-3 py-1.5 bg-card border-b border-line/15 z-30 shadow-xs shrink-0">
+            {/* Thu phóng tỷ lệ tổng thể (zoom nhỏ xuống 20% để xem toàn bộ lịch) */}
+            <div className="flex items-center gap-1 bg-paper px-1.5 sm:px-2 py-0.5 rounded-lg border border-line/20 text-xs">
+              <span className="text-[10px] text-line/60 font-medium">Thu phóng:</span>
               <button
                 type="button"
-                onClick={handleFitTimelineScreen}
-                className="rounded-lg bg-[#0a3320] text-white px-2.5 py-1.5 text-xs font-bold shrink-0 cursor-pointer shadow-2xs hover:bg-[#0a3320]/90"
-                title="Tự động căn chỉnh độ rộng cột và chiều cao sân để vừa khít màn hình"
+                onClick={() => setTimelineScale((s) => Math.max(0.2, Math.round((s - 0.1) * 100) / 100))}
+                className="size-5 rounded bg-line/10 hover:bg-line/20 flex items-center justify-center font-bold text-xs cursor-pointer"
+                title="Thu nhỏ toàn bộ bảng timeline"
               >
-                📐 Fit vừa màn hình
+                -
+              </button>
+              <input
+                type="range"
+                min="0.2"
+                max="1.5"
+                step="0.05"
+                value={timelineScale}
+                onChange={(e) => setTimelineScale(Number(e.target.value))}
+                className="h-1.5 w-14 sm:w-20 cursor-pointer accent-accent"
+                title={`Tỷ lệ thu phóng: ${Math.round(timelineScale * 100)}%`}
+              />
+              <button
+                type="button"
+                onClick={() => setTimelineScale((s) => Math.min(1.5, Math.round((s + 0.1) * 100) / 100))}
+                className="size-5 rounded bg-line/10 hover:bg-line/20 flex items-center justify-center font-bold text-xs cursor-pointer"
+                title="Phóng to toàn bộ bảng timeline"
+              >
+                +
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setColWidth(140);
-                  setRowHeight(90);
-                  toast.success("Đã dãn rộng timeline để đọc rõ chữ!");
-                }}
-                className="rounded-lg bg-paper text-ink border border-line/20 px-2 py-1.5 text-xs font-semibold shrink-0 cursor-pointer shadow-2xs hover:bg-card"
-                title="Kéo dài bảng timeline thoải mái để đọc rõ tên VĐV"
+                onClick={() => setTimelineScale(1)}
+                className="text-[10px] font-mono font-bold text-accent hover:underline w-8 text-right cursor-pointer"
+                title="Bấm để đặt lại tỷ lệ 100%"
               >
-                ↔️ Dãn rộng
-              </button>
-
-              {/* Zoom ngang */}
-              <div className="flex items-center gap-1 bg-paper px-2 py-0.5 rounded-lg border border-line/20 text-xs">
-                <span className="text-[10px] text-line/60 hidden sm:inline">Zoom ngang:</span>
-                <button
-                  type="button"
-                  onClick={() => setColWidth((w) => Math.max(20, w - 8))}
-                  className="size-5 rounded bg-line/10 hover:bg-line/20 flex items-center justify-center font-bold text-xs cursor-pointer"
-                  title="Thu nhỏ cột giờ"
-                >
-                  -
-                </button>
-                <input
-                  type="range"
-                  min="20"
-                  max="350"
-                  step="1"
-                  value={colWidth}
-                  onChange={(e) => setColWidth(Number(e.target.value))}
-                  className="h-1.5 w-16 sm:w-20 cursor-pointer accent-accent"
-                />
-                <button
-                  type="button"
-                  onClick={() => setColWidth((w) => Math.min(350, w + 8))}
-                  className="size-5 rounded bg-line/10 hover:bg-line/20 flex items-center justify-center font-bold text-xs cursor-pointer"
-                  title="Phóng to cột giờ"
-                >
-                  +
-                </button>
-                <span className="text-[10px] font-mono text-line/50 w-7 text-right">{colWidth}px</span>
-              </div>
-
-              {/* Zoom dọc */}
-              <div className="flex items-center gap-1 bg-paper px-2 py-0.5 rounded-lg border border-line/20 text-xs">
-                <span className="text-[10px] text-line/60 hidden sm:inline">Zoom dọc:</span>
-                <button
-                  type="button"
-                  onClick={() => setRowHeight((h) => Math.max(35, h - 8))}
-                  className="size-5 rounded bg-line/10 hover:bg-line/20 flex items-center justify-center font-bold text-xs cursor-pointer"
-                  title="Thu nhỏ hàng sân"
-                >
-                  -
-                </button>
-                <input
-                  type="range"
-                  min="35"
-                  max="250"
-                  step="2"
-                  value={rowHeight}
-                  onChange={(e) => setRowHeight(Number(e.target.value))}
-                  className="h-1.5 w-14 sm:w-20 cursor-pointer accent-accent"
-                />
-                <button
-                  type="button"
-                  onClick={() => setRowHeight((h) => Math.min(250, h + 8))}
-                  className="size-5 rounded bg-line/10 hover:bg-line/20 flex items-center justify-center font-bold text-xs cursor-pointer"
-                  title="Phóng to hàng sân"
-                >
-                  +
-                </button>
-                <span className="text-[10px] font-mono text-line/50 w-7 text-right">{rowHeight}px</span>
-              </div>
-
-              {/* Nút Đóng */}
-              <button
-                type="button"
-                onClick={() => setIsFullscreenTimeline(false)}
-                className="rounded-lg bg-black/80 hover:bg-black text-white px-3 py-1.5 text-xs font-bold cursor-pointer transition shadow-sm ml-1"
-              >
-                ✕ Đóng (Esc)
+                {Math.round(timelineScale * 100)}%
               </button>
             </div>
+
+            {/* Zoom ngang */}
+            <div className="flex items-center gap-1 bg-paper px-1.5 sm:px-2 py-0.5 rounded-lg border border-line/20 text-xs">
+              <span className="text-[10px] text-line/60 hidden sm:inline">Zoom ngang:</span>
+              <span className="text-[10px] text-line/60 sm:hidden">Ngang:</span>
+              <button
+                type="button"
+                onClick={() => setColWidth((w) => Math.max(20, w - 8))}
+                className="size-5 rounded bg-line/10 hover:bg-line/20 flex items-center justify-center font-bold text-xs cursor-pointer"
+                title="Thu nhỏ cột giờ"
+              >
+                -
+              </button>
+              <input
+                type="range"
+                min="20"
+                max="350"
+                step="1"
+                value={colWidth}
+                onChange={(e) => setColWidth(Number(e.target.value))}
+                className="h-1.5 w-12 sm:w-20 cursor-pointer accent-accent"
+              />
+              <button
+                type="button"
+                onClick={() => setColWidth((w) => Math.min(350, w + 8))}
+                className="size-5 rounded bg-line/10 hover:bg-line/20 flex items-center justify-center font-bold text-xs cursor-pointer"
+                title="Phóng to cột giờ"
+              >
+                +
+              </button>
+              <span className="text-[10px] font-mono text-line/50 w-8 text-right">{colWidth}px</span>
+            </div>
+
+            {/* Zoom dọc */}
+            <div className="flex items-center gap-1 bg-paper px-1.5 sm:px-2 py-0.5 rounded-lg border border-line/20 text-xs">
+              <span className="text-[10px] text-line/60 hidden sm:inline">Zoom dọc:</span>
+              <span className="text-[10px] text-line/60 sm:hidden">Dọc:</span>
+              <button
+                type="button"
+                onClick={() => setRowHeight((h) => Math.max(35, h - 8))}
+                className="size-5 rounded bg-line/10 hover:bg-line/20 flex items-center justify-center font-bold text-xs cursor-pointer"
+                title="Thu nhỏ hàng sân"
+              >
+                -
+              </button>
+              <input
+                type="range"
+                min="35"
+                max="250"
+                step="2"
+                value={rowHeight}
+                onChange={(e) => setRowHeight(Number(e.target.value))}
+                className="h-1.5 w-12 sm:w-20 cursor-pointer accent-accent"
+              />
+              <button
+                type="button"
+                onClick={() => setRowHeight((h) => Math.min(250, h + 8))}
+                className="size-5 rounded bg-line/10 hover:bg-line/20 flex items-center justify-center font-bold text-xs cursor-pointer"
+                title="Phóng to hàng sân"
+              >
+                +
+              </button>
+              <span className="text-[10px] font-mono text-line/50 w-8 text-right">{rowHeight}px</span>
+            </div>
+
+            {/* Nút Đóng */}
+            <button
+              type="button"
+              onClick={() => setIsFullscreenTimeline(false)}
+              className="rounded-lg bg-black/80 hover:bg-black text-white px-2.5 sm:px-3 py-1.5 text-xs font-bold cursor-pointer transition shadow-sm shrink-0"
+            >
+              ✕ Đóng<span className="hidden sm:inline"> (Esc)</span>
+            </button>
           </div>
 
-          {/* Vùng hiển thị toàn màn hình */}
-          <div className="flex-1 overflow-auto p-1 sm:p-2 relative bg-card/30 flex flex-col">
-            {renderTimelineGrid()}
+          {/* Vùng hiển thị toàn màn hình cuộn trực tiếp ngang/dọc & hỗ trợ chụm 2 ngón thu phóng */}
+          <div
+            className="flex-1 overflow-auto relative bg-card/30 flex flex-col"
+            style={{ touchAction: "pan-x pan-y" }}
+            onTouchStart={(e) => {
+              if (e.touches.length === 2) {
+                const dist = Math.hypot(
+                  e.touches[0].clientX - e.touches[1].clientX,
+                  e.touches[0].clientY - e.touches[1].clientY,
+                );
+                fullscreenPinchRef.current = { dist, scale: timelineScale };
+              }
+            }}
+            onTouchMove={(e) => {
+              if (e.touches.length === 2) {
+                const dist = Math.hypot(
+                  e.touches[0].clientX - e.touches[1].clientX,
+                  e.touches[0].clientY - e.touches[1].clientY,
+                );
+                if (!fullscreenPinchRef.current) {
+                  fullscreenPinchRef.current = { dist, scale: timelineScale };
+                  return;
+                }
+                const ratio = dist / Math.max(1, fullscreenPinchRef.current.dist);
+                const next = Math.min(1.5, Math.max(0.2, Math.round(fullscreenPinchRef.current.scale * ratio * 100) / 100));
+                setTimelineScale(next);
+              }
+            }}
+            onTouchEnd={(e) => {
+              if (e.touches.length < 2) {
+                fullscreenPinchRef.current = null;
+              }
+            }}
+            onTouchCancel={() => {
+              fullscreenPinchRef.current = null;
+            }}
+          >
+            {renderTimelineGrid(true)}
           </div>
         </div>
       )}
@@ -7589,6 +7445,280 @@ function ManagePage() {
           </div>
         </div>
       )}
+
+      {/* MODAL XEM LẠI LỊCH SỬ CHẤM ĐIỂM & CHỮ KÝ VĐV */}
+      {reviewMatch && (() => {
+        const liveMatch = state.matches.find((x) => x.id === reviewMatch.id) || reviewMatch;
+        const rTeamA = getMatchEntryA(liveMatch, state.entries);
+        const rTeamB = getMatchEntryB(liveMatch, state.entries);
+        const rNameA = entryName(rTeamA);
+        const rNameB = entryName(rTeamB);
+        const rEv = state.events.find((e) => e.id === liveMatch.eventId);
+        const rFinalA = liveMatch.scoreA ?? liveMatch.live?.a ?? 0;
+        const rFinalB = liveMatch.scoreB ?? liveMatch.live?.b ?? 0;
+        const rawHist = liveMatch.live?.history || [];
+        const steps = [
+          ...rawHist,
+          {
+            a: rFinalA,
+            b: rFinalB,
+            serveTeam: liveMatch.live?.serveTeam ?? (0 as 0 | 1),
+            serverNum: liveMatch.live?.serverNum ?? (1 as 1 | 2),
+            serverIdx: liveMatch.live?.serverIdx ?? 0,
+            at: undefined as number | undefined,
+          },
+        ];
+        const eventsLog: Array<{
+          seq: number;
+          scoreText: string;
+          label: string;
+          timeText: string;
+          type: "pointA" | "pointB" | "sideout";
+        }> = [];
+        for (let i = 0; i < steps.length - 1; i++) {
+          const cur = steps[i];
+          const nxt = steps[i + 1];
+          const timeText = cur.at
+            ? new Date(cur.at).toLocaleTimeString("vi-VN", {
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+              })
+            : "";
+          if (nxt.a > cur.a) {
+            eventsLog.push({
+              seq: eventsLog.length + 1,
+              scoreText: `${nxt.a} - ${nxt.b}`,
+              label: `+1 điểm cho ${rNameA}`,
+              timeText,
+              type: "pointA",
+            });
+          } else if (nxt.b > cur.b) {
+            eventsLog.push({
+              seq: eventsLog.length + 1,
+              scoreText: `${nxt.a} - ${nxt.b}`,
+              label: `+1 điểm cho ${rNameB}`,
+              timeText,
+              type: "pointB",
+            });
+          } else if (nxt.serveTeam !== cur.serveTeam) {
+            eventsLog.push({
+              seq: eventsLog.length + 1,
+              scoreText: `${nxt.a} - ${nxt.b}`,
+              label: `Đổi giao bóng → ${nxt.serveTeam === 0 ? rNameA : rNameB}`,
+              timeText,
+              type: "sideout",
+            });
+          } else if (nxt.serverNum !== cur.serverNum) {
+            eventsLog.push({
+              seq: eventsLog.length + 1,
+              scoreText: `${nxt.a} - ${nxt.b}`,
+              label: `Chuyển người giao ${nxt.serverNum} (${nxt.serveTeam === 0 ? rNameA : rNameB})`,
+              timeText,
+              type: "sideout",
+            });
+          }
+        }
+        const signedAtText = liveMatch.signatures?.signedAt
+          ? new Date(liveMatch.signatures.signedAt).toLocaleString("vi-VN")
+          : "";
+        const matchNoteText = liveMatch.note || liveMatch.live?.note || "";
+
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs"
+            onClick={() => setReviewMatch(null)}
+          >
+            <div
+              className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-line/20 bg-card shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-line/10 bg-white dark:bg-card px-5 py-3.5">
+                <div>
+                  <h3
+                    className="text-sm font-bold uppercase tracking-wider text-[#0a3320]"
+                    style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                  >
+                    Lịch sử chấm điểm & Chữ ký VĐV
+                  </h3>
+                  <p className="text-[11px] text-line/60 mt-0.5">
+                    {[
+                      rEv?.name,
+                      liveMatch.stage === "ko"
+                        ? liveMatch.koRound || `KO V${liveMatch.round}`
+                        : liveMatch.groupName
+                          ? `${liveMatch.groupName} · V${liveMatch.round}`
+                          : `Vòng ${liveMatch.round}`,
+                      liveMatch.court,
+                      liveMatch.referee ? `TT: ${liveMatch.referee}` : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" • ")}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setReviewMatch(null)}
+                  className="text-sm text-line/50 hover:text-ink cursor-pointer px-1"
+                  aria-label="Đóng"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-5 space-y-5">
+                {/* Tỉ số chung cuộc */}
+                <div className="rounded-xl border border-[#0a3320]/20 bg-paper/70 px-4 py-3 flex items-center justify-between gap-3">
+                  <span
+                    className={`flex-1 text-right text-sm font-bold truncate ${
+                      rFinalA > rFinalB ? "text-[#0a3320]" : "text-ink/80"
+                    }`}
+                  >
+                    {rNameA}
+                  </span>
+                  <span className="rounded-lg bg-[#0a3320] px-3 py-1 font-head text-lg font-extrabold text-white tabular-nums shrink-0">
+                    {rFinalA} - {rFinalB}
+                  </span>
+                  <span
+                    className={`flex-1 text-left text-sm font-bold truncate ${
+                      rFinalB > rFinalA ? "text-[#0a3320]" : "text-ink/80"
+                    }`}
+                  >
+                    {rNameB}
+                  </span>
+                </div>
+
+                {matchNoteText && (
+                  <div className="rounded-xl border border-amber-300/60 bg-amber-50/70 px-3.5 py-2.5 text-xs text-amber-900">
+                    <span className="font-bold">Ghi chú trọng tài: </span>
+                    {matchNoteText}
+                  </div>
+                )}
+
+                {/* Chữ ký của VĐV */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs font-bold text-line/70">
+                    <span className="uppercase tracking-wider">Chữ ký xác nhận VĐV</span>
+                    {signedAtText && (
+                      <span className="text-[11px] font-normal text-line/55">
+                        Ký lúc: {signedAtText}
+                      </span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="rounded-xl border border-line/15 bg-white p-3">
+                      <p className="text-[11px] font-bold text-[#0a3320] truncate mb-2">
+                        Đội 1: {rNameA}
+                      </p>
+                      {liveMatch.signatures?.teamA ? (
+                        <img
+                          src={liveMatch.signatures.teamA}
+                          alt={`Chữ ký ${rNameA}`}
+                          className="h-24 w-full object-contain rounded border border-line/10 bg-[#fbfaf6]"
+                        />
+                      ) : (
+                        <div className="h-24 flex items-center justify-center rounded border border-dashed border-line/15 bg-paper/40 text-xs text-line/45">
+                          Chưa có chữ ký
+                        </div>
+                      )}
+                    </div>
+                    <div className="rounded-xl border border-line/15 bg-white p-3">
+                      <p className="text-[11px] font-bold text-[#0a3320] truncate mb-2">
+                        Đội 2: {rNameB}
+                      </p>
+                      {liveMatch.signatures?.teamB ? (
+                        <img
+                          src={liveMatch.signatures.teamB}
+                          alt={`Chữ ký ${rNameB}`}
+                          className="h-24 w-full object-contain rounded border border-line/10 bg-[#fbfaf6]"
+                        />
+                      ) : (
+                        <div className="h-24 flex items-center justify-center rounded border border-dashed border-line/15 bg-paper/40 text-xs text-line/45">
+                          Chưa có chữ ký
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Lịch sử chấm điểm */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs font-bold text-line/70">
+                    <span className="uppercase tracking-wider">
+                      Diễn biến điểm số ({eventsLog.length} lượt)
+                    </span>
+                    {liveMatch.live?.scoring && (
+                      <span className="text-[11px] font-normal text-line/55">
+                        Kiểu:{" "}
+                        {liveMatch.live.scoring === "rally"
+                          ? "Rally"
+                          : liveMatch.live.scoring === "sideout"
+                            ? "Side-out"
+                            : "Thủ công"}
+                      </span>
+                    )}
+                  </div>
+                  {eventsLog.length === 0 ? (
+                    <div className="rounded-xl border border-line/15 bg-paper/50 p-4 text-center text-xs text-line/55">
+                      Trận đấu được nhập tỉ số trực tiếp (chưa có lịch sử từng điểm).
+                    </div>
+                  ) : (
+                    <div className="max-h-60 overflow-y-auto rounded-xl border border-line/15 divide-y divide-line/10 bg-white dark:bg-card">
+                      {eventsLog.map((evLog) => (
+                        <div
+                          key={evLog.seq}
+                          className="flex items-center justify-between gap-2 px-3 py-2 text-xs"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="w-6 text-[10px] font-mono text-line/45 shrink-0">
+                              #{evLog.seq}
+                            </span>
+                            <span
+                              className={`truncate ${
+                                evLog.type === "sideout"
+                                  ? "text-line/65 italic"
+                                  : "font-semibold text-ink"
+                              }`}
+                            >
+                              {evLog.label}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            {evLog.timeText && (
+                              <span className="text-[10px] font-mono text-line/45">
+                                {evLog.timeText}
+                              </span>
+                            )}
+                            <span
+                              className={`rounded px-2 py-0.5 text-[11px] font-bold tabular-nums ${
+                                evLog.type === "sideout"
+                                  ? "bg-paper text-line/70 border border-line/15"
+                                  : "bg-[#0a3320]/10 text-[#0a3320]"
+                              }`}
+                            >
+                              {evLog.scoreText}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="border-t border-line/10 bg-paper/60 px-5 py-3 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setReviewMatch(null)}
+                  className="rounded-xl bg-[#0a3320] hover:bg-[#0a3320]/90 text-white text-xs font-bold px-4 py-2 cursor-pointer"
+                >
+                  Đóng
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* MODAL CẢNH BÁO / XÁC NHẬN CHỈNH SỬA */}
       {confirmModal && (

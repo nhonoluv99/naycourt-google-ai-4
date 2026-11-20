@@ -5,6 +5,7 @@ import {
   listUserTournaments,
   listSharedTournaments,
   deleteUserTournament,
+  deduplicateTournamentArchives,
   type UserTournamentArchiveItem,
 } from "@/lib/firebase";
 import { useTournament, type TournamentState } from "@/lib/tournament-store";
@@ -54,8 +55,11 @@ export function MyTournamentsModal({ isOpen, onClose }: MyTournamentsModalProps)
         }
       });
 
-      const combined = Array.from(map.values());
-      combined.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+      const combined = deduplicateTournamentArchives(
+        Array.from(map.values()),
+        user.uid,
+        user.email
+      );
       setTournaments(combined);
     } catch (e) {
       console.error(e);
@@ -89,7 +93,7 @@ export function MyTournamentsModal({ isOpen, onClose }: MyTournamentsModalProps)
         Boolean(tour.editorEmails?.includes(cleanMyEmail)) ||
         Boolean(
           tour.collaborators?.some(
-            (c) => c.email.toLowerCase().trim() === cleanMyEmail && c.role === "editor",
+            (c) => (c.email || "").toLowerCase().trim() === cleanMyEmail && c.role === "editor",
           ),
         );
       if (!isEditor) {
@@ -101,9 +105,25 @@ export function MyTournamentsModal({ isOpen, onClose }: MyTournamentsModalProps)
   };
 
   const handleEditClick = (tour: UserTournamentArchiveItem) => {
-    // Nếu giải này chính là giải đang mở thì chỉ cần đóng modal
+    const cleanMyEmail = user.email?.toLowerCase().trim() || "";
+    const isOwner =
+      tour.userId === user.uid ||
+      (tour.userEmail && tour.userEmail.toLowerCase().trim() === cleanMyEmail);
+    const isEditor =
+      isOwner ||
+      Boolean(tour.editorEmails?.includes(cleanMyEmail)) ||
+      Boolean(
+        tour.collaborators?.some(
+          (c) => (c.email || "").toLowerCase().trim() === cleanMyEmail && c.role === "editor",
+        ),
+      );
+
+    // Nếu giải này chính là giải đang mở thì đóng modal (và đưa trọng tài/người xem vào trang điều hành nếu đang ở trang khác)
     if (activeTournamentId === tour.id && !hasUnsavedChanges()) {
       onClose();
+      if (!isEditor) {
+        void navigate({ to: "/quan-ly-giai" });
+      }
       return;
     }
 
@@ -198,14 +218,18 @@ export function MyTournamentsModal({ isOpen, onClose }: MyTournamentsModalProps)
                 const isEditor =
                   isOwner ||
                   Boolean(tour.editorEmails?.includes(cleanMyEmail)) ||
-                  Boolean(tour.collaborators?.some((c) => c.email.toLowerCase().trim() === cleanMyEmail && c.role === "editor"));
+                  Boolean(
+                    tour.collaborators?.some(
+                      (c) => (c.email || "").toLowerCase().trim() === cleanMyEmail && c.role === "editor",
+                    ),
+                  );
                 const isReferee =
                   !isOwner &&
                   !isEditor &&
                   (Boolean(tour.refereeEmails?.includes(cleanMyEmail)) ||
                     Boolean(
                       tour.collaborators?.some(
-                        (c) => c.email.toLowerCase().trim() === cleanMyEmail && c.role === "referee",
+                        (c) => (c.email || "").toLowerCase().trim() === cleanMyEmail && c.role === "referee",
                       ),
                     ));
                 const isViewer = !isOwner && !isEditor && !isReferee;

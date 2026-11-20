@@ -182,9 +182,10 @@ export function subscribeToTournamentCloud(
 export type CollaboratorRole = "editor" | "viewer" | "referee";
 
 export interface Collaborator {
-  email: string;
+  email?: string;
   role: CollaboratorRole;
   name?: string;
+  refToken?: string;
   addedAt: string;
   addedBy?: string;
 }
@@ -227,14 +228,16 @@ export async function saveTournamentToArchive(
     const collaborators: Collaborator[] = state.collaborators || existingData?.collaborators || [];
     const isPublicLive: boolean =
       state.isPublicLive !== undefined ? state.isPublicLive : (existingData?.isPublicLive ?? true);
-    const collaboratorEmails = collaborators.map((c: Collaborator) => c.email.toLowerCase().trim()).filter(Boolean);
+    const collaboratorEmails = collaborators
+      .map((c: Collaborator) => (c.email || "").toLowerCase().trim())
+      .filter(Boolean);
     const editorEmails = collaborators
       .filter((c: Collaborator) => c.role === "editor")
-      .map((c: Collaborator) => c.email.toLowerCase().trim())
+      .map((c: Collaborator) => (c.email || "").toLowerCase().trim())
       .filter(Boolean);
     const refereeEmails = collaborators
       .filter((c: Collaborator) => c.role === "referee")
-      .map((c: Collaborator) => c.email.toLowerCase().trim())
+      .map((c: Collaborator) => (c.email || "").toLowerCase().trim())
       .filter(Boolean);
 
     const payload: UserTournamentArchiveItem = {
@@ -281,14 +284,16 @@ export async function updateTournamentCollaborators(
   const path = `user_tournaments/${tournamentId}`;
   try {
     const docRef = doc(db, "user_tournaments", tournamentId);
-    const collaboratorEmails = collaborators.map((c) => c.email.toLowerCase().trim()).filter(Boolean);
+    const collaboratorEmails = collaborators
+      .map((c) => (c.email || "").toLowerCase().trim())
+      .filter(Boolean);
     const editorEmails = collaborators
       .filter((c) => c.role === "editor")
-      .map((c) => c.email.toLowerCase().trim())
+      .map((c) => (c.email || "").toLowerCase().trim())
       .filter(Boolean);
     const refereeEmails = collaborators
       .filter((c) => c.role === "referee")
-      .map((c) => c.email.toLowerCase().trim())
+      .map((c) => (c.email || "").toLowerCase().trim())
       .filter(Boolean);
 
     await setDoc(
@@ -347,6 +352,81 @@ export async function listSharedTournaments(userEmail: string): Promise<UserTour
     handleFirestoreError(error, OperationType.LIST, path);
     return [];
   }
+}
+
+/**
+ * Loại bỏ các bản lưu trùng lặp của cùng một giải đấu (giữ lại bản cập nhật mới nhất).
+ * So khớp theo cấu trúc event/entry ID (cùng chủ giải) và theo (chủ giải, tên giải, ngày) cho giải được chia sẻ.
+ */
+export function deduplicateTournamentArchives(
+  items: UserTournamentArchiveItem[],
+  currentUserUid?: string,
+  currentUserEmail?: string | null
+): UserTournamentArchiveItem[] {
+  const sorted = [...items].sort(
+    (a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime()
+  );
+  const cleanMyEmail = (currentUserEmail || "").toLowerCase().trim();
+  const kept: Array<{
+    item: UserTournamentArchiveItem;
+    ownerKey: string;
+    nameKey: string;
+    dateKey: string;
+    structuralIds: Set<string>;
+  }> = [];
+
+  for (const item of sorted) {
+    const ownerEmail = (item.userEmail || "").toLowerCase().trim();
+    const ownerKey = ownerEmail || item.userId || "";
+    const nameKey = (item.name || "").trim().toLowerCase();
+    const dateKey = (item.date || "").trim();
+    const isOwner =
+      Boolean(currentUserUid && item.userId === currentUserUid) ||
+      Boolean(cleanMyEmail && ownerEmail && ownerEmail === cleanMyEmail);
+
+    const structuralIds = new Set<string>();
+    try {
+      if (item.stateJson) {
+        const parsed = JSON.parse(item.stateJson) as {
+          events?: Array<{ id?: string }>;
+          entries?: Array<{ id?: string }>;
+        };
+        if (Array.isArray(parsed.events)) {
+          for (const ev of parsed.events) {
+            if (ev?.id) structuralIds.add(`ev:${ev.id}`);
+          }
+        }
+        if (Array.isArray(parsed.entries)) {
+          for (const en of parsed.entries) {
+            if (en?.id) structuralIds.add(`en:${en.id}`);
+          }
+        }
+      }
+    } catch {
+      /* ignore malformed stateJson */
+    }
+
+    const isDuplicate = kept.some((existing) => {
+      if (existing.ownerKey !== ownerKey) return false;
+      // 1. Trùng ID nội dung hoặc ID VĐV/cặp đấu => chắc chắn là bản sao của cùng 1 giải
+      if (structuralIds.size > 0 && existing.structuralIds.size > 0) {
+        for (const sid of structuralIds) {
+          if (existing.structuralIds.has(sid)) return true;
+        }
+      }
+      // 2. Với giải được mời / phân công (!isOwner): trùng cùng chủ giải + tên giải + ngày => chỉ giữ bản mới nhất
+      if (!isOwner && existing.nameKey === nameKey && existing.dateKey === dateKey) {
+        return true;
+      }
+      return false;
+    });
+
+    if (!isDuplicate) {
+      kept.push({ item, ownerKey, nameKey, dateKey, structuralIds });
+    }
+  }
+
+  return kept.map((k) => k.item);
 }
 
 /** Tải giải đấu công khai qua link/QR xem trực tiếp (không bắt buộc đăng nhập) */

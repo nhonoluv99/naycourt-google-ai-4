@@ -52,6 +52,7 @@ function PlayersPage() {
       : state.events[0]?.id ?? "";
   const fileRef = useRef<HTMLInputElement>(null);
   const [note, setNote] = useState("");
+  const [isImportingImage, setIsImportingImage] = useState(false);
   const [confirmedMatchEdit, setConfirmedMatchEdit] = useState(false);
   const [confirmModal, setConfirmModal] = useState<{
     title: string;
@@ -336,7 +337,250 @@ function PlayersPage() {
     });
   };
 
-  const onImport = async (file: File) => {
+  const readImageForAi = (file: File): Promise<{ data: string; mimeType: string }> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error(`Không thể đọc file ảnh ${file.name}`));
+      reader.onload = () => {
+        const result = String(reader.result || "");
+        if (!result) {
+          reject(new Error(`Ảnh ${file.name} bị rỗng.`));
+          return;
+        }
+        // Nếu ảnh nhỏ hơn 650KB gửi trực tiếp để giữ nguyên độ nét chữ
+        if (file.size <= 650 * 1024) {
+          resolve({
+            data: result,
+            mimeType: file.type && file.type.startsWith("image/") ? file.type : "image/png",
+          });
+          return;
+        }
+        // Nén nhẹ các ảnh lớn (>650KB) về tối đa 1800px giúp AI đọc nhanh hơn mà vẫn rõ nét chữ
+        const img = new Image();
+        img.onerror = () =>
+          resolve({
+            data: result,
+            mimeType: file.type && file.type.startsWith("image/") ? file.type : "image/png",
+          });
+        img.onload = () => {
+          const maxDim = 1800;
+          let { width, height } = img;
+          if (width > maxDim || height > maxDim) {
+            const ratio = Math.min(maxDim / width, maxDim / height);
+            width = Math.round(width * ratio);
+            height = Math.round(height * ratio);
+          }
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            resolve({
+              data: result,
+              mimeType: file.type && file.type.startsWith("image/") ? file.type : "image/png",
+            });
+            return;
+          }
+          ctx.drawImage(img, 0, 0, width, height);
+          const compressed = canvas.toDataURL("image/jpeg", 0.92);
+          resolve({ data: compressed, mimeType: "image/jpeg" });
+        };
+        img.src = result;
+      };
+      reader.readAsDataURL(file);
+    });
+
+  const onImportImages = async (imageFiles: File[]) => {
+    setIsImportingImage(true);
+    const toastId = toast.loading(
+      `AI đang đọc hiểu ${imageFiles.length > 1 ? `${imageFiles.length} ảnh` : "ảnh"} danh sách VĐV...`,
+    );
+    try {
+      const preparedImages = await Promise.all(imageFiles.map(readImageForAi));
+      const res = await fetch("/api/ai/parse-athletes-image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          images: preparedImages,
+          mode: ev.mode,
+          pairMode: ev.pairMode,
+          eventName: ev.name,
+        }),
+      });
+
+      const payload: any = await res.json().catch(() => ({}));
+      if (!res.ok || !payload?.success) {
+        const errMsg = payload?.message || "AI chưa đọc được dữ liệu từ ảnh này.";
+        toast.error(errMsg, { id: toastId });
+        setNote(errMsg);
+        return;
+      }
+
+      const parsedGroups: Array<{
+        groupName: string;
+        entries: Array<{
+          teamName?: string;
+          players: Array<{ name: string; rating: number | null }>;
+        }>;
+      }> = Array.isArray(payload.groups) ? payload.groups : [];
+
+      const importedEntries: Entry[] = [];
+      const groupAssignments: Array<{ groupName: string; entryIds: string[] }> = [];
+
+      for (const grp of parsedGroups) {
+        const gName = (grp.groupName || "").trim();
+        const createdIdsForGroup: string[] = [];
+
+        for (const rawEn of grp.entries || []) {
+          const rawPlayers = Array.isArray(rawEn.players) ? rawEn.players : [];
+          if (rawPlayers.length === 0) continue;
+
+          if (isTeamMode) {
+            const count = Math.max(rawPlayers.length, teamPlayerCount || 4);
+            const paddedPlayers: Entry["players"] = Array.from({ length: count }, (_, idx) => {
+              const p = rawPlayers[idx];
+              return p
+                ? { name: p.name.trim(), rating: p.rating ?? null }
+                : { name: "", rating: null };
+            });
+            const newId = uid();
+            importedEntries.push({
+              id: newId,
+              eventId: ev.id,
+              teamName: rawEn.teamName?.trim() || `Đội ${entries.length + importedEntries.length + 1}`,
+              players: paddedPlayers,
+              paid: false,
+            });
+            createdIdsForGroup.push(newId);
+          } else if (slots === 2) {
+            let p1 = rawPlayers[0];
+            let p2 = rawPlayers[1];
+            // Dự phòng tách cặp nếu AI trả về chuỗi gộp 2 tên trong 1 phần tử
+            if (p1 && !p2 && /[/+&–—-]/.test(p1.name)) {
+              const parts = p1.name
+                .split(/[/+&–—-]/)
+                .map((s) => s.trim())
+                .filter(Boolean);
+              if (parts.length >= 2) {
+                p2 = { name: parts.slice(1).join(" - "), rating: p1.rating ?? null };
+                p1 = { name: parts[0]!, rating: p1.rating ?? null };
+              }
+            }
+            const players: Entry["players"] = [
+              { name: (p1?.name || "").trim(), rating: p1?.rating ?? null },
+              { name: (p2?.name || "").trim(), rating: p2?.rating ?? null },
+            ];
+            if (players.some((p) => p.name)) {
+              const newId = uid();
+              importedEntries.push({
+                id: newId,
+                eventId: ev.id,
+                players,
+                paid: false,
+              });
+              createdIdsForGroup.push(newId);
+            }
+          } else {
+            // Chế độ đánh đơn hoặc đôi bốc thăm: mỗi VĐV là 1 entry
+            for (const p of rawPlayers) {
+              const cleanName = (p?.name || "").trim();
+              if (!cleanName) continue;
+              const newId = uid();
+              importedEntries.push({
+                id: newId,
+                eventId: ev.id,
+                players: [{ name: cleanName, rating: p?.rating ?? null }],
+                paid: false,
+              });
+              createdIdsForGroup.push(newId);
+            }
+          }
+        }
+
+        if (gName && createdIdsForGroup.length > 0) {
+          groupAssignments.push({ groupName: gName, entryIds: createdIdsForGroup });
+        }
+      }
+
+      if (importedEntries.length === 0) {
+        const msg = "AI không tìm thấy tên VĐV nào hợp lệ trong ảnh vừa chọn.";
+        toast.warning(msg, { id: toastId });
+        setNote(msg);
+        return;
+      }
+
+      // Gộp vào các bảng đấu tương ứng nếu ảnh có chia bảng (VD: Bảng A -> Bảng H)
+      const normalizeGrpKey = (name: string) =>
+        name
+          .toLowerCase()
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/[^a-z0-9]/g, "");
+
+      let nextGroups = (ev.groups || []).map((g) => ({
+        name: g.name,
+        entryIds: [...g.entryIds],
+      }));
+
+      let assignedGroupCount = 0;
+      if (groupAssignments.length > 0) {
+        for (const ga of groupAssignments) {
+          const targetKey = normalizeGrpKey(ga.groupName);
+          let targetGrp = nextGroups.find((g) => normalizeGrpKey(g.name) === targetKey);
+          if (!targetGrp) {
+            targetGrp = { name: ga.groupName, entryIds: [] };
+            nextGroups.push(targetGrp);
+          }
+          targetGrp.entryIds.push(...ga.entryIds);
+          assignedGroupCount += 1;
+        }
+      }
+
+      // Sắp xếp lại các bảng theo thứ tự A -> Z nếu tất cả đều là dạng Bảng X
+      if (nextGroups.length > 1 && nextGroups.every((g) => /^bảng\s+[a-z0-9]+$/i.test(g.name.trim()))) {
+        nextGroups = nextGroups.sort((a, b) => a.name.localeCompare(b.name, "vi", { numeric: true }));
+      }
+
+      const nextGroupCount =
+        groupAssignments.length > 0 ? Math.max(ev.groupCount || 1, nextGroups.length) : ev.groupCount;
+      const shouldSwitchToGroupBracket =
+        groupAssignments.length >= 2 && ev.bracket !== "rr_ko";
+
+      update({
+        entries: [...state.entries, ...importedEntries],
+        events: state.events.map((item) => {
+          if (item.id !== ev.id) return item;
+          return {
+            ...item,
+            ...(groupAssignments.length > 0
+              ? {
+                  groups: nextGroups,
+                  groupCount: nextGroupCount,
+                  ...(shouldSwitchToGroupBracket ? { bracket: "rr_ko" as const } : {}),
+                }
+              : {}),
+          };
+        }),
+      });
+
+      const summary =
+        assignedGroupCount > 0
+          ? `AI đã đọc ảnh và thêm ${importedEntries.length} ${isTeamMode ? "đội" : slots === 2 ? "cặp" : "VĐV"} vào ${assignedGroupCount} bảng tương ứng!`
+          : `AI đã đọc ảnh và thêm thành công ${importedEntries.length} ${isTeamMode ? "đội" : slots === 2 ? "cặp" : "VĐV"}.`;
+
+      toast.success(summary, { id: toastId });
+      setNote(summary);
+    } catch (err: any) {
+      console.error(err);
+      const errMsg = err?.message || "Lỗi khi phân tích ảnh danh sách VĐV.";
+      toast.error(errMsg, { id: toastId });
+      setNote(errMsg);
+    } finally {
+      setIsImportingImage(false);
+    }
+  };
+
+  const onImportExcel = async (file: File) => {
     try {
       let rows: Array<string[]> = [];
       const fileName = file.name.toLowerCase();
@@ -451,6 +695,20 @@ function PlayersPage() {
     } catch (err) {
       console.error(err);
       setNote("Lỗi khi đọc file Excel/CSV. Vui lòng kiểm tra lại định dạng file.");
+    }
+  };
+
+  const onImportFiles = async (files: File[]) => {
+    const isImageFile = (f: File) =>
+      f.type.startsWith("image/") || /\.(png|jpe?g|webp|gif|bmp|heic|heif)$/i.test(f.name);
+    const imageFiles = files.filter(isImageFile);
+    const sheetFiles = files.filter((f) => !isImageFile(f));
+
+    for (const f of sheetFiles) {
+      await onImportExcel(f);
+    }
+    if (imageFiles.length > 0) {
+      await onImportImages(imageFiles);
     }
   };
 
@@ -865,11 +1123,13 @@ function PlayersPage() {
               DURP/PVNA
             </button>
             <button
-              className="btn-ghost"
+              type="button"
+              disabled={isImportingImage}
+              className="btn-ghost disabled:opacity-60 disabled:cursor-wait"
               onClick={() => fileRef.current?.click()}
-              title="Hỗ trợ file .xlsx, .xls, .csv, .tsv (cột STT, Tên, Điểm trình)"
+              title="Hỗ trợ file Excel (.xlsx, .xls, .csv) hoặc Ảnh danh sách VĐV / chia bảng (AI tự động đọc và xếp vào đúng bảng)"
             >
-              📥 Import Excel
+              {isImportingImage ? "⏳ AI đang đọc ảnh..." : "📥 Import Excel / Ảnh"}
             </button>
             <button
               type="button"
@@ -883,7 +1143,7 @@ function PlayersPage() {
               type="button"
               className="btn-ghost text-xs text-line/60 hover:text-ink"
               onClick={() => setShowExcelGuide((v) => !v)}
-              title="Xem hướng dẫn các cột trong file Excel"
+              title="Xem hướng dẫn các cột trong file Excel và định dạng Ảnh"
             >
               ℹ️ Định dạng file
             </button>
@@ -916,13 +1176,14 @@ function PlayersPage() {
             <input
               ref={fileRef}
               type="file"
-              accept=".xlsx,.xls,.csv,.txt,.tsv"
+              multiple
+              accept=".xlsx,.xls,.csv,.txt,.tsv,image/*,.png,.jpg,.jpeg,.webp"
               className="hidden"
               onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) {
+                const files = Array.from(e.target.files || []);
+                if (files.length > 0) {
                   requireEditConfirmation(() => {
-                    void onImport(f);
+                    void onImportFiles(files);
                   }, "Import danh sách mới sẽ thêm các VĐV vào nội dung này.");
                 }
                 e.target.value = "";
@@ -934,7 +1195,7 @@ function PlayersPage() {
           {showExcelGuide && (
             <div className="mt-3 rounded-xl border border-line/20 bg-secondary/30 p-3.5 text-xs space-y-2">
               <div className="flex items-center justify-between font-bold text-ink">
-                <span>📖 Hướng dẫn định dạng file Excel / CSV:</span>
+                <span>📖 Hướng dẫn Import Excel / CSV hoặc Ảnh (AI tự động đọc):</span>
                 <button
                   type="button"
                   className="text-line/40 hover:text-ink cursor-pointer"
@@ -944,7 +1205,7 @@ function PlayersPage() {
                 </button>
               </div>
               <p className="text-line/70">
-                Web hỗ trợ trực tiếp file Excel (<strong>.xlsx</strong>, <strong>.xls</strong>) và <strong>.csv</strong>. Bạn có thể bấm nút <strong>📋 Tải file mẫu</strong> ở trên để có sẵn cấu trúc chuẩn.
+                Web hỗ trợ cả file Excel (<strong>.xlsx</strong>, <strong>.xls</strong>, <strong>.csv</strong>) và <strong>Ảnh chụp danh sách / ảnh chia bảng</strong> (PNG, JPG, WebP — có thể chọn nhiều ảnh cùng lúc để AI tự đọc tên VĐV và xếp thẳng vào từng Bảng A, B, C...).
               </p>
               <div className="overflow-x-auto rounded-lg border border-line/15 bg-card p-2 text-[11px]">
                 <p className="font-bold text-[#0a3320] mb-1">
@@ -2113,6 +2374,7 @@ function PlayersPage() {
         }}
         targetSlotLabel={targetSlot?.slotLabel}
         initialQuery={targetSlot?.initialQuery || ""}
+        eventMode={ev.mode}
         onSelectPlayer={handleSelectRatedPlayer}
       />
     </div>

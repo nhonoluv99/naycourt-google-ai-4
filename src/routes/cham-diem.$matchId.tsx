@@ -4,6 +4,7 @@ import * as React from "react";
 import { toast } from "sonner";
 import {
   entryName,
+  getActiveRefereeSession,
   getMatchEntryA,
   getMatchEntryB,
   isMatchAssignedToRefereeUser,
@@ -127,6 +128,144 @@ const Lbl = ({
   </p>
 );
 
+function SignaturePad({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (dataUrl: string) => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const drawingRef = useRef(false);
+  const hasStrokeRef = useRef(Boolean(value));
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (value) {
+      hasStrokeRef.current = true;
+      const img = new Image();
+      img.onload = () => {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      };
+      img.src = value;
+    } else {
+      hasStrokeRef.current = false;
+    }
+  }, [value]);
+
+  const getPos = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current!;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / Math.max(1, rect.width);
+    const scaleY = canvas.height / Math.max(1, rect.height);
+    return {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY,
+    };
+  };
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    canvas.setPointerCapture(e.pointerId);
+    const { x, y } = getPos(e);
+    drawingRef.current = true;
+    hasStrokeRef.current = true;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#0a3320";
+    ctx.lineWidth = 2.6;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!drawingRef.current) return;
+    e.preventDefault();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const { x, y } = getPos(e);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+  };
+
+  const finishStroke = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!drawingRef.current) return;
+    drawingRef.current = false;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    try {
+      canvas.releasePointerCapture(e.pointerId);
+    } catch {}
+    if (hasStrokeRef.current) {
+      onChange(canvas.toDataURL("image/png"));
+    }
+  };
+
+  const handleClear = () => {
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext("2d");
+      ctx?.clearRect(0, 0, canvas.width, canvas.height);
+    }
+    hasStrokeRef.current = false;
+    onChange("");
+  };
+
+  return (
+    <div className="flex flex-col rounded-xl border border-line/20 bg-white dark:bg-card p-3 shadow-2xs">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span
+          className="text-xs font-bold text-[#0a3320] truncate"
+          style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+        >
+          Chữ ký: {label}
+        </span>
+        {value ? (
+          <button
+            type="button"
+            onClick={handleClear}
+            className="text-[11px] font-semibold text-red-600 hover:underline cursor-pointer shrink-0"
+          >
+            Xóa ký lại
+          </button>
+        ) : (
+          <span className="text-[10px] text-line/45 shrink-0">Ký vào khung dưới</span>
+        )}
+      </div>
+      <div className="relative flex-1 min-h-[125px] rounded-lg border border-dashed border-line/25 bg-[#fbfaf6] overflow-hidden">
+        {!value && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-line/35 select-none">
+            Ký tên xác nhận tại đây
+          </div>
+        )}
+        <canvas
+          ref={canvasRef}
+          width={380}
+          height={140}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={finishStroke}
+          onPointerCancel={finishStroke}
+          className="h-full w-full touch-none cursor-crosshair block"
+        />
+      </div>
+    </div>
+  );
+}
+
 function LiveScoringPage() {
   const { matchId } = Route.useParams();
   const { state, update, updateMatch, currentRole, user } = useTournament();
@@ -148,6 +287,9 @@ function LiveScoringPage() {
   const [changeover, setChangeover] = useState(false);
   const [coDone, setCoDone] = useState(false);
   const [endAsk, setEndAsk] = useState(false);
+  const [showSignatureScreen, setShowSignatureScreen] = useState(false);
+  const [sigA, setSigA] = useState(match?.signatures?.teamA || "");
+  const [sigB, setSigB] = useState(match?.signatures?.teamB || "");
   const [showHistory, setShowHistory] = useState(false);
   const [courtFlipped, setCourtFlipped] = useState(false);
   const endDismissed = useRef(false);
@@ -164,6 +306,9 @@ function LiveScoringPage() {
     setChangeover(false);
     setCoDone(false);
     setEndAsk(false);
+    setShowSignatureScreen(false);
+    setSigA(match?.signatures?.teamA || "");
+    setSigB(match?.signatures?.teamB || "");
     setShowHistory(false);
     setCourtFlipped(false);
     endDismissed.current = false;
@@ -172,10 +317,11 @@ function LiveScoringPage() {
   // Nếu là trọng tài: chỉ vào màn hình chấm điểm khi trận đã được bắt đầu (live); nếu chưa bắt đầu, đã xong hoặc bị gỡ phân công thì về màn hình chờ
   useEffect(() => {
     if (!isRefereeUser) return;
+    const refToken = getActiveRefereeSession()?.token;
     if (
       !match ||
       match.status !== "live" ||
-      !isMatchAssignedToRefereeUser(match, state.collaborators, user?.email, user?.displayName)
+      !isMatchAssignedToRefereeUser(match, state.collaborators, user?.email, user?.displayName, refToken)
     ) {
       void navigate({ to: "/quan-ly-giai", replace: true });
     }
@@ -298,6 +444,14 @@ function LiveScoringPage() {
   };
 
   const finish = (m: Match, a: number, b: number) => {
+    const hasSig = Boolean(sigA || sigB);
+    const signaturesPayload = hasSig
+      ? {
+          ...(sigA ? { teamA: sigA } : {}),
+          ...(sigB ? { teamB: sigB } : {}),
+          signedAt: new Date().toISOString(),
+        }
+      : m.signatures;
     const patched = state.matches.map((x) =>
       x.id === m.id
         ? {
@@ -306,10 +460,13 @@ function LiveScoringPage() {
             scoreB: b,
             status: "done" as const,
             note: live.note || x.note,
+            live,
+            ...(signaturesPayload ? { signatures: signaturesPayload } : {}),
           }
         : x,
     );
     update({ matches: propagateKnockout(patched, m.eventId, ev) });
+    toast.success("Đã hoàn thành trận đấu và lưu kết quả!");
     void navigate({ to: "/quan-ly-giai" });
   };
 
@@ -655,6 +812,7 @@ function LiveScoringPage() {
           posA: live.posA ?? [0, 1],
           posB: live.posB ?? [0, 1],
           courtFlipped: courtFlipped,
+          at: Date.now(),
         } as any,
       ],
     });
@@ -829,14 +987,15 @@ function LiveScoringPage() {
   const undo = () => {
     const last = live.history[live.history.length - 1];
     if (!last) return;
-    if (typeof (last as any).courtFlipped === "boolean") {
-      setCourtFlipped((last as any).courtFlipped);
+    const { at: _at, courtFlipped: prevFlipped, ...snapshot } = last as any;
+    if (typeof prevFlipped === "boolean") {
+      setCourtFlipped(prevFlipped);
     }
     if (last.a < coPoint && last.b < coPoint) {
       setCoDone(false);
     }
     setLive({
-      ...last,
+      ...snapshot,
       posA: last.posA ?? posA,
       posB: last.posB ?? posB,
       receiverIdx: last.receiverIdx ?? live.receiverIdx,
@@ -993,6 +1152,111 @@ function LiveScoringPage() {
     );
   };
 
+  if (showSignatureScreen) {
+    const aWins = live.a > live.b;
+    const bWins = live.b > live.a;
+    const stageText =
+      match.stage === "ko"
+        ? match.koRound || `Loại trực tiếp V${match.round}`
+        : match.groupName
+          ? `${match.groupName} · Vòng ${match.round}`
+          : `Vòng ${match.round}`;
+    const metaText = [ev?.name, stageText, match.court, match.referee ? `TT: ${match.referee}` : ""]
+      .filter(Boolean)
+      .join(" · ");
+
+    return (
+      <div className="fixed inset-0 z-50 flex flex-col bg-paper text-ink overflow-y-auto">
+        {/* Nửa trên màn hình: Kết quả & Tỉ số chung cuộc */}
+        <div className="flex-1 min-h-[240px] flex flex-col items-center justify-center border-b border-line/15 bg-card/70 px-4 py-6 text-center">
+          <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-[#0a3320]">
+            Tỉ số chung cuộc
+          </p>
+          {metaText && (
+            <p className="mt-1 text-xs font-medium text-line/60 max-w-xl truncate">
+              {metaText}
+            </p>
+          )}
+
+          <div className="mt-5 grid w-full max-w-2xl grid-cols-[1fr_auto_1fr] items-center gap-3 sm:gap-6">
+            <div className="min-w-0 text-right">
+              <p
+                className={`font-head text-lg sm:text-2xl font-bold leading-snug break-words ${
+                  aWins ? "text-[#0a3320]" : "text-ink/80"
+                }`}
+              >
+                {entryName(teamA)}
+              </p>
+              {aWins && (
+                <span className="mt-1 inline-block rounded bg-[#0a3320]/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[#0a3320]">
+                  Thắng cuộc
+                </span>
+              )}
+            </div>
+
+            <div className="rounded-2xl border-2 border-[#0a3320]/25 bg-white px-5 py-3 shadow-xs">
+              <p className="font-head text-4xl sm:text-6xl font-extrabold tabular-nums tracking-tight text-ink">
+                <span className={aWins ? "text-[#0a3320]" : ""}>{live.a}</span>
+                <span className="mx-2 text-line/35">-</span>
+                <span className={bWins ? "text-[#0a3320]" : ""}>{live.b}</span>
+              </p>
+            </div>
+
+            <div className="min-w-0 text-left">
+              <p
+                className={`font-head text-lg sm:text-2xl font-bold leading-snug break-words ${
+                  bWins ? "text-[#0a3320]" : "text-ink/80"
+                }`}
+              >
+                {entryName(teamB)}
+              </p>
+              {bWins && (
+                <span className="mt-1 inline-block rounded bg-[#0a3320]/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[#0a3320]">
+                  Thắng cuộc
+                </span>
+              )}
+            </div>
+          </div>
+
+          <p className="mt-4 text-xs text-line/55">
+            Hai đội vui lòng kiểm tra tỉ số và ký xác nhận kết quả trận đấu ở bên dưới.
+          </p>
+        </div>
+
+        {/* Nửa dưới màn hình: Khu vực VĐV hai đội ký tên */}
+        <div className="flex-1 flex flex-col justify-center px-4 py-5 sm:px-6">
+          <div className="mx-auto w-full max-w-3xl space-y-3">
+            <p className="text-center text-[11px] font-bold uppercase tracking-[0.18em] text-line/65">
+              Chữ ký xác nhận của VĐV hai đội
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              <SignaturePad label={entryName(teamA)} value={sigA} onChange={setSigA} />
+              <SignaturePad label={entryName(teamB)} value={sigB} onChange={setSigB} />
+            </div>
+          </div>
+        </div>
+
+        {/* Dưới cùng: Nút Trở về và nút Hoàn thành */}
+        <div className="grid grid-cols-2 gap-3 border-t border-line/15 bg-card px-4 py-3 sm:px-6 shrink-0">
+          <button
+            type="button"
+            onClick={() => setShowSignatureScreen(false)}
+            className="btn-ghost w-full justify-center py-3 text-sm font-bold border border-line/20 rounded-xl cursor-pointer"
+          >
+            ← Trở về
+          </button>
+          <button
+            type="button"
+            onClick={() => finish(match, live.a, live.b)}
+            className="rounded-xl bg-[#0a3320] hover:bg-[#0a3320]/90 py-3 font-head text-sm font-bold uppercase tracking-wide text-white shadow cursor-pointer transition"
+          >
+            ✓ Hoàn thành
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-paper text-ink overflow-y-auto">
       <div className="flex items-center justify-between border-b border-line/10 px-4 py-2.5">
@@ -1010,13 +1274,6 @@ function LiveScoringPage() {
           </Link>
         )}
         <div className="flex items-center gap-2">
-          <button
-            className="rounded-md bg-secondary px-2 py-1 text-xs font-semibold ring-1 ring-line/20 hover:bg-secondary/80 flex items-center gap-1"
-            onClick={() => setStarted(false)}
-            title="Mở cài đặt & Tung đồng xu lại"
-          >
-            ⚙️ Cài đặt & Tung xu
-          </button>
           <span className="text-xs font-semibold text-line/60">
             {match.court} {match.referee ? `· TT: ${match.referee}` : ""}
           </span>
@@ -1271,8 +1528,11 @@ function LiveScoringPage() {
           {winner ? `Thắng: ${winner}` : `Đích: ${live.target} điểm`}
         </span>
         <button
-          className="rounded-lg bg-courtdeep py-2.5 font-head text-sm font-bold uppercase tracking-wide text-paper shadow hover:opacity-95"
-          onClick={() => finish(match, live.a, live.b)}
+          className="rounded-lg bg-courtdeep py-2.5 font-head text-sm font-bold uppercase tracking-wide text-paper shadow hover:opacity-95 cursor-pointer"
+          onClick={() => {
+            setEndAsk(false);
+            setShowSignatureScreen(true);
+          }}
         >
           Kết thúc trận
         </button>
@@ -1345,7 +1605,13 @@ function LiveScoringPage() {
             >
               Chơi tiếp
             </button>
-            <button className="btn-accent" onClick={() => finish(match, live.a, live.b)}>
+            <button
+              className="btn-accent cursor-pointer"
+              onClick={() => {
+                setEndAsk(false);
+                setShowSignatureScreen(true);
+              }}
+            >
               Kết thúc trận
             </button>
           </div>
