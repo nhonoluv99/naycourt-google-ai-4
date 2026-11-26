@@ -1,9 +1,13 @@
 import express from "express";
 import fs from "node:fs";
+import http from "node:http";
 import path from "node:path";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
+import ffmpegStatic from "ffmpeg-static";
 import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
+import { WebSocketServer, WebSocket } from "ws";
 
 dotenv.config();
 
@@ -676,6 +680,40 @@ async function createServer() {
     }
   });
 
+  const resolveFfmpegBinary = (): {
+    path: string | null;
+    source: "ffmpeg-static" | "system" | "none";
+  } => {
+    const staticBin = typeof ffmpegStatic === "string" ? ffmpegStatic.trim() : "";
+    if (staticBin && fs.existsSync(staticBin)) {
+      try {
+        fs.chmodSync(staticBin, 0o755);
+      } catch {}
+      const probe = spawnSync(staticBin, ["-version"], { timeout: 3000 });
+      if (probe.status === 0) {
+        return { path: staticBin, source: "ffmpeg-static" };
+      }
+    }
+    try {
+      const sysProbe = spawnSync("ffmpeg", ["-version"], { timeout: 3000 });
+      if (sysProbe.status === 0) {
+        return { path: "ffmpeg", source: "system" };
+      }
+    } catch {}
+    return { path: null, source: "none" };
+  };
+
+  // Kiem tra kha nang ho tro relay Livestream (FFmpeg + RTMPS)
+  app.get("/api/livestream/status", (_req, res) => {
+    try {
+      const bin = resolveFfmpegBinary();
+      const available = Boolean(bin.path);
+      return res.json({ available, ffmpeg: available, source: bin.source });
+    } catch {
+      return res.json({ available: false, ffmpeg: false, source: "none" });
+    }
+  });
+
   const distDir = path.resolve(__dirname, "dist");
   const hasDistBuild = fs.existsSync(path.join(distDir, "index.html"));
 
@@ -693,7 +731,284 @@ async function createServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const server = http.createServer(app);
+  const wss = new WebSocketServer({ noServer: true });
+
+  server.on("upgrade", (req, socket, head) => {
+    try {
+      const reqUrl = new URL(req.url || "/", "http://localhost");
+      if (reqUrl.pathname !== "/ws/livestream") {
+        return;
+      }
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit("connection", ws, req);
+      });
+    } catch {
+      socket.destroy();
+    }
+  });
+
+  wss.on("connection", (ws: WebSocket) => {
+    let ffmpegProc: ChildProcessWithoutNullStreams | null = null;
+    let isStopping = false;
+    let hasStartedFfmpeg = false;
+    let isLiveEmitted = false;
+    let lastTelemetryAt = 0;
+    let recentStderrTail = "";
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const safeSend = (payload: Record<string, unknown>) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify(payload));
+        } catch {}
+      }
+    };
+
+    const cleanupFfmpeg = () => {
+      if (isStopping) return;
+      isStopping = true;
+      if (ffmpegProc) {
+        const proc = ffmpegProc;
+        try {
+          if (proc.stdin && !proc.stdin.destroyed) {
+            proc.stdin.end();
+          }
+        } catch {}
+        killTimer = setTimeout(() => {
+          try {
+            if (!proc.killed) proc.kill("SIGTERM");
+          } catch {}
+          setTimeout(() => {
+            try {
+              if (!proc.killed) proc.kill("SIGKILL");
+            } catch {}
+          }, 1200);
+        }, 1800);
+      }
+    };
+
+    const translateFfmpegError = (raw: string): string => {
+      const lower = raw.toLowerCase();
+      if (
+        lower.includes("403") ||
+        lower.includes("401") ||
+        lower.includes("rejected") ||
+        lower.includes("publish") && lower.includes("error")
+      ) {
+        return "Facebook / máy chủ phát từ chối Khóa luồng (Stream Key). Hãy kiểm tra lại Stream Key hoặc tạo buổi phát mới.";
+      }
+      if (lower.includes("404") || lower.includes("stream not found")) {
+        return "Không tìm thấy địa chỉ luồng phát. Vui lòng kiểm tra lại Server URL và Stream Key.";
+      }
+      if (
+        lower.includes("connection refused") ||
+        lower.includes("timed out") ||
+        lower.includes("could not resolve") ||
+        lower.includes("name or service not known") ||
+        lower.includes("tls") ||
+        lower.includes("broken pipe")
+      ) {
+        return "Không kết nối được tới máy chủ RTMPS của Facebook/YouTube. Vui lòng kiểm tra lại URL máy chủ và mạng.";
+      }
+      if (lower.includes("invalid data found")) {
+        return "Định dạng luồng video từ trình duyệt chưa khớp. Hãy thử tắt/bật lại Camera hoặc đổi trình duyệt.";
+      }
+      return "Luồng phát sóng bị gián đoạn bất ngờ. Vui lòng kiểm tra Stream Key và kết nối mạng rồi thử phát lại.";
+    };
+
+    ws.on("message", (data, isBinary) => {
+      if (!isBinary) {
+        try {
+          const msg = JSON.parse(data.toString("utf8"));
+          if (msg?.type === "start") {
+            if (hasStartedFfmpeg) return;
+            const rawRtmpUrl = typeof msg.rtmpUrl === "string" ? msg.rtmpUrl.trim() : "";
+            const rawStreamKey = typeof msg.streamKey === "string" ? msg.streamKey.trim() : "";
+            const fps = Math.min(60, Math.max(15, Number(msg.fps) || 30));
+            const bitrateKbps = Math.min(6000, Math.max(600, Number(msg.bitrateKbps) || 2500));
+
+            if (!/^rtmps?:\/\/[^\s\r\n\0]+$/i.test(rawRtmpUrl)) {
+              safeSend({
+                type: "error",
+                message: "Địa chỉ Server URL phải bắt đầu bằng rtmps:// hoặc rtmp:// hợp lệ.",
+              });
+              ws.close(1008, "Invalid RTMP URL");
+              return;
+            }
+            if (!rawStreamKey || /[\s\r\n\0]/.test(rawStreamKey)) {
+              safeSend({
+                type: "error",
+                message: "Vui lòng nhập Khóa luồng (Stream Key) hợp lệ, không chứa khoảng trắng.",
+              });
+              ws.close(1008, "Invalid Stream Key");
+              return;
+            }
+
+            const targetUrl = rawRtmpUrl.endsWith("/")
+              ? `${rawRtmpUrl}${rawStreamKey}`
+              : `${rawRtmpUrl}/${rawStreamKey}`;
+
+            const bin = resolveFfmpegBinary();
+            if (!bin.path) {
+              safeSend({
+                type: "error",
+                message: "Máy chủ chưa sẵn sàng bộ mã hóa FFmpeg để phát RTMPS.",
+              });
+              ws.close(1011, "FFmpeg missing");
+              return;
+            }
+
+            const rawMime = typeof msg.mimeType === "string" ? msg.mimeType.toLowerCase() : "";
+            const inputFormatArgs: string[] = rawMime.includes("mp4")
+              ? ["-f", "mp4"]
+              : rawMime.includes("webm")
+                ? ["-f", "webm"]
+                : [];
+
+            hasStartedFfmpeg = true;
+            safeSend({
+              type: "status",
+              state: "connecting",
+              message: "Đang khởi tạo bộ mã hóa và kết nối Facebook/RTMP...",
+            });
+
+            const args = [
+              "-hide_banner",
+              "-loglevel",
+              "info",
+              "-probesize",
+              "150000",
+              "-analyzeduration",
+              "500000",
+              "-fflags",
+              "+genpts+discardcorrupt",
+              ...inputFormatArgs,
+              "-i",
+              "pipe:0",
+              "-c:v",
+              "libx264",
+              "-preset",
+              "veryfast",
+              "-tune",
+              "zerolatency",
+              "-pix_fmt",
+              "yuv420p",
+              "-b:v",
+              `${bitrateKbps}k`,
+              "-maxrate",
+              `${bitrateKbps}k`,
+              "-bufsize",
+              `${bitrateKbps * 2}k`,
+              "-g",
+              String(fps * 2),
+              "-keyint_min",
+              String(fps * 2),
+              "-sc_threshold",
+              "0",
+              "-r",
+              String(fps),
+              "-c:a",
+              "aac",
+              "-b:a",
+              "128k",
+              "-ar",
+              "44100",
+              "-ac",
+              "2",
+              "-f",
+              "flv",
+              targetUrl,
+            ];
+
+            try {
+              ffmpegProc = spawn(bin.path, args, { stdio: ["pipe", "pipe", "pipe"] });
+            } catch {
+              safeSend({
+                type: "error",
+                message: "Không thể khởi chạy FFmpeg trên máy chủ.",
+              });
+              ws.close(1011, "FFmpeg spawn failed");
+              return;
+            }
+
+            ffmpegProc.stdin.on("error", () => {
+              // Bo qua EPIPE khi dong luong
+            });
+
+            ffmpegProc.stderr.on("data", (chunk: Buffer) => {
+              const text = chunk.toString("utf8");
+              recentStderrTail = (recentStderrTail + text).slice(-2500);
+
+              if (text.includes("frame=")) {
+                const now = Date.now();
+                if (!isLiveEmitted || now - lastTelemetryAt >= 1000) {
+                  isLiveEmitted = true;
+                  lastTelemetryAt = now;
+                  const fpsMatch = text.match(/fps=\s*([\d.]+)/);
+                  const brMatch = text.match(/bitrate=\s*([^\s]+)/);
+                  const timeMatch = text.match(/time=\s*([^\s]+)/);
+                  safeSend({
+                    type: "status",
+                    state: "live",
+                    fps: fpsMatch ? Number(fpsMatch[1]) : undefined,
+                    bitrate: brMatch && brMatch[1] !== "N/A" ? brMatch[1] : undefined,
+                    time: timeMatch ? timeMatch[1] : undefined,
+                    message: "Đang phát trực tiếp ổn định",
+                  });
+                }
+              }
+            });
+
+            ffmpegProc.on("close", (code) => {
+              if (killTimer) {
+                clearTimeout(killTimer);
+                killTimer = null;
+              }
+              if (!isStopping && code !== 0) {
+                safeSend({
+                  type: "error",
+                  message: translateFfmpegError(recentStderrTail),
+                });
+              } else {
+                safeSend({
+                  type: "status",
+                  state: "stopped",
+                  message: "Đã kết thúc phiên phát trực tiếp.",
+                });
+              }
+              ffmpegProc = null;
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.close(1000, "Stream ended");
+              }
+            });
+          } else if (msg?.type === "stop") {
+            cleanupFfmpeg();
+          }
+        } catch {
+          // Bo qua JSON loi
+        }
+        return;
+      }
+
+      if (ffmpegProc && ffmpegProc.stdin && !ffmpegProc.stdin.destroyed && !isStopping) {
+        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+        try {
+          ffmpegProc.stdin.write(buf);
+        } catch {}
+      }
+    });
+
+    ws.on("close", () => {
+      cleanupFfmpeg();
+    });
+
+    ws.on("error", () => {
+      cleanupFfmpeg();
+    });
+  });
+
+  server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server listening on http://0.0.0.0:${PORT}`);
   });
 }

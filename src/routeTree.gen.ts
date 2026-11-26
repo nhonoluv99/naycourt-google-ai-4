@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as NoiDungRouteImport } from './routes/noi-dung'
 import { Route as QuanLyGiaiRouteImport } from './routes/quan-ly-giai'
 import { Route as VanDongVienRouteImport } from './routes/van-dong-vien'
+import { Route as LivestreamRouteImport } from './routes/livestream'
 import { Route as ChamDiemMatchIdRouteImport } from './routes/cham-diem.$matchId'
 
 const IndexRoute = IndexRouteImport.update({
@@ -35,6 +36,11 @@ const VanDongVienRoute = VanDongVienRouteImport.update({
   path: '/van-dong-vien',
   getParentRoute: () => rootRouteImport,
 } as any)
+const LivestreamRoute = LivestreamRouteImport.update({
+  id: '/livestream',
+  path: '/livestream',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ChamDiemMatchIdRoute = ChamDiemMatchIdRouteImport.update({
   id: '/cham-diem/$matchId',
   path: '/cham-diem/$matchId',
@@ -46,6 +52,7 @@ export interface FileRoutesByFullPath {
   '/noi-dung': typeof NoiDungRoute
   '/quan-ly-giai': typeof QuanLyGiaiRoute
   '/van-dong-vien': typeof VanDongVienRoute
+  '/livestream': typeof LivestreamRoute
   '/cham-diem/$matchId': typeof ChamDiemMatchIdRoute
 }
 export interface FileRoutesByTo {
@@ -53,6 +60,7 @@ export interface FileRoutesByTo {
   '/noi-dung': typeof NoiDungRoute
   '/quan-ly-giai': typeof QuanLyGiaiRoute
   '/van-dong-vien': typeof VanDongVienRoute
+  '/livestream': typeof LivestreamRoute
   '/cham-diem/$matchId': typeof ChamDiemMatchIdRoute
 }
 export interface FileRoutesById {
@@ -61,6 +69,7 @@ export interface FileRoutesById {
   '/noi-dung': typeof NoiDungRoute
   '/quan-ly-giai': typeof QuanLyGiaiRoute
   '/van-dong-vien': typeof VanDongVienRoute
+  '/livestream': typeof LivestreamRoute
   '/cham-diem/$matchId': typeof ChamDiemMatchIdRoute
 }
 export interface FileRouteTypes {
@@ -70,6 +79,7 @@ export interface FileRouteTypes {
     | '/noi-dung'
     | '/quan-ly-giai'
     | '/van-dong-vien'
+    | '/livestream'
     | '/cham-diem/$matchId'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -77,6 +87,7 @@ export interface FileRouteTypes {
     | '/noi-dung'
     | '/quan-ly-giai'
     | '/van-dong-vien'
+    | '/livestream'
     | '/cham-diem/$matchId'
   id:
     | '__root__'
@@ -84,6 +95,7 @@ export interface FileRouteTypes {
     | '/noi-dung'
     | '/quan-ly-giai'
     | '/van-dong-vien'
+    | '/livestream'
     | '/cham-diem/$matchId'
   fileRoutesById: FileRoutesById
 }
@@ -92,6 +104,7 @@ export interface RootRouteChildren {
   NoiDungRoute: typeof NoiDungRoute
   QuanLyGiaiRoute: typeof QuanLyGiaiRoute
   VanDongVienRoute: typeof VanDongVienRoute
+  LivestreamRoute: typeof LivestreamRoute
   ChamDiemMatchIdRoute: typeof ChamDiemMatchIdRoute
 }
 
@@ -125,6 +138,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof VanDongVienRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/livestream': {
+      id: '/livestream'
+      path: '/livestream'
+      fullPath: '/livestream'
+      preLoaderRoute: typeof LivestreamRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/cham-diem/$matchId': {
       id: '/cham-diem/$matchId'
       path: '/cham-diem/$matchId'
@@ -140,6 +160,7 @@ const rootRouteChildren: RootRouteChildren = {
   NoiDungRoute: NoiDungRoute,
   QuanLyGiaiRoute: QuanLyGiaiRoute,
   VanDongVienRoute: VanDongVienRoute,
+  LivestreamRoute: LivestreamRoute,
   ChamDiemMatchIdRoute: ChamDiemMatchIdRoute,
 }
 export const routeTree = rootRouteImport

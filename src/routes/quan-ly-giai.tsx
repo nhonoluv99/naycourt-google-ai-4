@@ -2890,6 +2890,7 @@ function ManagePage() {
   const [showStandings, setShowStandings] = useState(true);
   const [maximizeStandings, setMaximizeStandings] = useState(false);
   const [showQueue, setShowQueue] = useState(true);
+  const [queueGroupBy, setQueueGroupBy] = useState<"round" | "group">("round");
   const [showManualSeeding, setShowManualSeeding] = useState(false);
   const [dragKoSlot, setDragKoSlot] = useState<{
     matchId: string;
@@ -3229,12 +3230,71 @@ function ManagePage() {
     [matches],
   );
 
-  // Nhóm các trận chờ theo từng vòng: hiển thị các vòng ở vòng bảng trước, các vòng loại trực tiếp ngay bên dưới
-  const unassignedByRound = useMemo(() => {
+  // Nhóm các trận chờ theo vòng hoặc theo bảng tùy lựa chọn của người dùng
+  const unassignedSections = useMemo(() => {
     const map = new Map<
       string,
       { stage: "group" | "ko"; round: number; sortOrder: number; label: string; matches: Match[] }
     >();
+
+    if (queueGroupBy === "group") {
+      const evGroupOrder = new Map<string, number>(
+        (ev?.groups || []).map((g, idx) => [g.name, idx]),
+      );
+
+      unassignedMatches.forEach((m) => {
+        let key = "";
+        let label = "";
+        let sortOrder = m.round ?? 1;
+
+        if (m.stage === "ko") {
+          if (m.slot === 99) {
+            key = `ko-third-${m.round}`;
+            label = m.koRound || "Tranh hạng 3";
+            sortOrder = 10000 + ((m.round ?? 1) - 0.5);
+          } else {
+            key = `ko-${m.round}`;
+            label = m.koRound || `Loại trực tiếp · Vòng ${m.round}`;
+            sortOrder = 10000 + (m.round ?? 1);
+          }
+        } else {
+          const rawGroup = m.groupName?.trim() || "";
+          const isRoundRobin =
+            !rawGroup || rawGroup.toLowerCase().includes("vòng tròn") || rawGroup === "rr";
+          label = isRoundRobin ? "Vòng tròn" : rawGroup;
+          key = `group-${label}`;
+          const explicitIdx = evGroupOrder.get(rawGroup);
+          sortOrder = explicitIdx !== undefined ? explicitIdx : 9000;
+        }
+
+        if (!map.has(key)) {
+          map.set(key, {
+            stage: m.stage,
+            round: m.round ?? 1,
+            sortOrder,
+            label,
+            matches: [],
+          });
+        }
+        map.get(key)!.matches.push(m);
+      });
+
+      return Array.from(map.entries())
+        .map(([key, data]) => ({
+          key,
+          stage: data.stage,
+          round: data.round,
+          sortOrder: data.sortOrder,
+          label: data.label,
+          matches: [...data.matches].sort((a, b) => (a.round ?? 0) - (b.round ?? 0)),
+        }))
+        .sort((a, b) => {
+          if (a.stage !== b.stage) return a.stage === "group" ? -1 : 1;
+          if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+          return a.label.localeCompare(b.label, "vi", { numeric: true });
+        });
+    }
+
     unassignedMatches.forEach((m) => {
       let key = "";
       let label = "";
@@ -3282,7 +3342,7 @@ function ManagePage() {
         }
         return a.sortOrder - b.sortOrder;
       });
-  }, [unassignedMatches]);
+  }, [unassignedMatches, queueGroupBy, ev?.groups]);
 
   /* Tính toán vị trí đường kẻ đỏ thời gian hiện tại */
   const diffMinutes = nowMinutes - startTotalMinutes;
@@ -4103,50 +4163,69 @@ function ManagePage() {
     setNote("Đã tự động sắp xếp các trận vào timeline.");
   };
 
-  /* Xếp riêng từng vòng tự động vào bảng timeline */
+  /* Xếp riêng từng vòng hoặc từng bảng tự động vào bảng timeline */
   const autoScheduleRound = (roundMatches: Match[]) => {
-    if (roundMatches.length === 0) return;
+    if (roundMatches.length === 0 || state.courts.length === 0) return;
     recordTimelineState();
     const assigned = state.matches.filter(
       (m) => m.eventId === ev.id && m.court && m.timeSlot !== undefined,
     );
     const usedSlots = new Set(assigned.map((m) => `${m.court}__${m.timeSlot}`));
+    const busyTeamsBySlot = new Map<number, Set<string>>();
+    assigned.forEach((m) => {
+      if (typeof m.timeSlot !== "number") return;
+      if (!busyTeamsBySlot.has(m.timeSlot)) busyTeamsBySlot.set(m.timeSlot, new Set());
+      const busy = busyTeamsBySlot.get(m.timeSlot)!;
+      if (m.aId) busy.add(m.aId);
+      if (m.bId) busy.add(m.bId);
+    });
 
     // Tìm khung giờ bắt đầu hợp lý (ngay sau các vòng trước đã xếp trên timeline)
     const targetStage = roundMatches[0]!.stage;
-    const targetRound = roundMatches[0]!.round ?? 1;
+    const minTargetRound = Math.min(...roundMatches.map((m) => m.round ?? 1));
     let minStartSlot = 0;
     assigned.forEach((m) => {
       const isEarlier =
         (targetStage === "ko" && m.stage === "group") ||
-        (m.stage === targetStage && (m.round ?? 1) < targetRound);
+        (m.stage === targetStage && (m.round ?? 1) < minTargetRound);
       if (isEarlier && typeof m.timeSlot === "number") {
         minStartSlot = Math.max(minStartSlot, m.timeSlot + 1);
       }
     });
 
     const updatedMatches = [...state.matches];
-    let slotIdx = minStartSlot;
 
     roundMatches.forEach((m) => {
+      let slotIdx = minStartSlot;
       let placed = false;
       while (!placed && slotIdx < 200) {
-        for (const court of state.courts) {
-          const key = `${court}__${slotIdx}`;
-          if (!usedSlots.has(key)) {
-            usedSlots.add(key);
-            const matchIdx = updatedMatches.findIndex((x) => x.id === m.id);
-            if (matchIdx !== -1) {
-              updatedMatches[matchIdx] = {
-                ...updatedMatches[matchIdx],
-                court,
-                timeSlot: slotIdx,
-                offsetMinutes: 0,
-                durationMinutes: updatedMatches[matchIdx].durationMinutes || state.slotMinutes,
-              };
+        const busy = busyTeamsBySlot.get(slotIdx);
+        const hasTeamConflict = Boolean(
+          busy && ((m.aId && busy.has(m.aId)) || (m.bId && busy.has(m.bId))),
+        );
+        if (!hasTeamConflict) {
+          for (const court of state.courts) {
+            const key = `${court}__${slotIdx}`;
+            if (!usedSlots.has(key)) {
+              usedSlots.add(key);
+              if (!busyTeamsBySlot.has(slotIdx)) busyTeamsBySlot.set(slotIdx, new Set());
+              const slotTeams = busyTeamsBySlot.get(slotIdx)!;
+              if (m.aId) slotTeams.add(m.aId);
+              if (m.bId) slotTeams.add(m.bId);
+
+              const matchIdx = updatedMatches.findIndex((x) => x.id === m.id);
+              if (matchIdx !== -1) {
+                updatedMatches[matchIdx] = {
+                  ...updatedMatches[matchIdx],
+                  court,
+                  timeSlot: slotIdx,
+                  offsetMinutes: 0,
+                  durationMinutes: updatedMatches[matchIdx].durationMinutes || state.slotMinutes,
+                };
+              }
+              placed = true;
+              break;
             }
-            placed = true;
-            break;
           }
         }
         if (!placed) slotIdx++;
@@ -4154,7 +4233,7 @@ function ManagePage() {
     });
 
     update({ matches: updatedMatches });
-    setNote(`Đã tự động xếp ${roundMatches.length} trận của vòng vào timeline.`);
+    setNote(`Đã tự động xếp ${roundMatches.length} trận vào timeline.`);
   };
 
   const exportCsv = () => {
@@ -6643,13 +6722,39 @@ function ManagePage() {
                   </button>
                 </div>
 
+                {/* Lựa chọn hiển thị theo vòng hoặc theo bảng */}
+                <div className="mt-2 grid grid-cols-2 gap-1 rounded-lg bg-secondary/50 p-0.5 ring-1 ring-line/15 text-[11px] shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setQueueGroupBy("round")}
+                    className={`rounded-md py-1 font-bold transition cursor-pointer ${
+                      queueGroupBy === "round"
+                        ? "bg-card text-ink shadow-2xs ring-1 ring-line/10"
+                        : "text-line/60 hover:text-ink"
+                    }`}
+                  >
+                    Theo vòng
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setQueueGroupBy("group")}
+                    className={`rounded-md py-1 font-bold transition cursor-pointer ${
+                      queueGroupBy === "group"
+                        ? "bg-card text-ink shadow-2xs ring-1 ring-line/10"
+                        : "text-line/60 hover:text-ink"
+                    }`}
+                  >
+                    Theo bảng
+                  </button>
+                </div>
+
                 <div className="mt-3 flex-1 overflow-y-auto space-y-3 pr-1">
-                  {unassignedByRound.length === 0 ? (
+                  {unassignedSections.length === 0 ? (
                     <p className="py-8 text-center text-xs text-line/40">
                       Tất cả các trận đã được xếp lịch!
                     </p>
                   ) : (
-                    unassignedByRound.map((grp) => (
+                    unassignedSections.map((grp) => (
                       <div
                         key={grp.key}
                         className="rounded-xl border border-line/20 bg-secondary/20 p-2 space-y-2 shadow-xs"
@@ -6664,7 +6769,9 @@ function ManagePage() {
                             onClick={() => autoScheduleRound(grp.matches)}
                             title={`Tự động xếp ${grp.matches.length} trận của ${grp.label} vào timeline`}
                           >
-                            ⚡ Xếp vòng này
+                            {queueGroupBy === "group" && grp.stage === "group"
+                              ? "⚡ Xếp bảng này"
+                              : "⚡ Xếp vòng này"}
                           </button>
                         </div>
                         <div className="space-y-1.5">
@@ -6688,9 +6795,11 @@ function ManagePage() {
                                 <span className="font-bold text-ink">
                                   {m.stage === "ko"
                                     ? m.koRound || groupTag(m.groupName)
-                                    : !m.groupName || m.groupName.toLowerCase().includes("vòng tròn") || m.groupName === "rr"
-                                      ? `V${m.round}`
-                                      : groupTag(m.groupName)}
+                                    : queueGroupBy === "group"
+                                      ? `Vòng ${m.round}`
+                                      : !m.groupName || m.groupName.toLowerCase().includes("vòng tròn") || m.groupName === "rr"
+                                        ? `V${m.round}`
+                                        : groupTag(m.groupName)}
                                 </span>
                               </div>
                               <div className="mt-1 flex items-center justify-between gap-1 text-[11px]">

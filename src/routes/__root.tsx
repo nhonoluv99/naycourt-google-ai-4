@@ -84,6 +84,7 @@ const NAV = [
   { to: "/noi-dung", label: "Nội dung" },
   { to: "/van-dong-vien", label: "Danh sách VĐV" },
   { to: "/quan-ly-giai", label: "Quản lý giải" },
+  { to: "/livestream", label: "Livestream" },
 ] as const;
 
 function Header({ isWide }: { isWide: boolean }) {
@@ -297,6 +298,23 @@ function Header({ isWide }: { isWide: boolean }) {
                   {part}
                 </span>
               ))}
+              {isReferee && !isReadOnly && (
+                <span className="inline-flex items-center gap-2 ml-1">
+                  <Link
+                    to="/quan-ly-giai"
+                    className="underline decoration-line/30 hover:text-ink whitespace-nowrap"
+                  >
+                    Quản lý giải
+                  </Link>
+                  <span className="text-line/30">·</span>
+                  <Link
+                    to="/livestream"
+                    className="font-bold text-accent underline decoration-accent/40 hover:opacity-80 whitespace-nowrap"
+                  >
+                    Livestream
+                  </Link>
+                </span>
+              )}
             </div>
           </div>
         ) : (
@@ -320,22 +338,6 @@ function Header({ isWide }: { isWide: boolean }) {
           <div className="hidden md:block md:w-[205px] shrink-0" aria-hidden="true" />
         ) : (
           <div className="order-2 md:order-3 flex items-center gap-3 shrink-0">
-            {!isRestrictedHeader && (
-              <div className="flex items-center gap-2 mr-1">
-                {state.date ? (
-                  <>
-                    <span className="text-xs font-semibold text-line/80">
-                      {state.date}
-                    </span>
-                    <span className="text-xs text-line/35">•</span>
-                  </>
-                ) : null}
-                <span className="text-xs font-semibold text-line/80">
-                  {(state.events || []).length} nội dung
-                </span>
-              </div>
-            )}
-
             {/* Nút Logo Gmail bên phải gọn gàng chuẩn Ảnh 1 */}
             {authLoading ? (
               <div className="size-8 animate-pulse rounded-full bg-line/10" />
@@ -468,11 +470,26 @@ function Header({ isWide }: { isWide: boolean }) {
 }
 
 function RootContent() {
-  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const routerLocation = useRouterState({ select: (s) => s.location });
+  const pathname = routerLocation.pathname;
   const navigate = useNavigate();
   const { isReadOnly, currentRole, exitSharedToOwnWorkspace } = useTournament();
 
+  const isOverlayLivestream = (() => {
+    const normalizedPath = pathname.replace(/\/+$/, "");
+    if (normalizedPath !== "/livestream") return false;
+    if (typeof window === "undefined") return false;
+    const fromRouter = new URLSearchParams(routerLocation.searchStr || "").get("overlay") === "1";
+    const fromSearch = new URLSearchParams(window.location.search).get("overlay") === "1";
+    const hash = window.location.hash || "";
+    const qIdx = hash.indexOf("?");
+    const fromHash =
+      qIdx !== -1 && new URLSearchParams(hash.slice(qIdx)).get("overlay") === "1";
+    return fromRouter || fromSearch || fromHash;
+  })();
+
   useEffect(() => {
+    if (isOverlayLivestream) return;
     const liveId = getLiveTournamentIdFromUrl();
     const isRefLinkSession = Boolean(getActiveRefereeSession());
     if ((isReadOnly || liveId) && pathname !== "/quan-ly-giai") {
@@ -481,6 +498,7 @@ function RootContent() {
       currentRole === "referee" &&
       isRefLinkSession &&
       pathname !== "/quan-ly-giai" &&
+      pathname !== "/livestream" &&
       !pathname.startsWith("/cham-diem/")
     ) {
       void navigate({ to: "/quan-ly-giai", replace: true });
@@ -489,11 +507,16 @@ function RootContent() {
       !isRefLinkSession &&
       !liveId &&
       pathname !== "/quan-ly-giai" &&
+      pathname !== "/livestream" &&
       !pathname.startsWith("/cham-diem/")
     ) {
       void exitSharedToOwnWorkspace();
     }
-  }, [isReadOnly, currentRole, pathname, navigate, exitSharedToOwnWorkspace]);
+  }, [isOverlayLivestream, isReadOnly, currentRole, pathname, navigate, exitSharedToOwnWorkspace]);
+
+  if (isOverlayLivestream) {
+    return <Outlet />;
+  }
 
   const isWide = pathname.startsWith("/van-dong-vien") || pathname.startsWith("/quan-ly-giai");
   const containerClass = isWide
