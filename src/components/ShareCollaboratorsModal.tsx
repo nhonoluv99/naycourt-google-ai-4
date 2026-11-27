@@ -152,7 +152,7 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
       }
 
       if (user?.email && clean === user.email.toLowerCase()) {
-        toast.info("Email này là tài khoản chủ giải hiện tại.");
+        toast.info("Email này là tài khoản Admin hiện tại.");
         return;
       }
 
@@ -187,7 +187,7 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
       role: inputRole,
       ...(cleanRefName ? { name: cleanRefName, refToken: makeRefToken() } : {}),
       addedAt: new Date().toISOString(),
-      addedBy: user?.email || "Chủ giải",
+      addedBy: user?.email || "Admin",
     };
 
     const updated = [...collaborators, newCollab];
@@ -278,7 +278,7 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
       name: finalName,
       refToken: makeRefToken(),
       addedAt: new Date().toISOString(),
-      addedBy: user?.email || "Chủ giải",
+      addedBy: user?.email || "Admin",
     };
 
     const updated = [...collaborators, newCollab];
@@ -805,7 +805,7 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
                 </div>
 
                 <div className="rounded-xl border border-line/15 divide-y divide-line/10 bg-card overflow-hidden">
-                  {/* Chủ giải */}
+                  {/* Admin */}
                   <div className="flex items-center justify-between p-3 text-xs bg-paper/40">
                     <div className="flex items-center gap-2.5 min-w-0">
                       <div className="w-8 h-8 rounded-full bg-[#093220]/15 text-[#093220] flex items-center justify-center font-bold text-xs shrink-0">
@@ -813,13 +813,13 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
                       </div>
                       <div className="min-w-0">
                         <div className="font-bold text-ink truncate">
-                          <span>{user?.email || "Chủ giải đấu hiện tại"}</span>
+                          <span>{user?.email || "Admin hiện tại"}</span>
                         </div>
                         <span className="text-[10px] text-line/50">Toàn quyền quản trị và phân quyền</span>
                       </div>
                     </div>
                     <span className="text-xs font-bold text-[#093220] px-2 py-1 rounded bg-[#093220]/10">
-                      Chủ sở hữu
+                      Admin
                     </span>
                   </div>
 
@@ -917,7 +917,7 @@ export function ShareCollaboratorsModal({ isOpen, onClose }: ShareCollaboratorsM
                               )}
                               <span className="text-[10px] text-line/55 truncate block">
                                 {isRef ? `${cleanEmail || "Truy cập qua Link / QR"} • ` : ""}
-                                Được thêm bởi {c.addedBy || "Chủ giải"} • {new Date(c.addedAt).toLocaleDateString("vi-VN")}
+                                Được thêm bởi {c.addedBy || "Admin"} • {new Date(c.addedAt).toLocaleDateString("vi-VN")}
                               </span>
                             </div>
                           </div>

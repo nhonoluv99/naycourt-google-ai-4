@@ -1,6 +1,9 @@
 import express from "express";
+import crypto from "node:crypto";
+import dns from "node:dns/promises";
 import fs from "node:fs";
 import http from "node:http";
+import net from "node:net";
 import path from "node:path";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -10,6 +13,117 @@ import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import { WebSocketServer, WebSocket } from "ws";
 
 dotenv.config();
+
+const SERVER_SIGNING_SECRET =
+  process.env.SESSION_SECRET?.trim() || crypto.randomBytes(32).toString("hex");
+const SESSION_AES_KEY = crypto.createHash("sha256").update(SERVER_SIGNING_SECRET).digest();
+
+function signOAuthState(payload: Record<string, unknown>): string {
+  const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  const sig = crypto
+    .createHmac("sha256", SESSION_AES_KEY)
+    .update(encoded)
+    .digest("base64url");
+  return `${encoded}.${sig}`;
+}
+
+function verifyOAuthState(rawState: string): Record<string, any> | null {
+  if (!rawState || typeof rawState !== "string") return null;
+  const parts = rawState.split(".");
+  if (parts.length !== 2) return null;
+  const [encoded, sig] = parts;
+  const expectedSig = crypto
+    .createHmac("sha256", SESSION_AES_KEY)
+    .update(encoded)
+    .digest("base64url");
+  const sigBuf = Buffer.from(sig);
+  const expectedBuf = Buffer.from(expectedSig);
+  if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+    if (typeof parsed?.exp === "number" && Date.now() > parsed.exp) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+interface FacebookSessionData {
+  accessToken: string;
+  userId: string;
+  userName: string;
+  avatarUrl?: string;
+  expiresAt: number;
+}
+
+function encryptFacebookSession(data: FacebookSessionData): string {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", SESSION_AES_KEY, iv);
+  const ciphertext = Buffer.concat([
+    cipher.update(JSON.stringify(data), "utf8"),
+    cipher.final(),
+  ]);
+  const tag = cipher.getAuthTag();
+  return `${iv.toString("base64url")}.${tag.toString("base64url")}.${ciphertext.toString("base64url")}`;
+}
+
+function decryptFacebookSession(token: string): FacebookSessionData | null {
+  if (!token || typeof token !== "string") return null;
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    const iv = Buffer.from(parts[0], "base64url");
+    const tag = Buffer.from(parts[1], "base64url");
+    const ciphertext = Buffer.from(parts[2], "base64url");
+    const decipher = crypto.createDecipheriv("aes-256-gcm", SESSION_AES_KEY, iv);
+    decipher.setAuthTag(tag);
+    const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
+    const parsed = JSON.parse(plain) as FacebookSessionData;
+    if (!parsed?.accessToken || (parsed.expiresAt && Date.now() > parsed.expiresAt)) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function getAppBaseUrl(req: express.Request): string {
+  const envUrl = (process.env.APP_URL || "").trim().replace(/\/+$/, "");
+  if (envUrl && envUrl !== "MY_APP_URL" && /^https?:\/\//i.test(envUrl)) {
+    return envUrl;
+  }
+  const forwardedProto = String(req.headers["x-forwarded-proto"] || req.protocol || "http")
+    .split(",")[0]
+    .trim();
+  const forwardedHost = String(req.headers["x-forwarded-host"] || req.get("host") || "localhost:3000")
+    .split(",")[0]
+    .trim();
+  return `${forwardedProto}://${forwardedHost}`;
+}
+
+function splitRtmpStreamUrl(rawUrl: string): { serverUrl: string; streamKey: string } {
+  const clean = (rawUrl || "").trim();
+  if (!clean) return { serverUrl: "", streamKey: "" };
+  const rtmpMarker = clean.indexOf("/rtmp/");
+  if (rtmpMarker !== -1) {
+    const cut = rtmpMarker + "/rtmp/".length;
+    return {
+      serverUrl: clean.slice(0, cut),
+      streamKey: clean.slice(cut),
+    };
+  }
+  const lastSlash = clean.lastIndexOf("/");
+  if (lastSlash > 8) {
+    return {
+      serverUrl: clean.slice(0, lastSlash + 1),
+      streamKey: clean.slice(lastSlash + 1),
+    };
+  }
+  return { serverUrl: clean, streamKey: "" };
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -682,24 +796,37 @@ async function createServer() {
 
   const resolveFfmpegBinary = (): {
     path: string | null;
-    source: "ffmpeg-static" | "system" | "none";
+    source: "system" | "ffmpeg-static" | "none";
   } => {
+    const checkCandidate = (binPath: string): boolean => {
+      try {
+        const probe = spawnSync(binPath, ["-version"], { timeout: 3000 });
+        if (probe.status !== 0) return false;
+        const protoProbe = spawnSync(binPath, ["-protocols"], { timeout: 3000 });
+        const protoOut = protoProbe.stdout ? protoProbe.stdout.toString("utf8").toLowerCase() : "";
+        return protoOut.includes("rtmps") || protoOut.includes("rtmp");
+      } catch {
+        return false;
+      }
+    };
+
+    // Uu tien FFmpeg he thong (dynamically linked glibc/gnutls, tranh loi SIGSEGV DNS cua binary tinh)
+    for (const sysCandidate of ["ffmpeg", "/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg"]) {
+      if (checkCandidate(sysCandidate)) {
+        return { path: sysCandidate, source: "system" };
+      }
+    }
+
     const staticBin = typeof ffmpegStatic === "string" ? ffmpegStatic.trim() : "";
     if (staticBin && fs.existsSync(staticBin)) {
       try {
         fs.chmodSync(staticBin, 0o755);
       } catch {}
-      const probe = spawnSync(staticBin, ["-version"], { timeout: 3000 });
-      if (probe.status === 0) {
+      if (checkCandidate(staticBin)) {
         return { path: staticBin, source: "ffmpeg-static" };
       }
     }
-    try {
-      const sysProbe = spawnSync("ffmpeg", ["-version"], { timeout: 3000 });
-      if (sysProbe.status === 0) {
-        return { path: "ffmpeg", source: "system" };
-      }
-    } catch {}
+
     return { path: null, source: "none" };
   };
 
@@ -711,6 +838,929 @@ async function createServer() {
       return res.json({ available, ffmpeg: available, source: bin.source });
     } catch {
       return res.json({ available: false, ffmpeg: false, source: "none" });
+    }
+  });
+
+  // ---------------- ĐĂNG NHẬP FACEBOOK (3P OAuth) & TỰ LẤY STREAM KEY ----------------
+  app.get("/api/auth/facebook/url", (req, res) => {
+    const appId = process.env.FACEBOOK_APP_ID?.trim();
+    const appSecret = process.env.FACEBOOK_APP_SECRET?.trim();
+    const redirectUri = `${getAppBaseUrl(req)}/auth/facebook/callback`;
+
+    if (!appId || !appSecret) {
+      return res.json({
+        configured: false,
+        redirectUri,
+        message:
+          "Chưa cấu hình FACEBOOK_APP_ID và FACEBOOK_APP_SECRET trên máy chủ (Settings > Secrets).",
+      });
+    }
+
+    const state = signOAuthState({
+      nonce: crypto.randomBytes(12).toString("hex"),
+      exp: Date.now() + 10 * 60 * 1000,
+    });
+
+    const params = new URLSearchParams({
+      client_id: appId,
+      redirect_uri: redirectUri,
+      response_type: "code",
+      scope: "public_profile,pages_show_list,pages_read_engagement,publish_video",
+      state,
+    });
+
+    return res.json({
+      configured: true,
+      url: `https://www.facebook.com/v21.0/dialog/oauth?${params.toString()}`,
+      redirectUri,
+    });
+  });
+
+  const handleFacebookCallback = async (req: express.Request, res: express.Response) => {
+    const sendPopupMessage = (payload: Record<string, unknown>, fallbackText: string) => {
+      const safeJson = JSON.stringify(payload).replace(/</g, "\\u003c");
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      return res.send(`<!DOCTYPE html>
+<html lang="vi">
+<head><meta charset="utf-8"><title>Đăng nhập Facebook — Nảy Court</title></head>
+<body style="font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f7f5ef;color:#0a3320;">
+  <div style="text-align:center;padding:24px;">
+    <p style="font-weight:700;font-size:16px;">${fallbackText}</p>
+    <p style="font-size:13px;opacity:.7;">Cửa sổ này sẽ tự đóng...</p>
+  </div>
+  <script>
+    (function () {
+      var data = ${safeJson};
+      try {
+        if (window.opener) {
+          window.opener.postMessage(data, window.location.origin);
+          window.close();
+          return;
+        }
+      } catch (e) {}
+      setTimeout(function () { window.location.href = "/livestream"; }, 1200);
+    })();
+  </script>
+</body>
+</html>`);
+    };
+
+    try {
+      if (req.query.error) {
+        return sendPopupMessage(
+          {
+            type: "FACEBOOK_OAUTH_ERROR",
+            message: "Bạn đã hủy đăng nhập Facebook hoặc chưa cấp quyền phát trực tiếp.",
+          },
+          "Đã hủy kết nối Facebook",
+        );
+      }
+
+      const code = typeof req.query.code === "string" ? req.query.code.trim() : "";
+      const stateRaw = typeof req.query.state === "string" ? req.query.state.trim() : "";
+      if (!code || !verifyOAuthState(stateRaw)) {
+        return sendPopupMessage(
+          {
+            type: "FACEBOOK_OAUTH_ERROR",
+            message: "Phiên đăng nhập Facebook không hợp lệ hoặc đã hết hạn. Vui lòng thử lại.",
+          },
+          "Phiên xác thực không hợp lệ",
+        );
+      }
+
+      const appId = process.env.FACEBOOK_APP_ID?.trim();
+      const appSecret = process.env.FACEBOOK_APP_SECRET?.trim();
+      if (!appId || !appSecret) {
+        return sendPopupMessage(
+          {
+            type: "FACEBOOK_OAUTH_ERROR",
+            message: "Máy chủ chưa cấu hình FACEBOOK_APP_ID hoặc FACEBOOK_APP_SECRET.",
+          },
+          "Thiếu cấu hình Facebook App",
+        );
+      }
+
+      const redirectUri = `${getAppBaseUrl(req)}/auth/facebook/callback`;
+      const tokenUrl = new URL("https://graph.facebook.com/v21.0/oauth/access_token");
+      tokenUrl.searchParams.set("client_id", appId);
+      tokenUrl.searchParams.set("client_secret", appSecret);
+      tokenUrl.searchParams.set("redirect_uri", redirectUri);
+      tokenUrl.searchParams.set("code", code);
+
+      const tokenRes = await fetch(tokenUrl.toString(), { signal: AbortSignal.timeout(10000) });
+      const tokenJson: any = await tokenRes.json();
+      if (!tokenRes.ok || !tokenJson?.access_token) {
+        return sendPopupMessage(
+          {
+            type: "FACEBOOK_OAUTH_ERROR",
+            message: tokenJson?.error?.message || "Không đổi được mã xác thực từ Facebook.",
+          },
+          "Không lấy được quyền truy cập Facebook",
+        );
+      }
+
+      const accessToken = String(tokenJson.access_token);
+      const expiresInSec = Number(tokenJson.expires_in) || 3600;
+
+      const meUrl = new URL("https://graph.facebook.com/v21.0/me");
+      meUrl.searchParams.set("fields", "id,name,picture{url}");
+      meUrl.searchParams.set("access_token", accessToken);
+      const meRes = await fetch(meUrl.toString(), { signal: AbortSignal.timeout(8000) });
+      const meJson: any = meRes.ok ? await meRes.json() : {};
+
+      const profile = {
+        id: String(meJson?.id || ""),
+        name: String(meJson?.name || "Tài khoản Facebook"),
+        avatarUrl: meJson?.picture?.data?.url ? String(meJson.picture.data.url) : undefined,
+      };
+
+      const sessionToken = encryptFacebookSession({
+        accessToken,
+        userId: profile.id,
+        userName: profile.name,
+        avatarUrl: profile.avatarUrl,
+        expiresAt: Date.now() + expiresInSec * 1000,
+      });
+
+      return sendPopupMessage(
+        {
+          type: "FACEBOOK_OAUTH_SUCCESS",
+          sessionToken,
+          profile,
+        },
+        "Kết nối Facebook thành công!",
+      );
+    } catch (err: any) {
+      console.error("[Facebook OAuth Callback Error]:", err?.message || err);
+      return sendPopupMessage(
+        {
+          type: "FACEBOOK_OAUTH_ERROR",
+          message: "Lỗi kết nối khi xác thực với Facebook.",
+        },
+        "Lỗi xác thực Facebook",
+      );
+    }
+  };
+
+  app.get(["/auth/facebook/callback", "/auth/facebook/callback/"], handleFacebookCallback);
+
+  const getBearerFromReq = (req: express.Request): string => {
+    const authHeader = req.headers.authorization;
+    if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
+      return authHeader.slice(7).trim();
+    }
+    return "";
+  };
+
+  app.get("/api/facebook/streams", async (req, res) => {
+    try {
+      const fbSession = decryptFacebookSession(getBearerFromReq(req));
+      if (!fbSession) {
+        return res.status(401).json({
+          success: false,
+          message: "Phiên đăng nhập Facebook đã hết hạn. Vui lòng đăng nhập lại.",
+        });
+      }
+
+      const targets: Array<{ id: string; name: string; type: "user" | "page"; avatarUrl?: string }> = [
+        {
+          id: "me",
+          name: `${fbSession.userName} (Trang cá nhân)`,
+          type: "user",
+          avatarUrl: fbSession.avatarUrl,
+        },
+      ];
+
+      const streams: Array<{
+        id: string;
+        targetId: string;
+        targetName: string;
+        targetType: "user" | "page";
+        title: string;
+        status: string;
+        serverUrl: string;
+        streamKey: string;
+        permalinkUrl?: string;
+      }> = [];
+
+      const collectLiveVideos = async (
+        nodeId: string,
+        targetName: string,
+        targetType: "user" | "page",
+        token: string,
+      ) => {
+        try {
+          const lvUrl = new URL(`https://graph.facebook.com/v21.0/${nodeId}/live_videos`);
+          lvUrl.searchParams.set(
+            "fields",
+            "id,title,description,status,stream_url,secure_stream_url,permalink_url,creation_time",
+          );
+          lvUrl.searchParams.set("limit", "10");
+          lvUrl.searchParams.set("access_token", token);
+          const lvRes = await fetch(lvUrl.toString(), { signal: AbortSignal.timeout(8000) });
+          if (!lvRes.ok) return;
+          const lvJson: any = await lvRes.json();
+          const rows: any[] = Array.isArray(lvJson?.data) ? lvJson.data : [];
+          for (const row of rows) {
+            const rawRtmp = String(row?.secure_stream_url || row?.stream_url || "").trim();
+            const split = splitRtmpStreamUrl(rawRtmp);
+            const status = String(row?.status || "").toUpperCase();
+            if (!split.streamKey && status === "VOD") continue;
+            streams.push({
+              id: String(row.id),
+              targetId: nodeId,
+              targetName,
+              targetType,
+              title: String(row?.title || row?.description || `Phiên live #${row.id}`),
+              status,
+              serverUrl: split.serverUrl || "rtmps://live-api-s.facebook.com:443/rtmp/",
+              streamKey: split.streamKey,
+              permalinkUrl: row?.permalink_url ? String(row.permalink_url) : undefined,
+            });
+          }
+        } catch {}
+      };
+
+      await collectLiveVideos("me", fbSession.userName, "user", fbSession.accessToken);
+
+      try {
+        const pagesUrl = new URL("https://graph.facebook.com/v21.0/me/accounts");
+        pagesUrl.searchParams.set("fields", "id,name,access_token,picture{url}");
+        pagesUrl.searchParams.set("limit", "25");
+        pagesUrl.searchParams.set("access_token", fbSession.accessToken);
+        const pagesRes = await fetch(pagesUrl.toString(), { signal: AbortSignal.timeout(8000) });
+        if (pagesRes.ok) {
+          const pagesJson: any = await pagesRes.json();
+          const pages: any[] = Array.isArray(pagesJson?.data) ? pagesJson.data : [];
+          for (const p of pages) {
+            if (!p?.id) continue;
+            const pageId = String(p.id);
+            const pageName = String(p.name || `Fanpage #${pageId}`);
+            targets.push({
+              id: pageId,
+              name: `${pageName} (Fanpage)`,
+              type: "page",
+              avatarUrl: p?.picture?.data?.url ? String(p.picture.data.url) : undefined,
+            });
+            const pageToken = String(p.access_token || fbSession.accessToken);
+            await collectLiveVideos(pageId, pageName, "page", pageToken);
+          }
+        }
+      } catch {}
+
+      return res.json({
+        success: true,
+        profile: {
+          id: fbSession.userId,
+          name: fbSession.userName,
+          avatarUrl: fbSession.avatarUrl,
+        },
+        targets,
+        streams,
+      });
+    } catch (err: any) {
+      console.error("[Facebook Streams Error]:", err?.message || err);
+      return res.status(502).json({
+        success: false,
+        message: "Không tải được danh sách khóa luồng từ Facebook.",
+      });
+    }
+  });
+
+  app.post("/api/facebook/create-live", async (req, res) => {
+    try {
+      const fbSession = decryptFacebookSession(getBearerFromReq(req));
+      if (!fbSession) {
+        return res.status(401).json({
+          success: false,
+          message: "Phiên đăng nhập Facebook đã hết hạn. Vui lòng đăng nhập lại.",
+        });
+      }
+
+      const rawTargetId = typeof req.body?.targetId === "string" ? req.body.targetId.trim() : "me";
+      if (rawTargetId !== "me" && !/^\d{4,32}$/.test(rawTargetId)) {
+        return res.status(400).json({ success: false, message: "Mã Fanpage/tài khoản không hợp lệ." });
+      }
+      const title =
+        typeof req.body?.title === "string" && req.body.title.trim()
+          ? req.body.title.trim().slice(0, 120)
+          : "Livestream Pickleball — Nảy Court";
+
+      let targetToken = fbSession.accessToken;
+      let targetName = fbSession.userName;
+      let targetType: "user" | "page" = "user";
+
+      if (rawTargetId !== "me") {
+        const pagesUrl = new URL("https://graph.facebook.com/v21.0/me/accounts");
+        pagesUrl.searchParams.set("fields", "id,name,access_token");
+        pagesUrl.searchParams.set("limit", "25");
+        pagesUrl.searchParams.set("access_token", fbSession.accessToken);
+        const pagesRes = await fetch(pagesUrl.toString(), { signal: AbortSignal.timeout(8000) });
+        if (pagesRes.ok) {
+          const pagesJson: any = await pagesRes.json();
+          const foundPage = (Array.isArray(pagesJson?.data) ? pagesJson.data : []).find(
+            (p: any) => String(p?.id) === rawTargetId,
+          );
+          if (!foundPage?.access_token) {
+            return res.status(403).json({
+              success: false,
+              message: "Không có quyền tạo livestream trên Fanpage đã chọn.",
+            });
+          }
+          targetToken = String(foundPage.access_token);
+          targetName = String(foundPage.name || rawTargetId);
+          targetType = "page";
+        }
+      }
+
+      const createUrl = new URL(`https://graph.facebook.com/v21.0/${rawTargetId}/live_videos`);
+      const bodyParams = new URLSearchParams({
+        status: "LIVE_NOW",
+        title,
+        access_token: targetToken,
+      });
+
+      const createRes = await fetch(createUrl.toString(), {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: bodyParams.toString(),
+        signal: AbortSignal.timeout(10000),
+      });
+      const createJson: any = await createRes.json();
+      if (!createRes.ok || createJson?.error || !createJson?.id) {
+        return res.status(400).json({
+          success: false,
+          message:
+            createJson?.error?.message ||
+            "Facebook từ chối tạo phiên livestream mới (kiểm tra quyền publish_video / điều kiện tài khoản).",
+        });
+      }
+
+      const rawRtmp = String(createJson?.secure_stream_url || createJson?.stream_url || "");
+      const split = splitRtmpStreamUrl(rawRtmp);
+
+      return res.json({
+        success: true,
+        stream: {
+          id: String(createJson.id),
+          targetId: rawTargetId,
+          targetName,
+          targetType,
+          title,
+          status: "LIVE_NOW",
+          serverUrl: split.serverUrl || "rtmps://live-api-s.facebook.com:443/rtmp/",
+          streamKey: split.streamKey,
+          permalinkUrl: createJson?.permalink_url ? String(createJson.permalink_url) : undefined,
+        },
+      });
+    } catch (err: any) {
+      console.error("[Facebook Create Live Error]:", err?.message || err);
+      return res.status(502).json({
+        success: false,
+        message: "Không tạo được phiên livestream mới trên Facebook.",
+      });
+    }
+  });
+
+  // ---------------- YOUTUBE: TỰ ĐỘNG LẤY KHÓA LUỒNG & DANH SÁCH BUỔI PHÁT ----------------
+  app.get("/api/youtube/streams", async (req, res) => {
+    try {
+      const ytBearer = getBearerFromReq(req);
+      if (!ytBearer) {
+        return res.status(401).json({
+          success: false,
+          message: "Chưa đăng nhập tài khoản YouTube.",
+        });
+      }
+
+      const authHeaders = { Authorization: `Bearer ${ytBearer}` };
+
+      // 1. Thông tin kênh YouTube đang đăng nhập
+      let channel: { id?: string; title?: string; avatarUrl?: string } | null = null;
+      try {
+        const chUrl = new URL("https://www.googleapis.com/youtube/v3/channels");
+        chUrl.searchParams.set("part", "snippet");
+        chUrl.searchParams.set("mine", "true");
+        const chRes = await fetch(chUrl.toString(), {
+          headers: authHeaders,
+          signal: AbortSignal.timeout(8000),
+        });
+        if (chRes.status === 401) {
+          return res.status(401).json({
+            success: false,
+            message: "Phiên đăng nhập YouTube đã hết hạn. Vui lòng đăng nhập lại.",
+          });
+        }
+        if (chRes.ok) {
+          const chJson: any = await chRes.json();
+          const first = Array.isArray(chJson?.items) ? chJson.items[0] : null;
+          if (first) {
+            channel = {
+              id: String(first.id || ""),
+              title: String(first?.snippet?.title || "Kênh YouTube"),
+              avatarUrl: first?.snippet?.thumbnails?.default?.url || undefined,
+            };
+          }
+        }
+      } catch {}
+
+      // 2. Lấy danh sách liveBroadcasts + liveStreams (bao gồm cả stream dùng 1 lần qua id)
+      const bcUrl = new URL("https://www.googleapis.com/youtube/v3/liveBroadcasts");
+      bcUrl.searchParams.set("part", "id,snippet,contentDetails,status");
+      bcUrl.searchParams.set("mine", "true");
+      bcUrl.searchParams.set("maxResults", "25");
+      const bcRes = await fetch(bcUrl.toString(), {
+        headers: authHeaders,
+        signal: AbortSignal.timeout(8000),
+      });
+      if (bcRes.status === 401) {
+        return res.status(401).json({
+          success: false,
+          message: "Phiên đăng nhập YouTube đã hết hạn. Vui lòng đăng nhập lại.",
+        });
+      }
+      const bcJson: any = bcRes.ok ? await bcRes.json() : {};
+      const broadcasts: any[] = Array.isArray(bcJson?.items) ? bcJson.items : [];
+
+      const streamsMineUrl = new URL("https://www.googleapis.com/youtube/v3/liveStreams");
+      streamsMineUrl.searchParams.set("part", "id,snippet,cdn,status");
+      streamsMineUrl.searchParams.set("mine", "true");
+      streamsMineUrl.searchParams.set("maxResults", "25");
+      const streamsMineRes = await fetch(streamsMineUrl.toString(), {
+        headers: authHeaders,
+        signal: AbortSignal.timeout(8000),
+      });
+      const streamsMineJson: any = streamsMineRes.ok ? await streamsMineRes.json() : {};
+      const streamById = new Map<string, any>();
+      for (const s of Array.isArray(streamsMineJson?.items) ? streamsMineJson.items : []) {
+        if (s?.id) streamById.set(String(s.id), s);
+      }
+
+      const missingBoundIds = broadcasts
+        .map((b) => String(b?.contentDetails?.boundStreamId || "").trim())
+        .filter((id) => id && !streamById.has(id));
+
+      if (missingBoundIds.length > 0) {
+        const boundUrl = new URL("https://www.googleapis.com/youtube/v3/liveStreams");
+        boundUrl.searchParams.set("part", "id,snippet,cdn,status");
+        boundUrl.searchParams.set("id", missingBoundIds.slice(0, 25).join(","));
+        const boundRes = await fetch(boundUrl.toString(), {
+          headers: authHeaders,
+          signal: AbortSignal.timeout(8000),
+        });
+        if (boundRes.ok) {
+          const boundJson: any = await boundRes.json();
+          for (const s of Array.isArray(boundJson?.items) ? boundJson.items : []) {
+            if (s?.id) streamById.set(String(s.id), s);
+          }
+        }
+      }
+
+      const normalizeIngestUrl = (addr: string) => {
+        const clean = (addr || "").trim();
+        if (!clean) return "rtmp://a.rtmp.youtube.com/live2/";
+        return clean.endsWith("/") ? clean : `${clean}/`;
+      };
+
+      const options: Array<{
+        id: string;
+        broadcastId?: string;
+        title: string;
+        status: string;
+        serverUrl: string;
+        streamKey: string;
+        liveChatId?: string;
+      }> = [];
+      const seenKeySet = new Set<string>();
+
+      const statusPriority: Record<string, number> = {
+        live: 0,
+        testing: 1,
+        ready: 2,
+        created: 3,
+        complete: 9,
+      };
+      const sortedBroadcasts = [...broadcasts].sort((a, b) => {
+        const pa = statusPriority[String(a?.status?.lifeCycleStatus || "")] ?? 5;
+        const pb = statusPriority[String(b?.status?.lifeCycleStatus || "")] ?? 5;
+        return pa - pb;
+      });
+
+      for (const b of sortedBroadcasts) {
+        const st = String(b?.status?.lifeCycleStatus || "");
+        if (st === "complete" || st === "revoked") continue;
+        const boundId = String(b?.contentDetails?.boundStreamId || "").trim();
+        const streamObj = boundId ? streamById.get(boundId) : null;
+        const streamKey = String(streamObj?.cdn?.ingestionInfo?.streamName || "").trim();
+        const serverUrl = normalizeIngestUrl(
+          String(streamObj?.cdn?.ingestionInfo?.ingestionAddress || ""),
+        );
+        if (!streamKey) continue;
+        seenKeySet.add(`${b.id}:${streamKey}`);
+        options.push({
+          id: `bc_${String(b.id)}`,
+          broadcastId: String(b.id),
+          title: String(b?.snippet?.title || "Buổi phát YouTube"),
+          status: st || "ready",
+          serverUrl,
+          streamKey,
+          liveChatId: b?.snippet?.liveChatId ? String(b.snippet.liveChatId) : undefined,
+        });
+      }
+
+      for (const s of streamById.values()) {
+        const streamKey = String(s?.cdn?.ingestionInfo?.streamName || "").trim();
+        if (!streamKey) continue;
+        if (options.some((o) => o.streamKey === streamKey)) continue;
+        options.push({
+          id: `st_${String(s.id)}`,
+          title: String(s?.snippet?.title || "Khóa luồng mặc định YouTube"),
+          status: String(s?.status?.streamStatus || "ready"),
+          serverUrl: normalizeIngestUrl(String(s?.cdn?.ingestionInfo?.ingestionAddress || "")),
+          streamKey,
+        });
+      }
+
+      return res.json({
+        success: true,
+        channel,
+        streams: options,
+      });
+    } catch (err: any) {
+      console.error("[YouTube Streams Error]:", err?.message || err);
+      return res.status(502).json({
+        success: false,
+        message: "Không tải được khóa luồng từ tài khoản YouTube.",
+      });
+    }
+  });
+
+  // Đồng bộ bình luận trực tiếp từ nền tảng phát (Facebook / YouTube) dựa trên Khóa luồng & phiên đăng nhập
+  interface ExternalLiveCommentItem {
+    id: string;
+    author: string;
+    text: string;
+    createdAt: string;
+    platform: "youtube" | "facebook";
+    avatarUrl?: string;
+    badge?: string;
+    highlightAmount?: string;
+  }
+
+  const extractFacebookVideoIdFromStreamKey = (rawKey: string): string | null => {
+    const trimmed = rawKey.trim();
+    if (!trimmed) return null;
+    // Key một lần của Facebook thường có dạng: 1234567890123456?s_bl=1&s_oil=2...
+    const directMatch = trimmed.match(/^(\d{8,24})(?:[?&]|$)/);
+    if (directMatch?.[1]) return directMatch[1];
+    // Key dạng FB-1234567890123456-0-...
+    const fbPrefixed = trimmed.match(/^FB-(\d{8,24})(?:-|$)/i);
+    if (fbPrefixed?.[1]) return fbPrefixed[1];
+    return null;
+  };
+
+  const resolveFacebookLiveVideoWithToken = async (
+    streamKey: string,
+    userOrAppToken: string,
+    explicitVideoId?: string,
+  ): Promise<{ videoId: string; readToken: string } | null> => {
+    const keyPart = streamKey.split("?")[0]?.trim() || streamKey.trim();
+    const matchStream = (v: any): boolean => {
+      if (explicitVideoId && String(v?.id) === explicitVideoId) return true;
+      const s1 = String(v?.secure_stream_url || "");
+      const s2 = String(v?.stream_url || "");
+      return (
+        (Boolean(s1) && (s1.includes(streamKey) || (keyPart.length >= 8 && s1.includes(keyPart)))) ||
+        (Boolean(s2) && (s2.includes(streamKey) || (keyPart.length >= 8 && s2.includes(keyPart))))
+      );
+    };
+
+    try {
+      const meUrl = new URL("https://graph.facebook.com/v21.0/me/live_videos");
+      meUrl.searchParams.set("fields", "id,status,stream_url,secure_stream_url");
+      meUrl.searchParams.set("limit", "15");
+      meUrl.searchParams.set("access_token", userOrAppToken);
+      const meRes = await fetch(meUrl.toString(), { signal: AbortSignal.timeout(7000) });
+      if (meRes.ok) {
+        const meJson: any = await meRes.json();
+        const found = (Array.isArray(meJson?.data) ? meJson.data : []).find(matchStream);
+        if (found?.id) return { videoId: String(found.id), readToken: userOrAppToken };
+      }
+
+      const pagesUrl = new URL("https://graph.facebook.com/v21.0/me/accounts");
+      pagesUrl.searchParams.set("fields", "id,access_token");
+      pagesUrl.searchParams.set("limit", "25");
+      pagesUrl.searchParams.set("access_token", userOrAppToken);
+      const pagesRes = await fetch(pagesUrl.toString(), { signal: AbortSignal.timeout(7000) });
+      if (pagesRes.ok) {
+        const pagesJson: any = await pagesRes.json();
+        const pages: any[] = Array.isArray(pagesJson?.data) ? pagesJson.data : [];
+        for (const p of pages) {
+          if (!p?.id) continue;
+          const pageToken = String(p.access_token || userOrAppToken);
+          const pvUrl = new URL(`https://graph.facebook.com/v21.0/${p.id}/live_videos`);
+          pvUrl.searchParams.set("fields", "id,status,stream_url,secure_stream_url");
+          pvUrl.searchParams.set("limit", "15");
+          pvUrl.searchParams.set("access_token", pageToken);
+          const pvRes = await fetch(pvUrl.toString(), { signal: AbortSignal.timeout(6000) });
+          if (pvRes.ok) {
+            const pvJson: any = await pvRes.json();
+            const found = (Array.isArray(pvJson?.data) ? pvJson.data : []).find(matchStream);
+            if (found?.id) return { videoId: String(found.id), readToken: pageToken };
+          }
+        }
+      }
+    } catch {}
+    return null;
+  };
+
+  app.post("/api/livestream/comments", async (req, res) => {
+    try {
+      const rawPlatform = typeof req.body?.platform === "string" ? req.body.platform.trim() : "";
+      const rawServerUrl = typeof req.body?.serverUrl === "string" ? req.body.serverUrl.trim() : "";
+      const rawStreamKey = typeof req.body?.streamKey === "string" ? req.body.streamKey.trim() : "";
+      const explicitVideoId =
+        typeof req.body?.videoId === "string" && /^\d{4,32}$/.test(req.body.videoId.trim())
+          ? req.body.videoId.trim()
+          : undefined;
+      const explicitBroadcastId =
+        typeof req.body?.broadcastId === "string" ? req.body.broadcastId.trim() : undefined;
+
+      const bearer = getBearerFromReq(req);
+
+      if (!rawStreamKey && !explicitVideoId && !explicitBroadcastId) {
+        return res.json({
+          success: true,
+          platform: rawPlatform || "none",
+          comments: [],
+          status: "waiting_key",
+          unavailableReason:
+            "Đăng nhập YouTube / Facebook hoặc nhập Khóa luồng ở mục StreamKey để tự đồng bộ bình luận trực tiếp.",
+        });
+      }
+
+      const lowerServer = rawServerUrl.toLowerCase();
+      const detectedPlatform: "facebook" | "youtube" | "custom" =
+        rawPlatform === "facebook" ||
+        lowerServer.includes("facebook") ||
+        rawStreamKey.startsWith("FB-") ||
+        rawStreamKey.includes("s_vt=api-s")
+          ? "facebook"
+          : rawPlatform === "youtube" || lowerServer.includes("youtube")
+            ? "youtube"
+            : "custom";
+
+      // 1. Nền tảng Facebook Live (ưu tiên token người dùng đã đăng nhập, fallback FB_GRAPH_TOKEN nếu có)
+      if (detectedPlatform === "facebook") {
+        const fbSession = bearer ? decryptFacebookSession(bearer) : null;
+        const fbToken = fbSession?.accessToken || process.env.FB_GRAPH_TOKEN?.trim() || "";
+        const guessedId = explicitVideoId || extractFacebookVideoIdFromStreamKey(rawStreamKey);
+
+        if (!fbToken) {
+          return res.json({
+            success: true,
+            platform: "facebook",
+            detectedVideoId: guessedId,
+            comments: [],
+            status: "token_required",
+            unavailableReason:
+              "Hãy bấm Đăng nhập Facebook ở mục StreamKey để tự lấy khóa luồng và đồng bộ bình luận trực tiếp.",
+          });
+        }
+
+        const resolved = await resolveFacebookLiveVideoWithToken(rawStreamKey, fbToken, guessedId || undefined);
+        const videoId = resolved?.videoId || guessedId;
+        const readToken = resolved?.readToken || fbToken;
+
+        if (!videoId) {
+          return res.json({
+            success: true,
+            platform: "facebook",
+            comments: [],
+            status: "not_found",
+            unavailableReason:
+              "Chưa tìm thấy phiên Facebook Live khớp với Khóa luồng hiện tại trên tài khoản/Fanpage đang kết nối.",
+          });
+        }
+
+        const graphUrl = new URL(`https://graph.facebook.com/v21.0/${videoId}/comments`);
+        graphUrl.searchParams.set("live_filter", "toplevel");
+        graphUrl.searchParams.set("filter", "stream");
+        graphUrl.searchParams.set("order", "reverse_chronological");
+        graphUrl.searchParams.set("limit", "50");
+        graphUrl.searchParams.set("fields", "id,from{id,name,picture{url}},message,created_time");
+        graphUrl.searchParams.set("access_token", readToken);
+
+        const fbRes = await fetch(graphUrl.toString(), { signal: AbortSignal.timeout(8000) });
+        const fbJson: any = await fbRes.json();
+        if (!fbRes.ok || fbJson?.error) {
+          return res.json({
+            success: true,
+            platform: "facebook",
+            detectedVideoId: videoId,
+            comments: [],
+            status: fbRes.status === 401 ? "token_expired" : "api_error",
+            unavailableReason:
+              fbJson?.error?.message ||
+              `Không đọc được bình luận cho phiên Facebook #${videoId}.`,
+          });
+        }
+
+        const rawRows: any[] = Array.isArray(fbJson?.data) ? fbJson.data : [];
+        const comments: ExternalLiveCommentItem[] = rawRows
+          .filter((row) => typeof row?.message === "string" && row.message.trim().length > 0)
+          .reverse()
+          .map((row) => ({
+            id: `fb_${String(row.id)}`,
+            author: String(row.from?.name || "Người xem Facebook"),
+            text: String(row.message).trim(),
+            createdAt: row.created_time || new Date().toISOString(),
+            platform: "facebook",
+            avatarUrl: row.from?.picture?.data?.url || undefined,
+          }));
+
+        return res.json({
+          success: true,
+          platform: "facebook",
+          detectedVideoId: videoId,
+          comments,
+          pollIntervalMs: 4000,
+        });
+      }
+
+      // 2. Nền tảng YouTube Live dựa trên Bearer token của kênh đã đăng nhập + Khóa luồng
+      if (detectedPlatform === "youtube") {
+        const ytBearer = bearer;
+
+        if (!ytBearer) {
+          return res.json({
+            success: true,
+            platform: "youtube",
+            comments: [],
+            status: "token_required",
+            unavailableReason:
+              "Hãy bấm Đăng nhập YouTube ở mục StreamKey để tự lấy khóa luồng và đồng bộ bình luận Live Chat.",
+          });
+        }
+
+        const authHeaders = { Authorization: `Bearer ${ytBearer}` };
+
+        const broadcastsUrl = new URL("https://www.googleapis.com/youtube/v3/liveBroadcasts");
+        broadcastsUrl.searchParams.set("part", "id,snippet,contentDetails,status");
+        broadcastsUrl.searchParams.set("mine", "true");
+        broadcastsUrl.searchParams.set("maxResults", "25");
+        const bcRes = await fetch(broadcastsUrl.toString(), {
+          headers: authHeaders,
+          signal: AbortSignal.timeout(8000),
+        });
+        if (bcRes.status === 401) {
+          return res.json({
+            success: true,
+            platform: "youtube",
+            comments: [],
+            status: "token_expired",
+            unavailableReason: "Phiên đăng nhập YouTube đã hết hạn. Bấm kết nối lại để tiếp tục đồng bộ.",
+          });
+        }
+        if (!bcRes.ok) {
+          return res.json({
+            success: true,
+            platform: "youtube",
+            comments: [],
+            status: "api_error",
+            unavailableReason: "Không tra cứu được buổi phát YouTube Live tương ứng.",
+          });
+        }
+        const bcJson: any = await bcRes.json();
+        const broadcasts: any[] = Array.isArray(bcJson?.items) ? bcJson.items : [];
+
+        // Truy vấn thêm liveStreams (cả mine=true và id cụ thể của boundStreamId)
+        const streamById = new Map<string, any>();
+        const streamsMineUrl = new URL("https://www.googleapis.com/youtube/v3/liveStreams");
+        streamsMineUrl.searchParams.set("part", "id,cdn,snippet,status");
+        streamsMineUrl.searchParams.set("mine", "true");
+        streamsMineUrl.searchParams.set("maxResults", "25");
+        const streamsMineRes = await fetch(streamsMineUrl.toString(), {
+          headers: authHeaders,
+          signal: AbortSignal.timeout(8000),
+        });
+        if (streamsMineRes.ok) {
+          const sj: any = await streamsMineRes.json();
+          for (const s of Array.isArray(sj?.items) ? sj.items : []) {
+            if (s?.id) streamById.set(String(s.id), s);
+          }
+        }
+
+        const missingBoundIds = broadcasts
+          .map((b) => String(b?.contentDetails?.boundStreamId || "").trim())
+          .filter((id) => id && !streamById.has(id));
+        if (missingBoundIds.length > 0) {
+          const boundUrl = new URL("https://www.googleapis.com/youtube/v3/liveStreams");
+          boundUrl.searchParams.set("part", "id,cdn,snippet,status");
+          boundUrl.searchParams.set("id", missingBoundIds.slice(0, 25).join(","));
+          const boundRes = await fetch(boundUrl.toString(), {
+            headers: authHeaders,
+            signal: AbortSignal.timeout(8000),
+          });
+          if (boundRes.ok) {
+            const bj: any = await boundRes.json();
+            for (const s of Array.isArray(bj?.items) ? bj.items : []) {
+              if (s?.id) streamById.set(String(s.id), s);
+            }
+          }
+        }
+
+        const matchedStream = Array.from(streamById.values()).find(
+          (s) => String(s?.cdn?.ingestionInfo?.streamName || "").trim() === rawStreamKey,
+        );
+
+        const targetBroadcast =
+          (explicitBroadcastId ? broadcasts.find((b) => String(b?.id) === explicitBroadcastId) : null) ||
+          (matchedStream
+            ? broadcasts.find(
+                (b) =>
+                  b?.contentDetails?.boundStreamId === matchedStream.id &&
+                  b?.status?.lifeCycleStatus !== "complete",
+              ) || broadcasts.find((b) => b?.contentDetails?.boundStreamId === matchedStream.id)
+            : null) ||
+          broadcasts.find((b) => b?.status?.lifeCycleStatus === "live") ||
+          broadcasts.find((b) => b?.status?.lifeCycleStatus === "testing") ||
+          broadcasts.find((b) => b?.status?.lifeCycleStatus === "ready");
+
+        const liveChatId = targetBroadcast?.snippet?.liveChatId;
+        if (!liveChatId) {
+          return res.json({
+            success: true,
+            platform: "youtube",
+            comments: [],
+            status: "not_found",
+            unavailableReason:
+              "Chưa tìm thấy buổi phát YouTube Live đang bật Live Chat khớp với Khóa luồng này.",
+          });
+        }
+
+        const msgUrl = new URL("https://www.googleapis.com/youtube/v3/liveChat/messages");
+        msgUrl.searchParams.set("liveChatId", liveChatId);
+        msgUrl.searchParams.set("part", "id,snippet,authorDetails");
+        msgUrl.searchParams.set("maxResults", "100");
+        const msgRes = await fetch(msgUrl.toString(), {
+          headers: authHeaders,
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!msgRes.ok) {
+          return res.json({
+            success: true,
+            platform: "youtube",
+            comments: [],
+            status: msgRes.status === 401 ? "token_expired" : "api_error",
+            unavailableReason: "Không tải được tin nhắn Live Chat từ YouTube.",
+          });
+        }
+        const msgJson: any = await msgRes.json();
+        const rawItems: any[] = Array.isArray(msgJson?.items) ? msgJson.items : [];
+        const comments: ExternalLiveCommentItem[] = rawItems
+          .filter((item) => item?.snippet?.displayMessage)
+          .map((item) => ({
+            id: `yt_${String(item.id)}`,
+            author: String(item?.authorDetails?.displayName || "Người xem YouTube"),
+            text: String(item.snippet.displayMessage),
+            createdAt: item?.snippet?.publishedAt || new Date().toISOString(),
+            platform: "youtube",
+            avatarUrl: item?.authorDetails?.profileImageUrl || undefined,
+            badge: item?.authorDetails?.isChatOwner
+              ? "Chủ kênh"
+              : item?.authorDetails?.isChatModerator
+                ? "Quản trị"
+                : undefined,
+            highlightAmount: item?.snippet?.superChatDetails?.amountDisplayString
+              ? String(item.snippet.superChatDetails.amountDisplayString)
+              : undefined,
+          }));
+
+        return res.json({
+          success: true,
+          platform: "youtube",
+          comments,
+          pollIntervalMs: Math.min(10000, Math.max(3500, Number(msgJson?.pollingIntervalMillis) || 4500)),
+        });
+      }
+
+      return res.json({
+        success: true,
+        platform: "custom",
+        comments: [],
+        status: "unsupported",
+        unavailableReason:
+          "Máy chủ RTMP tùy chỉnh hiện chưa có API đồng bộ bình luận tự động.",
+      });
+    } catch (err: any) {
+      console.error("[Livestream Comments Error]:", err?.message || err);
+      return res.status(502).json({
+        success: false,
+        platform: "error",
+        comments: [],
+        message: "Lỗi kết nối khi đồng bộ bình luận theo Khóa luồng.",
+      });
     }
   });
 
@@ -755,7 +1805,9 @@ async function createServer() {
     let isLiveEmitted = false;
     let lastTelemetryAt = 0;
     let recentStderrTail = "";
+    let activeStreamKey = "";
     let killTimer: ReturnType<typeof setTimeout> | null = null;
+    const pendingChunks: Buffer[] = [];
 
     const safeSend = (payload: Record<string, unknown>) => {
       if (ws.readyState === WebSocket.OPEN) {
@@ -765,9 +1817,18 @@ async function createServer() {
       }
     };
 
+    const sanitizeStderr = (raw: string): string => {
+      let cleaned = raw;
+      if (activeStreamKey) {
+        cleaned = cleaned.split(activeStreamKey).join("***");
+      }
+      return cleaned;
+    };
+
     const cleanupFfmpeg = () => {
       if (isStopping) return;
       isStopping = true;
+      pendingChunks.length = 0;
       if (ffmpegProc) {
         const proc = ffmpegProc;
         try {
@@ -788,15 +1849,31 @@ async function createServer() {
       }
     };
 
-    const translateFfmpegError = (raw: string): string => {
-      const lower = raw.toLowerCase();
+    const translateFfmpegError = (
+      raw: string,
+      code: number | null,
+      signal: NodeJS.Signals | null,
+    ): string => {
+      if (signal === "SIGSEGV" || signal === "SIGABRT") {
+        return "Bộ mã hóa máy chủ gặp lỗi hệ thống khi mở kết nối RTMPS. Vui lòng thử phát lại.";
+      }
+
+      const lower = sanitizeStderr(raw).toLowerCase();
+      const sentPublish =
+        lower.includes("sending publish command") || lower.includes("fcpublish stream");
+
       if (
         lower.includes("403") ||
         lower.includes("401") ||
         lower.includes("rejected") ||
-        lower.includes("publish") && lower.includes("error")
+        lower.includes("netstream.publish") ||
+        (lower.includes("publish") && lower.includes("error")) ||
+        (sentPublish &&
+          (lower.includes("tls fatal alert") ||
+            lower.includes("input/output error") ||
+            lower.includes("end of file")))
       ) {
-        return "Facebook / máy chủ phát từ chối Khóa luồng (Stream Key). Hãy kiểm tra lại Stream Key hoặc tạo buổi phát mới.";
+        return "Facebook / máy chủ phát từ chối Khóa luồng (Stream Key). Hãy kiểm tra lại Stream Key còn hiệu lực hoặc tạo buổi phát mới.";
       }
       if (lower.includes("404") || lower.includes("stream not found")) {
         return "Không tìm thấy địa chỉ luồng phát. Vui lòng kiểm tra lại Server URL và Stream Key.";
@@ -811,13 +1888,18 @@ async function createServer() {
       ) {
         return "Không kết nối được tới máy chủ RTMPS của Facebook/YouTube. Vui lòng kiểm tra lại URL máy chủ và mạng.";
       }
-      if (lower.includes("invalid data found")) {
-        return "Định dạng luồng video từ trình duyệt chưa khớp. Hãy thử tắt/bật lại Camera hoặc đổi trình duyệt.";
+      if (
+        lower.includes("invalid data found") ||
+        lower.includes("moov atom not found") ||
+        lower.includes("could not find codec parameters")
+      ) {
+        return "Định dạng luồng video từ trình duyệt chưa khớp. Hãy thử tắt/bật lại Camera hoặc đổi chất lượng video.";
       }
-      return "Luồng phát sóng bị gián đoạn bất ngờ. Vui lòng kiểm tra Stream Key và kết nối mạng rồi thử phát lại.";
+      const codeHint = signal ? ` (${signal})` : code !== null ? ` (mã ${code})` : "";
+      return `Luồng phát sóng bị gián đoạn bất ngờ${codeHint}. Vui lòng kiểm tra Stream Key và kết nối mạng rồi thử phát lại.`;
     };
 
-    ws.on("message", (data, isBinary) => {
+    ws.on("message", async (data, isBinary) => {
       if (!isBinary) {
         try {
           const msg = JSON.parse(data.toString("utf8"));
@@ -845,9 +1927,8 @@ async function createServer() {
               return;
             }
 
-            const targetUrl = rawRtmpUrl.endsWith("/")
-              ? `${rawRtmpUrl}${rawStreamKey}`
-              : `${rawRtmpUrl}/${rawStreamKey}`;
+            hasStartedFfmpeg = true;
+            activeStreamKey = rawStreamKey;
 
             const bin = resolveFfmpegBinary();
             if (!bin.path) {
@@ -859,6 +1940,26 @@ async function createServer() {
               return;
             }
 
+            let resolvedRtmpBase = rawRtmpUrl;
+            // Neu phai dung ffmpeg-static, phan giai DNS truoc bang Node de tranh loi SIGSEGV trong glibc tinh
+            if (bin.source === "ffmpeg-static") {
+              try {
+                const parsed = new URL(rawRtmpUrl.replace(/^rtmps?:\/\//i, "https://"));
+                if (parsed.hostname && !net.isIP(parsed.hostname)) {
+                  const looked = await dns.lookup(parsed.hostname, { family: 4 });
+                  if (looked?.address) {
+                    resolvedRtmpBase = rawRtmpUrl.replace(parsed.hostname, looked.address);
+                  }
+                }
+              } catch {}
+            }
+
+            if (isStopping || ws.readyState !== WebSocket.OPEN) return;
+
+            const targetUrl = resolvedRtmpBase.endsWith("/")
+              ? `${resolvedRtmpBase}${rawStreamKey}`
+              : `${resolvedRtmpBase}/${rawStreamKey}`;
+
             const rawMime = typeof msg.mimeType === "string" ? msg.mimeType.toLowerCase() : "";
             const inputFormatArgs: string[] = rawMime.includes("mp4")
               ? ["-f", "mp4"]
@@ -866,7 +1967,6 @@ async function createServer() {
                 ? ["-f", "webm"]
                 : [];
 
-            hasStartedFfmpeg = true;
             safeSend({
               type: "status",
               state: "connecting",
@@ -878,9 +1978,9 @@ async function createServer() {
               "-loglevel",
               "info",
               "-probesize",
-              "150000",
+              "2000000",
               "-analyzeduration",
-              "500000",
+              "2000000",
               "-fflags",
               "+genpts+discardcorrupt",
               ...inputFormatArgs,
@@ -916,6 +2016,8 @@ async function createServer() {
               "44100",
               "-ac",
               "2",
+              "-max_muxing_queue_size",
+              "1024",
               "-f",
               "flv",
               targetUrl,
@@ -936,9 +2038,17 @@ async function createServer() {
               // Bo qua EPIPE khi dong luong
             });
 
+            if (pendingChunks.length > 0 && ffmpegProc.stdin && !ffmpegProc.stdin.destroyed) {
+              for (const queued of pendingChunks.splice(0, pendingChunks.length)) {
+                try {
+                  ffmpegProc.stdin.write(queued);
+                } catch {}
+              }
+            }
+
             ffmpegProc.stderr.on("data", (chunk: Buffer) => {
               const text = chunk.toString("utf8");
-              recentStderrTail = (recentStderrTail + text).slice(-2500);
+              recentStderrTail = (recentStderrTail + text).slice(-3500);
 
               if (text.includes("frame=")) {
                 const now = Date.now();
@@ -960,15 +2070,22 @@ async function createServer() {
               }
             });
 
-            ffmpegProc.on("close", (code) => {
+            ffmpegProc.on("close", (code, signal) => {
               if (killTimer) {
                 clearTimeout(killTimer);
                 killTimer = null;
               }
-              if (!isStopping && code !== 0) {
+              if (!isStopping && (code !== 0 || signal !== null)) {
+                console.error("[Livestream FFmpeg Exit]", {
+                  source: bin.source,
+                  code,
+                  signal,
+                  mime: rawMime,
+                  tail: sanitizeStderr(recentStderrTail).slice(-1200),
+                });
                 safeSend({
                   type: "error",
-                  message: translateFfmpegError(recentStderrTail),
+                  message: translateFfmpegError(recentStderrTail, code, signal),
                 });
               } else {
                 safeSend({
@@ -991,11 +2108,16 @@ async function createServer() {
         return;
       }
 
-      if (ffmpegProc && ffmpegProc.stdin && !ffmpegProc.stdin.destroyed && !isStopping) {
-        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+      if (isStopping) return;
+      if (ffmpegProc && ffmpegProc.stdin && !ffmpegProc.stdin.destroyed && !ffmpegProc.stdin.writableEnded) {
         try {
           ffmpegProc.stdin.write(buf);
         } catch {}
+      } else if (hasStartedFfmpeg && !ffmpegProc) {
+        if (pendingChunks.length < 32) {
+          pendingChunks.push(buf);
+        }
       }
     });
 

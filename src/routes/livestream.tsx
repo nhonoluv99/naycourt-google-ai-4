@@ -2,6 +2,7 @@ import { createFileRoute, Link, useRouterState } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
+  ArrowDown,
   Camera,
   CameraOff,
   Check,
@@ -11,10 +12,13 @@ import {
   EyeOff,
   ExternalLink,
   Layers,
+  LogOut,
+  MessageSquare,
   Mic,
   MicOff,
   Minus,
   Plus,
+  PlusCircle,
   Radio,
   RefreshCw,
   RotateCcw,
@@ -26,6 +30,12 @@ import {
   Video,
   X,
 } from "lucide-react";
+import {
+  connectYouTubeAccount,
+  disconnectYouTubeAccount,
+  getConnectedYouTubeUser,
+  getYouTubeAccessToken,
+} from "@/lib/firebase";
 import {
   entryName,
   getLiveTournamentIdFromUrl,
@@ -365,14 +375,25 @@ function getProfileDimensions(aspect: VideoAspect, quality: VideoQuality) {
 
 function pickSupportedRecorderMime(): string {
   if (typeof MediaRecorder === "undefined") return "";
-  const candidates = [
-    "video/mp4;codecs=avc1,mp4a.40.2",
-    "video/mp4;codecs=h264,aac",
-    "video/mp4",
-    "video/webm;codecs=h264,opus",
-    "video/webm;codecs=vp8,opus",
-    "video/webm",
-  ];
+  const isAppleMobile =
+    typeof navigator !== "undefined" &&
+    (/iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1));
+  const candidates = isAppleMobile
+    ? [
+        "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+        "video/mp4;codecs=avc1,mp4a.40.2",
+        "video/mp4;codecs=h264,aac",
+        "video/mp4",
+      ]
+    : [
+        "video/webm;codecs=h264,opus",
+        "video/webm;codecs=vp8,opus",
+        "video/webm",
+        "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+        "video/mp4;codecs=avc1,mp4a.40.2",
+        "video/mp4",
+      ];
   for (const mime of candidates) {
     try {
       if (MediaRecorder.isTypeSupported(mime)) return mime;
@@ -799,6 +820,476 @@ function LivestreamPage() {
   const [confirmStopOpen, setConfirmStopOpen] = useState(false);
   const [copiedOverlay, setCopiedOverlay] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+
+  // ---------------- ĐĂNG NHẬP YOUTUBE / FACEBOOK & TỰ LẤY KHÓA LUỒNG ----------------
+  interface YouTubeStreamOption {
+    id: string;
+    broadcastId?: string;
+    title: string;
+    status: string;
+    serverUrl: string;
+    streamKey: string;
+    liveChatId?: string;
+  }
+
+  interface FacebookTargetOption {
+    id: string;
+    name: string;
+    type: "user" | "page";
+    avatarUrl?: string;
+  }
+
+  interface FacebookStreamOption {
+    id: string;
+    targetId: string;
+    targetName: string;
+    targetType: "user" | "page";
+    title: string;
+    status: string;
+    serverUrl: string;
+    streamKey: string;
+    permalinkUrl?: string;
+  }
+
+  const [ytToken, setYtToken] = useState<string | null>(() => getYouTubeAccessToken());
+  const [ytAccount, setYtAccount] = useState<{
+    email: string | null;
+    displayName: string | null;
+    photoURL: string | null;
+    channelTitle?: string;
+  } | null>(() => getConnectedYouTubeUser());
+  const [ytStreams, setYtStreams] = useState<YouTubeStreamOption[]>([]);
+  const [selectedYtStreamId, setSelectedYtStreamId] = useState<string>("");
+  const [ytLoading, setYtLoading] = useState(false);
+
+  // Token phiên Facebook giữ trong bộ nhớ RAM (không lưu localStorage/sessionStorage)
+  const [fbSessionToken, setFbSessionToken] = useState<string | null>(null);
+  const [fbProfile, setFbProfile] = useState<{
+    id: string;
+    name: string;
+    avatarUrl?: string;
+  } | null>(null);
+  const [fbTargets, setFbTargets] = useState<FacebookTargetOption[]>([]);
+  const [fbSelectedTargetId, setFbSelectedTargetId] = useState<string>("me");
+  const [fbStreams, setFbStreams] = useState<FacebookStreamOption[]>([]);
+  const [selectedFbStreamId, setSelectedFbStreamId] = useState<string>("");
+  const [fbLoading, setFbLoading] = useState(false);
+  const [fbCreatingLive, setFbCreatingLive] = useState(false);
+  const [fbConfigNotice, setFbConfigNotice] = useState<{
+    redirectUri: string;
+    message: string;
+  } | null>(null);
+
+  const loadYouTubeStreams = useCallback(
+    async (tokenOverride?: string, autoFillKey = true) => {
+      const activeToken = tokenOverride || ytToken;
+      if (!activeToken) return;
+      setYtLoading(true);
+      try {
+        const res = await fetch("/api/youtube/streams", {
+          headers: { Authorization: `Bearer ${activeToken}` },
+        });
+        const data = await res.json();
+        if (res.status === 401) {
+          disconnectYouTubeAccount();
+          setYtToken(null);
+          setYtAccount(null);
+          setYtStreams([]);
+          setSelectedYtStreamId("");
+          toast.error(data?.message || "Phiên đăng nhập YouTube đã hết hạn.");
+          return;
+        }
+        if (!res.ok || !data?.success) {
+          toast.error(data?.message || "Không lấy được khóa luồng từ YouTube.");
+          return;
+        }
+        if (data?.channel?.title) {
+          setYtAccount((prev) =>
+            prev
+              ? { ...prev, channelTitle: String(data.channel.title) }
+              : {
+                  email: null,
+                  displayName: String(data.channel.title),
+                  photoURL: data.channel.avatarUrl || null,
+                  channelTitle: String(data.channel.title),
+                },
+          );
+        }
+        const list: YouTubeStreamOption[] = Array.isArray(data?.streams) ? data.streams : [];
+        setYtStreams(list);
+        if (list.length > 0 && autoFillKey) {
+          const picked = list[0];
+          setSelectedYtStreamId(picked.id);
+          setConfig((c) => ({
+            ...c,
+            platform: "youtube",
+            serverUrl: picked.serverUrl || PLATFORM_URLS.youtube,
+            streamKey: picked.streamKey,
+          }));
+          toast.success(`Đã tự lấy Khóa luồng YouTube: ${picked.title}`);
+        } else if (list.length === 0) {
+          toast.info("Kênh YouTube chưa có luồng phát nào. Hãy bật phát trực tiếp trong YouTube Studio rồi bấm Làm mới.");
+        }
+      } catch {
+        toast.error("Lỗi kết nối khi lấy Khóa luồng YouTube.");
+      } finally {
+        setYtLoading(false);
+      }
+    },
+    [ytToken],
+  );
+
+  const handleConnectYouTube = async () => {
+    setYtLoading(true);
+    try {
+      const res = await connectYouTubeAccount();
+      setYtToken(res.accessToken);
+      setYtAccount({
+        email: res.email,
+        displayName: res.displayName,
+        photoURL: res.photoURL,
+      });
+      await loadYouTubeStreams(res.accessToken, true);
+    } catch (err: any) {
+      const code = String(err?.code || "");
+      if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
+        return;
+      }
+      toast.error(err?.message || "Không đăng nhập được tài khoản YouTube.");
+    } finally {
+      setYtLoading(false);
+    }
+  };
+
+  const handleDisconnectYouTube = () => {
+    disconnectYouTubeAccount();
+    setYtToken(null);
+    setYtAccount(null);
+    setYtStreams([]);
+    setSelectedYtStreamId("");
+  };
+
+  const loadFacebookStreams = useCallback(
+    async (sessionOverride?: string, autoFillKey = true) => {
+      const activeToken = sessionOverride || fbSessionToken;
+      if (!activeToken) return;
+      setFbLoading(true);
+      try {
+        const res = await fetch("/api/facebook/streams", {
+          headers: { Authorization: `Bearer ${activeToken}` },
+        });
+        const data = await res.json();
+        if (res.status === 401) {
+          setFbSessionToken(null);
+          setFbProfile(null);
+          setFbTargets([]);
+          setFbStreams([]);
+          setSelectedFbStreamId("");
+          toast.error(data?.message || "Phiên đăng nhập Facebook đã hết hạn.");
+          return;
+        }
+        if (!res.ok || !data?.success) {
+          toast.error(data?.message || "Không tải được danh sách phát Facebook.");
+          return;
+        }
+        if (data?.profile) setFbProfile(data.profile);
+        const targets: FacebookTargetOption[] = Array.isArray(data?.targets) ? data.targets : [];
+        setFbTargets(targets);
+        if (targets.length > 0 && !targets.some((t) => t.id === fbSelectedTargetId)) {
+          setFbSelectedTargetId(targets[0].id);
+        }
+        const list: FacebookStreamOption[] = Array.isArray(data?.streams) ? data.streams : [];
+        setFbStreams(list);
+        if (list.length > 0 && autoFillKey) {
+          const picked =
+            list.find((s) => s.status === "LIVE" || s.status === "LIVE_NOW") || list[0];
+          setSelectedFbStreamId(picked.id);
+          if (picked.streamKey) {
+            setConfig((c) => ({
+              ...c,
+              platform: "facebook",
+              serverUrl: picked.serverUrl || PLATFORM_URLS.facebook,
+              streamKey: picked.streamKey,
+            }));
+            toast.success(`Đã tự lấy Khóa luồng Facebook: ${picked.title}`);
+          }
+        }
+      } catch {
+        toast.error("Lỗi kết nối khi lấy Khóa luồng Facebook.");
+      } finally {
+        setFbLoading(false);
+      }
+    },
+    [fbSessionToken, fbSelectedTargetId],
+  );
+
+  const handleConnectFacebook = async () => {
+    setFbLoading(true);
+    setFbConfigNotice(null);
+    try {
+      const res = await fetch("/api/auth/facebook/url");
+      const data = await res.json();
+      if (!data?.configured || !data?.url) {
+        setFbConfigNotice({
+          redirectUri: String(data?.redirectUri || `${window.location.origin}/auth/facebook/callback`),
+          message:
+            data?.message ||
+            "Cần cấu hình FACEBOOK_APP_ID và FACEBOOK_APP_SECRET trong Settings > Secrets để bật đăng nhập Facebook.",
+        });
+        return;
+      }
+      const popup = window.open(
+        String(data.url),
+        "facebook_oauth_popup",
+        "width=600,height=720,noopener=false",
+      );
+      if (!popup) {
+        toast.error("Trình duyệt đang chặn cửa sổ bật lên (popup). Hãy cho phép mở popup để đăng nhập Facebook.");
+      }
+    } catch {
+      toast.error("Không khởi tạo được đăng nhập Facebook.");
+    } finally {
+      setFbLoading(false);
+    }
+  };
+
+  const handleCreateFacebookLive = async () => {
+    if (!fbSessionToken) return;
+    setFbCreatingLive(true);
+    try {
+      const matchTitle = snapshot.hasMatch
+        ? `${snapshot.tournamentName}: ${snapshot.teamAName} vs ${snapshot.teamBName}`
+        : snapshot.tournamentName;
+      const res = await fetch("/api/facebook/create-live", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${fbSessionToken}`,
+        },
+        body: JSON.stringify({
+          targetId: fbSelectedTargetId || "me",
+          title: matchTitle,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.success || !data?.stream) {
+        toast.error(data?.message || "Không tạo được phiên live mới trên Facebook.");
+        return;
+      }
+      const created: FacebookStreamOption = data.stream;
+      setFbStreams((prev) => [created, ...prev.filter((s) => s.id !== created.id)]);
+      setSelectedFbStreamId(created.id);
+      setConfig((c) => ({
+        ...c,
+        platform: "facebook",
+        serverUrl: created.serverUrl || PLATFORM_URLS.facebook,
+        streamKey: created.streamKey,
+      }));
+      toast.success("Đã tạo phiên Facebook Live mới và tự điền Khóa luồng!");
+    } catch {
+      toast.error("Lỗi khi tạo phiên Facebook Live.");
+    } finally {
+      setFbCreatingLive(false);
+    }
+  };
+
+  const handleDisconnectFacebook = () => {
+    setFbSessionToken(null);
+    setFbProfile(null);
+    setFbTargets([]);
+    setFbStreams([]);
+    setSelectedFbStreamId("");
+  };
+
+  // Nhận kết quả đăng nhập Facebook từ cửa sổ popup OAuth qua postMessage
+  useEffect(() => {
+    const onOAuthMessage = (event: MessageEvent) => {
+      const origin = event.origin || "";
+      if (
+        origin !== window.location.origin &&
+        !origin.endsWith(".run.app") &&
+        !origin.includes("localhost")
+      ) {
+        return;
+      }
+      if (event.data?.type === "FACEBOOK_OAUTH_SUCCESS" && event.data?.sessionToken) {
+        const token = String(event.data.sessionToken);
+        setFbSessionToken(token);
+        if (event.data?.profile) {
+          setFbProfile(event.data.profile);
+        }
+        setFbConfigNotice(null);
+        void loadFacebookStreams(token, true);
+      } else if (event.data?.type === "FACEBOOK_OAUTH_ERROR") {
+        toast.error(String(event.data?.message || "Đăng nhập Facebook thất bại."));
+      }
+    };
+    window.addEventListener("message", onOAuthMessage);
+    return () => window.removeEventListener("message", onOAuthMessage);
+  }, [loadFacebookStreams]);
+
+  // ---------------- ĐỒNG BỘ BÌNH LUẬN THEO KHÓA LUỒNG & TÀI KHOẢN ĐÃ ĐĂNG NHẬP ----------------
+  interface StreamLiveComment {
+    id: string;
+    author: string;
+    text: string;
+    createdAt: string;
+    platform: "youtube" | "facebook";
+    badge?: string;
+    avatarUrl?: string;
+    highlightAmount?: string;
+  }
+
+  const [streamComments, setStreamComments] = useState<StreamLiveComment[]>([]);
+  const [commentStatusMsg, setCommentStatusMsg] = useState<string | null>(null);
+  const [commentAuthStatus, setCommentAuthStatus] = useState<string | null>(null);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [commentsRefreshTick, setCommentsRefreshTick] = useState(0);
+  const [autoScrollComments, setAutoScrollComments] = useState(true);
+  const [hasUnreadComments, setHasUnreadComments] = useState(false);
+  const commentScrollRef = useRef<HTMLDivElement | null>(null);
+  const prevCommentCountRef = useRef(0);
+
+  const selectedYtStream = useMemo(
+    () => ytStreams.find((s) => s.id === selectedYtStreamId) || null,
+    [ytStreams, selectedYtStreamId],
+  );
+  const selectedFbStream = useMemo(
+    () => fbStreams.find((s) => s.id === selectedFbStreamId) || null,
+    [fbStreams, selectedFbStreamId],
+  );
+
+  // Tự động đồng bộ bình luận trực tiếp từ Facebook / YouTube theo Khóa luồng & phiên đăng nhập
+  useEffect(() => {
+    if (isOverlayMode || isReadOnly) return;
+    const rawKey = (config.streamKey || "").trim();
+    const isYt =
+      config.platform === "youtube" || (config.serverUrl || "").toLowerCase().includes("youtube");
+    const isFb =
+      config.platform === "facebook" ||
+      (config.serverUrl || "").toLowerCase().includes("facebook") ||
+      rawKey.startsWith("FB-") ||
+      rawKey.includes("s_vt=api-s");
+
+    const activeToken = isYt ? ytToken : isFb ? fbSessionToken : null;
+
+    setStreamComments([]);
+    setCommentStatusMsg(null);
+    setCommentAuthStatus(null);
+
+    if (!rawKey && !selectedFbStream?.id && !selectedYtStream?.broadcastId) {
+      setCommentsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    let timerId: ReturnType<typeof setTimeout> | null = null;
+
+    const pollByStreamKey = async (isInitial: boolean) => {
+      if (cancelled) return;
+      if (isInitial) setCommentsLoading(true);
+      let nextDelay = streamStatus === "live" ? 4000 : 10000;
+      try {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (activeToken) {
+          headers.Authorization = `Bearer ${activeToken}`;
+        }
+        const res = await fetch("/api/livestream/comments", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            platform: config.platform,
+            serverUrl: config.serverUrl,
+            streamKey: rawKey,
+            videoId: isFb ? selectedFbStream?.id : undefined,
+            broadcastId: isYt ? selectedYtStream?.broadcastId : undefined,
+          }),
+        });
+        const data = await res.json();
+        if (cancelled) return;
+        if (typeof data?.pollIntervalMs === "number" && streamStatus === "live") {
+          nextDelay = Math.min(10000, Math.max(3500, data.pollIntervalMs));
+        }
+        setCommentAuthStatus(data?.status ? String(data.status) : null);
+        if (data?.unavailableReason) {
+          setCommentStatusMsg(String(data.unavailableReason));
+        } else if (data?.message && !data?.success) {
+          setCommentStatusMsg(String(data.message));
+        } else {
+          setCommentStatusMsg(null);
+        }
+
+        const incoming: any[] = Array.isArray(data?.comments) ? data.comments : [];
+        if (incoming.length > 0) {
+          setStreamComments((prev) => {
+            const byId = new Map<string, StreamLiveComment>();
+            for (const item of prev) byId.set(item.id, item);
+            for (const item of incoming) {
+              if (!item?.id || !item?.text) continue;
+              byId.set(String(item.id), {
+                id: String(item.id),
+                author: String(item.author || "Người xem"),
+                text: String(item.text),
+                createdAt: String(item.createdAt || new Date().toISOString()),
+                platform: item.platform === "facebook" ? "facebook" : "youtube",
+                badge: item.badge ? String(item.badge) : undefined,
+                avatarUrl: item.avatarUrl ? String(item.avatarUrl) : undefined,
+                highlightAmount: item.highlightAmount ? String(item.highlightAmount) : undefined,
+              });
+            }
+            const merged = Array.from(byId.values()).sort(
+              (a, b) =>
+                new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime(),
+            );
+            return merged.slice(-150);
+          });
+        }
+      } catch {
+        if (!cancelled) {
+          setCommentStatusMsg("Không kết nối được tới máy chủ đồng bộ bình luận.");
+        }
+      } finally {
+        if (!cancelled) {
+          setCommentsLoading(false);
+          timerId = setTimeout(() => {
+            void pollByStreamKey(false);
+          }, nextDelay);
+        }
+      }
+    };
+
+    void pollByStreamKey(true);
+
+    return () => {
+      cancelled = true;
+      if (timerId) clearTimeout(timerId);
+    };
+  }, [
+    config.platform,
+    config.serverUrl,
+    config.streamKey,
+    ytToken,
+    fbSessionToken,
+    selectedYtStream?.broadcastId,
+    selectedFbStream?.id,
+    streamStatus,
+    commentsRefreshTick,
+    isOverlayMode,
+    isReadOnly,
+  ]);
+
+  // Tự động cuộn xuống bình luận mới nhất
+  useEffect(() => {
+    const el = commentScrollRef.current;
+    const newCount = streamComments.length;
+    if (el && autoScrollComments) {
+      el.scrollTop = el.scrollHeight;
+      setHasUnreadComments(false);
+    } else if (newCount > prevCommentCountRef.current && !autoScrollComments) {
+      setHasUnreadComments(true);
+    }
+    prevCommentCountRef.current = newCount;
+  }, [streamComments, autoScrollComments, config.aspect]);
 
   const profile = useMemo(
     () => getProfileDimensions(config.aspect, config.quality),
@@ -1307,6 +1798,11 @@ function LivestreamPage() {
     }
 
     ensureAudioPipeline(cameraStreamRef.current);
+    if (audioCtxRef.current && audioCtxRef.current.state === "suspended") {
+      try {
+        await audioCtxRef.current.resume();
+      } catch {}
+    }
 
     const preferredMime = pickSupportedRecorderMime();
     if (!preferredMime && typeof MediaRecorder === "undefined") {
@@ -1377,11 +1873,9 @@ function LivestreamPage() {
             }
             return;
           }
-          void ev.data.arrayBuffer().then((buf) => {
-            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-              wsRef.current.send(buf);
-            }
-          });
+          try {
+            wsRef.current.send(ev.data);
+          } catch {}
         };
 
         recorder.onerror = () => {
@@ -1390,7 +1884,7 @@ function LivestreamPage() {
         };
 
         recorderRef.current = recorder;
-        recorder.start(1000);
+        recorder.start(500);
       } catch {
         setErrorDetail("Không thể khởi tạo MediaRecorder trên trình duyệt này.");
         stopBroadcast();
@@ -2020,218 +2514,457 @@ function LivestreamPage() {
         </div>
       )}
 
-      {/* MÀN HÌNH LIVESTREAM TOÀN CHIỀU RỘNG + DOCK ĐIỀU KHIỂN */}
+      {/* MÀN HÌNH LIVESTREAM TOÀN CHIỀU RỘNG + BÌNH LUẬN TRỰC TIẾP + DOCK ĐIỀU KHIỂN */}
       <div className="panel p-3 sm:p-4 space-y-3">
-        {/* Khung Preview Canvas + Kéo thả Overlay */}
-        <div className="flex w-full items-center justify-center overflow-hidden rounded-xl bg-[#08140e]">
-          <div
-            ref={stageContainerRef}
-            className={`relative ${
-              config.aspect === "9:16"
-                ? "aspect-[9/16] h-[560px] max-w-full"
-                : "aspect-video w-full"
-            }`}
-          >
-            <canvas ref={canvasRef} className="block h-full w-full" />
+        {(() => {
+          const isPortraitAspect = config.aspect === "9:16";
+          const formatCommentTime = (iso: string) => {
+            const d = new Date(iso);
+            if (Number.isNaN(d.getTime())) return "";
+            return d.toLocaleTimeString("vi-VN", {
+              hour: "2-digit",
+              minute: "2-digit",
+            });
+          };
 
-            {/* Vùng nắm kéo di chuyển + phóng to thu nhỏ Overlay trực tiếp trên màn hình */}
-            {config.showHud &&
-              (() => {
-                const geom = getHudGeometry(
-                  profile.width,
-                  profile.height,
-                  config.hudPosition,
-                  config.hudX,
-                  config.hudY,
-                  config.hudScale,
-                );
-                const updateHudScale = (next: number) => {
-                  const clamped = Math.min(1.75, Math.max(0.55, Number(next.toFixed(2))));
-                  configRef.current = { ...configRef.current, hudScale: clamped };
-                  setConfig((c) => ({ ...c, hudScale: clamped }));
-                };
-                return (
-                  <div
-                    role="button"
-                    tabIndex={0}
-                    aria-label="Kéo để di chuyển hoặc thay đổi kích thước bảng tỉ số"
-                    title="Kéo để di chuyển · Kéo góc hoặc bấm +/- để thu phóng"
-                    onPointerDown={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      e.currentTarget.setPointerCapture(e.pointerId);
-                      hudDragRef.current = {
-                        pointerId: e.pointerId,
-                        startClientX: e.clientX,
-                        startClientY: e.clientY,
-                        startHudX: geom.x,
-                        startHudY: geom.y,
-                      };
-                      setIsDraggingHud(true);
-                    }}
-                    onPointerMove={(e) => {
-                      const drag = hudDragRef.current;
-                      if (!drag || drag.pointerId !== e.pointerId) return;
-                      const rect = stageContainerRef.current?.getBoundingClientRect();
-                      if (!rect || rect.width <= 0 || rect.height <= 0) return;
-                      const dxCanvas = (e.clientX - drag.startClientX) * (profile.width / rect.width);
-                      const dyCanvas = (e.clientY - drag.startClientY) * (profile.height / rect.height);
-                      const nextX = Math.min(geom.maxX, Math.max(geom.minX, drag.startHudX + dxCanvas));
-                      const nextY = Math.min(geom.maxY, Math.max(geom.minY, drag.startHudY + dyCanvas));
-                      const nextNormX =
-                        geom.maxX > geom.minX ? (nextX - geom.minX) / (geom.maxX - geom.minX) : 0;
-                      const nextNormY =
-                        geom.maxY > geom.minY ? (nextY - geom.minY) / (geom.maxY - geom.minY) : 0;
+          const platformLabel =
+            config.platform === "facebook"
+              ? "Facebook"
+              : config.platform === "youtube"
+                ? "YouTube"
+                : "Tùy chỉnh";
 
-                      configRef.current = {
-                        ...configRef.current,
-                        hudPosition: "custom",
-                        hudX: nextNormX,
-                        hudY: nextNormY,
-                      };
-                      setConfig((c) => ({
-                        ...c,
-                        hudPosition: "custom",
-                        hudX: nextNormX,
-                        hudY: nextNormY,
-                      }));
-                    }}
-                    onPointerUp={(e) => {
-                      if (hudDragRef.current?.pointerId === e.pointerId) {
-                        hudDragRef.current = null;
-                        setIsDraggingHud(false);
+          const liveCommentsBox = (
+            <div
+              className={
+                isPortraitAspect
+                  ? "absolute inset-0 flex flex-col rounded-xl border border-line/15 bg-paper/75 overflow-hidden"
+                  : "w-full flex flex-col rounded-xl border border-line/15 bg-paper/75 overflow-hidden"
+              }
+            >
+              {/* Thanh tiêu đề ô Bình luận trực tiếp (tự đồng bộ theo nền tảng + Khóa luồng) */}
+              <div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-line/12 bg-card/90 px-2.5 sm:px-3 py-2 shrink-0">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <MessageSquare className="size-4 shrink-0 text-[#0a3320]" />
+                  <span className="font-head text-xs sm:text-sm font-bold text-ink truncate">
+                    Bình luận {platformLabel}
+                  </span>
+                  <span className="rounded bg-[#0a3320]/10 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-[#0a3320]">
+                    {streamComments.length}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-1 flex-wrap">
+                  {Boolean(config.streamKey.trim()) && (
+                    <button
+                      type="button"
+                      onClick={() => setCommentsRefreshTick((t) => t + 1)}
+                      className="rounded-md border border-line/20 bg-card px-2 py-1 text-[10px] font-bold text-line/75 hover:text-ink inline-flex items-center gap-1 transition cursor-pointer"
+                      title="Làm mới bình luận từ luồng phát"
+                    >
+                      <RefreshCw className={`size-3 shrink-0 ${commentsLoading ? "animate-spin" : ""}`} />
+                      <span className="hidden sm:inline">Đồng bộ</span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = !autoScrollComments;
+                      setAutoScrollComments(next);
+                      if (next && commentScrollRef.current) {
+                        commentScrollRef.current.scrollTop = commentScrollRef.current.scrollHeight;
+                        setHasUnreadComments(false);
                       }
                     }}
-                    onPointerCancel={() => {
-                      hudDragRef.current = null;
-                      setIsDraggingHud(false);
-                    }}
-                    style={{
-                      left: `${(geom.x / profile.width) * 100}%`,
-                      top: `${(geom.y / profile.height) * 100}%`,
-                      width: `${(geom.boxW / profile.width) * 100}%`,
-                      height: `${(geom.totalH / profile.height) * 100}%`,
-                    }}
-                    className={`group absolute z-20 touch-none select-none rounded-xl transition-shadow ${
-                      isDraggingHud || isResizingHud
-                        ? "cursor-grabbing ring-2 ring-[#e44c11] shadow-lg"
-                        : "cursor-grab hover:ring-2 hover:ring-white/60"
+                    className={`rounded-md border px-2 py-1 text-[10px] font-bold transition cursor-pointer ${
+                      autoScrollComments
+                        ? "border-[#0a3320]/30 bg-[#0a3320]/10 text-[#0a3320]"
+                        : "border-line/20 bg-card text-line/65 hover:text-ink"
                     }`}
+                    title="Tự động cuộn xuống bình luận mới nhất"
                   >
-                    {/* Thanh phóng to / thu nhỏ nhanh trực tiếp trên bảng tỉ số */}
-                    <div
-                      onPointerDown={(e) => e.stopPropagation()}
-                      className={`absolute -bottom-3 left-2 z-30 flex items-center gap-0.5 rounded-full bg-[#0a3320]/90 px-1 py-0.5 text-white shadow-md ring-1 ring-white/25 transition-opacity ${
-                        isDraggingHud || isResizingHud
-                          ? "opacity-100"
-                          : "opacity-85 sm:opacity-0 sm:group-hover:opacity-100"
-                      }`}
-                    >
-                      <button
-                        type="button"
-                        aria-label="Thu nhỏ bảng tỉ số"
-                        title="Thu nhỏ"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          updateHudScale((config.hudScale ?? 1) - 0.1);
-                        }}
-                        className="grid size-5 place-items-center rounded-full hover:bg-white/20 cursor-pointer"
-                      >
-                        <Minus className="size-3" />
-                      </button>
-                      <button
-                        type="button"
-                        title="Đặt lại kích thước 100%"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          updateHudScale(1);
-                        }}
-                        className="px-1 text-[10px] font-mono font-bold tabular-nums hover:text-[#fb923c] cursor-pointer"
-                      >
-                        {Math.round((config.hudScale ?? 1) * 100)}%
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Phóng to bảng tỉ số"
-                        title="Phóng to"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          updateHudScale((config.hudScale ?? 1) + 0.1);
-                        }}
-                        className="grid size-5 place-items-center rounded-full hover:bg-white/20 cursor-pointer"
-                      >
-                        <Plus className="size-3" />
-                      </button>
-                    </div>
+                    Tự cuộn
+                  </button>
+                </div>
+              </div>
 
-                    {/* Tay nắm kéo góc dưới phải để phóng to / thu nhỏ tự do */}
+              {/* Vùng hiển thị danh sách bình luận: ngang (nhiều cột) cho 16:9, dọc (1 cột cao) cho 9:16 */}
+              <div className="relative flex-1 min-h-0">
+                <div
+                  ref={commentScrollRef}
+                  onScroll={(e) => {
+                    const el = e.currentTarget;
+                    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 36;
+                    if (!nearBottom && autoScrollComments) {
+                      setAutoScrollComments(false);
+                    } else if (nearBottom && !autoScrollComments) {
+                      setAutoScrollComments(true);
+                      setHasUnreadComments(false);
+                    }
+                  }}
+                  className={
+                    isPortraitAspect
+                      ? "h-full overflow-y-auto p-2 space-y-1.5"
+                      : "max-h-[188px] min-h-[100px] overflow-y-auto p-2.5"
+                  }
+                >
+                  {streamComments.length === 0 ? (
+                    <div className="flex h-full min-h-[84px] flex-col items-center justify-center text-center px-3 py-3 text-xs text-line/65 gap-2">
+                      <span>
+                        {!config.streamKey.trim()
+                          ? `Chưa có Khóa luồng ${platformLabel}.`
+                          : commentsLoading
+                            ? `Đang đồng bộ bình luận ${platformLabel}...`
+                            : commentStatusMsg
+                              ? commentStatusMsg
+                              : `Chưa có bình luận mới trên luồng ${platformLabel}.`}
+                      </span>
+                      {(commentAuthStatus === "token_required" ||
+                        commentAuthStatus === "token_expired" ||
+                        (!config.streamKey.trim() && config.platform !== "custom")) && (
+                        <div className="flex flex-wrap items-center justify-center gap-2">
+                          {config.platform === "youtube" ? (
+                            <button
+                              type="button"
+                              onClick={() => void handleConnectYouTube()}
+                              disabled={ytLoading}
+                              className="inline-flex items-center gap-1.5 rounded-lg border border-line/20 bg-card px-2.5 py-1.5 text-[11px] font-bold text-ink shadow-2xs hover:bg-secondary/60 cursor-pointer"
+                            >
+                              <span className="inline-block size-2 rounded-full bg-[#dc2626]" />
+                              {ytLoading ? "Đang kết nối..." : "Đăng nhập YouTube"}
+                            </button>
+                          ) : config.platform === "facebook" ? (
+                            <button
+                              type="button"
+                              onClick={() => void handleConnectFacebook()}
+                              disabled={fbLoading}
+                              className="inline-flex items-center gap-1.5 rounded-lg bg-[#1877f2] px-2.5 py-1.5 text-[11px] font-bold text-white shadow-2xs hover:opacity-95 cursor-pointer"
+                            >
+                              {fbLoading ? "Đang kết nối..." : "Đăng nhập Facebook"}
+                            </button>
+                          ) : null}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
                     <div
-                      role="slider"
-                      aria-label="Kéo góc để phóng to thu nhỏ bảng tỉ số"
-                      aria-valuemin={55}
-                      aria-valuemax={175}
-                      aria-valuenow={Math.round((config.hudScale ?? 1) * 100)}
+                      className={
+                        isPortraitAspect
+                          ? "flex flex-col gap-1.5"
+                          : "grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2"
+                      }
+                    >
+                      {streamComments.map((cmt) => {
+                        const timeStr = formatCommentTime(cmt.createdAt);
+                        return (
+                          <div
+                            key={cmt.id}
+                            className={`rounded-lg border px-2.5 py-1.5 text-xs transition ${
+                              cmt.highlightAmount
+                                ? "border-[#e44c11]/45 bg-[#e44c11]/10"
+                                : "border-line/12 bg-card/95"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-1.5">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                {cmt.platform === "youtube" ? (
+                                  <span className="shrink-0 rounded bg-[#dc2626] px-1 py-0.5 text-[9px] font-extrabold uppercase text-white leading-none">
+                                    YT
+                                  </span>
+                                ) : (
+                                  <span className="shrink-0 rounded bg-[#1877f2] px-1 py-0.5 text-[9px] font-extrabold uppercase text-white leading-none">
+                                    FB
+                                  </span>
+                                )}
+                                <span className="font-bold text-ink truncate">{cmt.author}</span>
+                                {cmt.badge && (
+                                  <span className="shrink-0 text-[10px] font-semibold text-[#0a3320]/75">
+                                    · {cmt.badge}
+                                  </span>
+                                )}
+                                {cmt.highlightAmount && (
+                                  <span className="shrink-0 rounded bg-[#e44c11] px-1.5 py-0.5 text-[9px] font-bold text-white">
+                                    {cmt.highlightAmount}
+                                  </span>
+                                )}
+                              </div>
+
+                              {timeStr && (
+                                <span className="text-[10px] tabular-nums text-line/50 shrink-0">
+                                  {timeStr}
+                                </span>
+                              )}
+                            </div>
+
+                            <p className="mt-0.5 text-ink/90 leading-snug break-words">
+                              {cmt.text}
+                            </p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {hasUnreadComments && !autoScrollComments && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAutoScrollComments(true);
+                      setHasUnreadComments(false);
+                      if (commentScrollRef.current) {
+                        commentScrollRef.current.scrollTop = commentScrollRef.current.scrollHeight;
+                      }
+                    }}
+                    className="absolute bottom-2 right-2 z-10 inline-flex items-center gap-1 rounded-full bg-[#0a3320] px-2.5 py-1 text-[10px] font-bold text-white shadow-md hover:opacity-95 cursor-pointer"
+                  >
+                    <ArrowDown className="size-3" />
+                    Mới nhất
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+
+          const stageCanvasBox = (
+            <div
+              ref={stageContainerRef}
+              className={`relative ${
+                isPortraitAspect
+                  ? "aspect-[9/16] w-full sm:h-full sm:w-auto"
+                  : "aspect-video w-full"
+              }`}
+            >
+              <canvas ref={canvasRef} className="block h-full w-full" />
+
+              {/* Vùng nắm kéo di chuyển + phóng to thu nhỏ Overlay trực tiếp trên màn hình */}
+              {config.showHud &&
+                (() => {
+                  const geom = getHudGeometry(
+                    profile.width,
+                    profile.height,
+                    config.hudPosition,
+                    config.hudX,
+                    config.hudY,
+                    config.hudScale,
+                  );
+                  const updateHudScale = (next: number) => {
+                    const clamped = Math.min(1.75, Math.max(0.55, Number(next.toFixed(2))));
+                    configRef.current = { ...configRef.current, hudScale: clamped };
+                    setConfig((c) => ({ ...c, hudScale: clamped }));
+                  };
+                  return (
+                    <div
+                      role="button"
                       tabIndex={0}
-                      title="Kéo góc để phóng to / thu nhỏ"
+                      aria-label="Kéo để di chuyển hoặc thay đổi kích thước bảng tỉ số"
+                      title="Kéo để di chuyển · Kéo góc hoặc bấm +/- để thu phóng"
                       onPointerDown={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
                         e.currentTarget.setPointerCapture(e.pointerId);
-                        hudResizeRef.current = {
+                        hudDragRef.current = {
                           pointerId: e.pointerId,
                           startClientX: e.clientX,
                           startClientY: e.clientY,
-                          startScale: configRef.current.hudScale ?? 1,
+                          startHudX: geom.x,
+                          startHudY: geom.y,
                         };
-                        setIsResizingHud(true);
+                        setIsDraggingHud(true);
                       }}
                       onPointerMove={(e) => {
-                        const resize = hudResizeRef.current;
-                        if (!resize || resize.pointerId !== e.pointerId) return;
+                        const drag = hudDragRef.current;
+                        if (!drag || drag.pointerId !== e.pointerId) return;
                         const rect = stageContainerRef.current?.getBoundingClientRect();
-                        if (!rect || rect.width <= 0) return;
-                        const dxCanvas = (e.clientX - resize.startClientX) * (profile.width / rect.width);
-                        const dyCanvas = (e.clientY - resize.startClientY) * (profile.height / rect.width);
-                        const baseW = geom.isPortrait ? 580 * geom.baseScale : 540 * geom.baseScale;
-                        const deltaScale = (dxCanvas + dyCanvas * 1.4) / Math.max(120, baseW);
-                        updateHudScale(resize.startScale + deltaScale);
+                        if (!rect || rect.width <= 0 || rect.height <= 0) return;
+                        const dxCanvas = (e.clientX - drag.startClientX) * (profile.width / rect.width);
+                        const dyCanvas = (e.clientY - drag.startClientY) * (profile.height / rect.height);
+                        const nextX = Math.min(geom.maxX, Math.max(geom.minX, drag.startHudX + dxCanvas));
+                        const nextY = Math.min(geom.maxY, Math.max(geom.minY, drag.startHudY + dyCanvas));
+                        const nextNormX =
+                          geom.maxX > geom.minX ? (nextX - geom.minX) / (geom.maxX - geom.minX) : 0;
+                        const nextNormY =
+                          geom.maxY > geom.minY ? (nextY - geom.minY) / (geom.maxY - geom.minY) : 0;
+
+                        configRef.current = {
+                          ...configRef.current,
+                          hudPosition: "custom",
+                          hudX: nextNormX,
+                          hudY: nextNormY,
+                        };
+                        setConfig((c) => ({
+                          ...c,
+                          hudPosition: "custom",
+                          hudX: nextNormX,
+                          hudY: nextNormY,
+                        }));
                       }}
                       onPointerUp={(e) => {
-                        if (hudResizeRef.current?.pointerId === e.pointerId) {
-                          hudResizeRef.current = null;
-                          setIsResizingHud(false);
+                        if (hudDragRef.current?.pointerId === e.pointerId) {
+                          hudDragRef.current = null;
+                          setIsDraggingHud(false);
                         }
                       }}
                       onPointerCancel={() => {
-                        hudResizeRef.current = null;
-                        setIsResizingHud(false);
+                        hudDragRef.current = null;
+                        setIsDraggingHud(false);
                       }}
-                      className={`absolute -bottom-1.5 -right-1.5 z-30 grid size-5 place-items-center rounded-full bg-[#e44c11] text-white shadow ring-2 ring-white cursor-nwse-resize transition-opacity ${
-                        isResizingHud
-                          ? "opacity-100 scale-110"
-                          : "opacity-85 sm:opacity-0 sm:group-hover:opacity-100"
+                      style={{
+                        left: `${(geom.x / profile.width) * 100}%`,
+                        top: `${(geom.y / profile.height) * 100}%`,
+                        width: `${(geom.boxW / profile.width) * 100}%`,
+                        height: `${(geom.totalH / profile.height) * 100}%`,
+                      }}
+                      className={`group absolute z-20 touch-none select-none rounded-xl transition-shadow ${
+                        isDraggingHud || isResizingHud
+                          ? "cursor-grabbing ring-2 ring-[#e44c11] shadow-lg"
+                          : "cursor-grab hover:ring-2 hover:ring-white/60"
                       }`}
                     >
-                      <span className="size-1.5 rounded-full bg-white" />
-                    </div>
-                  </div>
-                );
-              })()}
+                      {/* Thanh phóng to / thu nhỏ nhanh trực tiếp ngoài mép bảng tỉ số */}
+                      <div
+                        onPointerDown={(e) => e.stopPropagation()}
+                        className={`absolute ${
+                          geom.y + geom.totalH > profile.height * 0.85
+                            ? "-top-7 left-1"
+                            : "top-full mt-1.5 left-1"
+                        } z-30 flex items-center gap-0.5 rounded-full bg-[#0a3320]/90 px-1 py-0.5 text-white shadow-md ring-1 ring-white/25 transition-opacity ${
+                          isDraggingHud || isResizingHud
+                            ? "opacity-100"
+                            : "opacity-85 sm:opacity-0 sm:group-hover:opacity-100"
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          aria-label="Thu nhỏ bảng tỉ số"
+                          title="Thu nhỏ"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            updateHudScale((config.hudScale ?? 1) - 0.1);
+                          }}
+                          className="grid size-5 place-items-center rounded-full hover:bg-white/20 cursor-pointer"
+                        >
+                          <Minus className="size-3" />
+                        </button>
+                        <button
+                          type="button"
+                          title="Đặt lại kích thước 100%"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            updateHudScale(1);
+                          }}
+                          className="px-1 text-[10px] font-mono font-bold tabular-nums hover:text-[#fb923c] cursor-pointer"
+                        >
+                          {Math.round((config.hudScale ?? 1) * 100)}%
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Phóng to bảng tỉ số"
+                          title="Phóng to"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            updateHudScale((config.hudScale ?? 1) + 0.1);
+                          }}
+                          className="grid size-5 place-items-center rounded-full hover:bg-white/20 cursor-pointer"
+                        >
+                          <Plus className="size-3" />
+                        </button>
+                      </div>
 
-            {!cameraActive && (
-              <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center px-4 text-center">
-                <button
-                  type="button"
-                  onClick={() => void startCamera()}
-                  className="pointer-events-auto btn-accent min-h-[46px] px-5 py-2.5 text-sm sm:text-base font-bold cursor-pointer shadow-lg"
-                >
-                  <Camera className="size-5" />
-                  Bật Camera & Micro
-                </button>
+                      {/* Tay nắm kéo góc dưới phải để phóng to / thu nhỏ tự do */}
+                      <div
+                        role="slider"
+                        aria-label="Kéo góc để phóng to thu nhỏ bảng tỉ số"
+                        aria-valuemin={55}
+                        aria-valuemax={175}
+                        aria-valuenow={Math.round((config.hudScale ?? 1) * 100)}
+                        tabIndex={0}
+                        title="Kéo góc để phóng to / thu nhỏ"
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          e.currentTarget.setPointerCapture(e.pointerId);
+                          hudResizeRef.current = {
+                            pointerId: e.pointerId,
+                            startClientX: e.clientX,
+                            startClientY: e.clientY,
+                            startScale: configRef.current.hudScale ?? 1,
+                          };
+                          setIsResizingHud(true);
+                        }}
+                        onPointerMove={(e) => {
+                          const resize = hudResizeRef.current;
+                          if (!resize || resize.pointerId !== e.pointerId) return;
+                          const rect = stageContainerRef.current?.getBoundingClientRect();
+                          if (!rect || rect.width <= 0) return;
+                          const dxCanvas = (e.clientX - resize.startClientX) * (profile.width / rect.width);
+                          const dyCanvas = (e.clientY - resize.startClientY) * (profile.height / rect.width);
+                          const baseW = geom.isPortrait ? 580 * geom.baseScale : 540 * geom.baseScale;
+                          const deltaScale = (dxCanvas + dyCanvas * 1.4) / Math.max(120, baseW);
+                          updateHudScale(resize.startScale + deltaScale);
+                        }}
+                        onPointerUp={(e) => {
+                          if (hudResizeRef.current?.pointerId === e.pointerId) {
+                            hudResizeRef.current = null;
+                            setIsResizingHud(false);
+                          }
+                        }}
+                        onPointerCancel={() => {
+                          hudResizeRef.current = null;
+                          setIsResizingHud(false);
+                        }}
+                        className={`absolute -bottom-1.5 -right-1.5 z-30 grid size-5 place-items-center rounded-full bg-[#e44c11] text-white shadow ring-2 ring-white cursor-nwse-resize transition-opacity ${
+                          isResizingHud
+                            ? "opacity-100 scale-110"
+                            : "opacity-85 sm:opacity-0 sm:group-hover:opacity-100"
+                        }`}
+                      >
+                        <span className="size-1.5 rounded-full bg-white" />
+                      </div>
+                    </div>
+                  );
+                })()}
+
+              {!cameraActive && (
+                <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center px-4 text-center">
+                  <button
+                    type="button"
+                    onClick={() => void startCamera()}
+                    className="pointer-events-auto btn-accent min-h-[46px] px-4 sm:px-5 py-2.5 text-xs sm:text-base font-bold cursor-pointer shadow-lg"
+                  >
+                    <Camera className="size-4 sm:size-5 shrink-0" />
+                    <span>Bật Camera & Micro</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+
+          if (isPortraitAspect) {
+            return (
+              <div className="flex items-stretch gap-2.5 sm:gap-3">
+                {/* Màn hình dọc 9:16 bên trái */}
+                <div className="flex items-center justify-center overflow-hidden rounded-xl bg-[#08140e] w-[52%] sm:w-auto sm:h-[500px] lg:h-[560px] shrink-0">
+                  {stageCanvasBox}
+                </div>
+                {/* Bình luận trực tiếp dọc ngay cạnh bên phải */}
+                <div className="relative flex-1 min-w-0">{liveCommentsBox}</div>
               </div>
-            )}
-          </div>
-        </div>
+            );
+          }
+
+          return (
+            <div className="space-y-3">
+              {/* Màn hình ngang 16:9 */}
+              <div className="flex w-full items-center justify-center overflow-hidden rounded-xl bg-[#08140e]">
+                {stageCanvasBox}
+              </div>
+              {/* Bình luận trực tiếp ngang ngay bên dưới */}
+              {liveCommentsBox}
+            </div>
+          );
+        })()}
 
         {/* Hàng nút điều khiển dễ chạm (Thumb Zone >= 44px) */}
         <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4 pt-1">
@@ -2612,6 +3345,229 @@ function LivestreamPage() {
               </div>
             </div>
 
+            {/* Đăng nhập nền tảng để tự lấy Khóa luồng & đồng bộ bình luận */}
+            {config.platform === "youtube" && (
+              <div className="rounded-xl border border-line/15 bg-secondary/40 p-3 space-y-2.5">
+                {!ytToken ? (
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold text-ink/85">
+                      Đăng nhập kênh YouTube để tự lấy Khóa luồng & đồng bộ Live Chat:
+                    </p>
+                    <button
+                      type="button"
+                      disabled={ytLoading || streamStatus === "live" || streamStatus === "connecting"}
+                      onClick={() => void handleConnectYouTube()}
+                      className="w-full min-h-[40px] rounded-lg border border-line/20 bg-white px-3 py-2 text-xs font-bold text-[#1f1f1f] shadow-2xs hover:bg-gray-50 transition inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
+                    >
+                      <svg className="size-4 shrink-0" viewBox="0 0 48 48" aria-hidden="true">
+                        <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
+                        <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
+                        <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
+                        <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
+                      </svg>
+                      <span>{ytLoading ? "Đang kết nối YouTube..." : "Đăng nhập YouTube"}</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="size-2 rounded-full bg-emerald-600 shrink-0" />
+                          <span className="text-xs font-bold text-ink truncate">
+                            {ytAccount?.channelTitle || ytAccount?.displayName || ytAccount?.email || "Đã kết nối YouTube"}
+                          </span>
+                        </div>
+                        {ytAccount?.email && (
+                          <p className="text-[11px] text-line/65 truncate">{ytAccount.email}</p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => void loadYouTubeStreams(undefined, true)}
+                          disabled={ytLoading}
+                          className="rounded-md border border-line/20 bg-card px-2 py-1 text-[11px] font-bold text-ink hover:bg-secondary/60 inline-flex items-center gap-1 cursor-pointer"
+                          title="Tải lại danh sách khóa luồng YouTube"
+                        >
+                          <RefreshCw className={`size-3 ${ytLoading ? "animate-spin" : ""}`} />
+                          Lấy khóa
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDisconnectYouTube}
+                          className="rounded-md border border-line/20 bg-card p-1 text-line/70 hover:text-destructive cursor-pointer"
+                          title="Ngắt kết nối YouTube"
+                          aria-label="Ngắt kết nối YouTube"
+                        >
+                          <LogOut className="size-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {ytStreams.length > 0 ? (
+                      <label className="block space-y-1">
+                        <span className="text-[11px] font-semibold text-line/75">
+                          Chọn buổi phát / Khóa luồng YouTube
+                        </span>
+                        <select
+                          disabled={streamStatus === "live" || streamStatus === "connecting"}
+                          value={selectedYtStreamId}
+                          onChange={(e) => {
+                            const id = e.target.value;
+                            setSelectedYtStreamId(id);
+                            const chosen = ytStreams.find((s) => s.id === id);
+                            if (chosen) {
+                              setConfig((c) => ({
+                                ...c,
+                                platform: "youtube",
+                                serverUrl: chosen.serverUrl || PLATFORM_URLS.youtube,
+                                streamKey: chosen.streamKey,
+                              }));
+                            }
+                          }}
+                          className="field !py-1.5 text-xs font-semibold"
+                        >
+                          {ytStreams.map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.title} ({s.status})
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : (
+                      <p className="text-[11px] text-line/70">
+                        Chưa thấy phiên phát trên kênh YouTube này. Hãy tạo luồng trong YouTube Studio rồi bấm <strong>Lấy khóa</strong>.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {config.platform === "facebook" && (
+              <div className="rounded-xl border border-line/15 bg-secondary/40 p-3 space-y-2.5">
+                {!fbSessionToken ? (
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold text-ink/85">
+                      Đăng nhập Facebook để tự lấy Khóa luồng (Trang cá nhân / Fanpage) & đọc bình luận:
+                    </p>
+                    <button
+                      type="button"
+                      disabled={fbLoading || streamStatus === "live" || streamStatus === "connecting"}
+                      onClick={() => void handleConnectFacebook()}
+                      className="w-full min-h-[40px] rounded-lg bg-[#1877f2] px-3 py-2 text-xs font-bold text-white shadow-2xs hover:opacity-95 transition inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
+                    >
+                      <span>{fbLoading ? "Đang mở Facebook..." : "Đăng nhập Facebook"}</span>
+                    </button>
+
+                    {fbConfigNotice && (
+                      <div className="rounded-lg border border-amber-500/35 bg-amber-50/80 p-2.5 text-[11px] text-amber-950 space-y-1">
+                        <p className="font-bold">{fbConfigNotice.message}</p>
+                        <p className="break-all font-mono text-[10px] opacity-85">
+                          Callback URL: {fbConfigNotice.redirectUri}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0 flex items-center gap-1.5">
+                        <span className="size-2 rounded-full bg-emerald-600 shrink-0" />
+                        <span className="text-xs font-bold text-ink truncate">
+                          {fbProfile?.name || "Đã kết nối Facebook"}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => void loadFacebookStreams(undefined, true)}
+                          disabled={fbLoading}
+                          className="rounded-md border border-line/20 bg-card px-2 py-1 text-[11px] font-bold text-ink hover:bg-secondary/60 inline-flex items-center gap-1 cursor-pointer"
+                        >
+                          <RefreshCw className={`size-3 ${fbLoading ? "animate-spin" : ""}`} />
+                          Làm mới
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDisconnectFacebook}
+                          className="rounded-md border border-line/20 bg-card p-1 text-line/70 hover:text-destructive cursor-pointer"
+                          title="Ngắt kết nối Facebook"
+                          aria-label="Ngắt kết nối Facebook"
+                        >
+                          <LogOut className="size-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {fbStreams.length > 0 && (
+                      <label className="block space-y-1">
+                        <span className="text-[11px] font-semibold text-line/75">
+                          Chọn phiên live Facebook có sẵn
+                        </span>
+                        <select
+                          disabled={streamStatus === "live" || streamStatus === "connecting"}
+                          value={selectedFbStreamId}
+                          onChange={(e) => {
+                            const id = e.target.value;
+                            setSelectedFbStreamId(id);
+                            const chosen = fbStreams.find((s) => s.id === id);
+                            if (chosen) {
+                              setConfig((c) => ({
+                                ...c,
+                                platform: "facebook",
+                                serverUrl: chosen.serverUrl || PLATFORM_URLS.facebook,
+                                streamKey: chosen.streamKey,
+                              }));
+                            }
+                          }}
+                          className="field !py-1.5 text-xs font-semibold"
+                        >
+                          {fbStreams.map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.targetName} — {s.title} ({s.status})
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+
+                    <div className="space-y-1.5 border-t border-line/10 pt-2">
+                      <span className="block text-[11px] font-semibold text-line/75">
+                        Hoặc tạo phiên Live mới & tự lấy Khóa luồng
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        {fbTargets.length > 0 && (
+                          <select
+                            disabled={fbCreatingLive || streamStatus === "live"}
+                            value={fbSelectedTargetId}
+                            onChange={(e) => setFbSelectedTargetId(e.target.value)}
+                            className="field !py-1.5 text-xs flex-1 min-w-0"
+                          >
+                            {fbTargets.map((t) => (
+                              <option key={t.id} value={t.id}>
+                                {t.name}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                        <button
+                          type="button"
+                          disabled={fbCreatingLive || streamStatus === "live" || streamStatus === "connecting"}
+                          onClick={() => void handleCreateFacebookLive()}
+                          className="shrink-0 rounded-lg bg-[#0a3320] px-2.5 py-1.5 text-[11px] font-bold text-white hover:opacity-90 inline-flex items-center gap-1 cursor-pointer disabled:opacity-60"
+                        >
+                          <PlusCircle className="size-3.5" />
+                          <span>{fbCreatingLive ? "Đang tạo..." : "Tạo Live"}</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             <label className="block space-y-1">
               <span className="text-xs font-semibold text-line/75">Server URL (RTMP / RTMPS)</span>
               <input
@@ -2646,7 +3602,11 @@ function LivestreamPage() {
                   disabled={streamStatus === "live" || streamStatus === "connecting"}
                   value={config.streamKey}
                   onChange={(e) => setConfig((c) => ({ ...c, streamKey: e.target.value }))}
-                  placeholder="Dán Stream Key từ Facebook..."
+                  placeholder={
+                    config.platform === "youtube"
+                      ? "Tự điền sau khi đăng nhập YouTube hoặc dán thủ công..."
+                      : "Tự điền sau khi đăng nhập Facebook hoặc dán thủ công..."
+                  }
                   autoComplete="off"
                   className="field !py-2 !pr-11 text-xs font-mono"
                 />

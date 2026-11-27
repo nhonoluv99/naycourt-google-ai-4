@@ -1,4 +1,4 @@
-import { initializeApp } from "firebase/app";
+import { initializeApp, getApps } from "firebase/app";
 import {
   getAuth,
   GoogleAuthProvider,
@@ -21,12 +21,42 @@ import {
   deleteDoc,
 } from "firebase/firestore";
 import firebaseConfig from "../../firebase-applet-config.json";
+import youtubeFirebaseConfig from "../../firebase-youtube-config.json";
 
-// Khởi tạo Firebase App & Services theo chuẩn Skill
-const app = initializeApp(firebaseConfig);
+// Khởi tạo Firebase App & Services theo chuẩn Skill (cơ sở dữ liệu giải đấu chính)
+const app = getApps().find((a) => a.name === "[DEFAULT]") || initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
+
+// App Firebase tách biệt cho kết nối kênh YouTube để không ghi đè tài khoản Admin quản lý giải đấu
+const youtubeApp =
+  getApps().find((a) => a.name === "youtube-oauth") ||
+  initializeApp(youtubeFirebaseConfig, "youtube-oauth");
+const youtubeAuth = getAuth(youtubeApp);
+
+export const YOUTUBE_SCOPES = ["https://www.googleapis.com/auth/youtube.readonly"];
+export const youtubeProvider = new GoogleAuthProvider();
+for (const scope of YOUTUBE_SCOPES) {
+  youtubeProvider.addScope(scope);
+}
+
+// Lưu YouTube access token chỉ trong bộ nhớ RAM (không lưu localStorage/sessionStorage)
+let cachedYouTubeAccessToken: string | null = null;
+let cachedYouTubeUser: {
+  email: string | null;
+  displayName: string | null;
+  photoURL: string | null;
+} | null = null;
+
+if (typeof window !== "undefined") {
+  onAuthStateChanged(youtubeAuth, (user) => {
+    if (!user) {
+      cachedYouTubeAccessToken = null;
+      cachedYouTubeUser = null;
+    }
+  });
+}
 
 export enum OperationType {
   CREATE = "create",
@@ -109,6 +139,47 @@ export async function signInWithGoogle(): Promise<User> {
 /** Đăng xuất Google */
 export async function logOutGoogle(): Promise<void> {
   await signOut(auth);
+}
+
+/** Kết nối tài khoản YouTube qua Google Auth (token giữ trong bộ nhớ RAM) */
+export async function connectYouTubeAccount(): Promise<{
+  accessToken: string;
+  user: User;
+  email: string | null;
+  displayName: string | null;
+  photoURL: string | null;
+}> {
+  youtubeProvider.setCustomParameters({ prompt: "select_account" });
+  const result = await signInWithPopup(youtubeAuth, youtubeProvider);
+  const credential = GoogleAuthProvider.credentialFromResult(result);
+  if (!credential?.accessToken) {
+    throw new Error("Không lấy được quyền truy cập YouTube từ Google.");
+  }
+  cachedYouTubeAccessToken = credential.accessToken;
+  cachedYouTubeUser = {
+    email: result.user.email,
+    displayName: result.user.displayName,
+    photoURL: result.user.photoURL,
+  };
+  return {
+    accessToken: credential.accessToken,
+    user: result.user,
+    ...cachedYouTubeUser,
+  };
+}
+
+export function getYouTubeAccessToken(): string | null {
+  return cachedYouTubeAccessToken;
+}
+
+export function getConnectedYouTubeUser() {
+  return cachedYouTubeUser;
+}
+
+export function disconnectYouTubeAccount(): void {
+  cachedYouTubeAccessToken = null;
+  cachedYouTubeUser = null;
+  void signOut(youtubeAuth).catch(() => {});
 }
 
 /** Lưu dữ liệu giải đấu lên Firestore */

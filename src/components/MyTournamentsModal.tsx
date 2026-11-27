@@ -282,7 +282,7 @@ export function MyTournamentsModal({ isOpen, onClose }: MyTournamentsModalProps)
 
                       <span className="shrink-0 text-[11px] font-bold text-[#0a3320] pt-0.5">
                         {isOwner
-                          ? "👑 Chủ giải"
+                          ? "👑 Admin"
                           : isEditor
                             ? "✏️ Điều hành"
                             : isReferee

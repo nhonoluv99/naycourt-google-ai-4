@@ -7209,7 +7209,7 @@ function ManagePage() {
               ref={exportGroupScheduleRef}
               data-export-schedule="true"
               className="p-6 sm:p-8 rounded-2xl shadow-2xl min-w-max"
-              style={{ backgroundColor: "#fbfaf6", color: "#111827", border: "1px solid #e5e7eb" }}
+              style={{ backgroundColor: "#EFEDE5", color: "#111827", border: "1px solid #e5e7eb" }}
             >
               {/* Header của bản in/ảnh */}
               <div className="pb-4 mb-6" style={{ borderBottom: "2px solid #e5e7eb" }}>
